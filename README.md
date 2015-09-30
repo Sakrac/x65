@@ -155,7 +155,7 @@ RandomBytes:
 	bytes NumRandomBytes
 	{
 	    bytes 13,1,7,19,32
-		NumRandomBytes = RandomBytes - !
+		NumRandomBytes = \* - !
 	}
 ```
 
