@@ -90,21 +90,22 @@ Next_Function:		; next global label, the local label above is now erased.
 
 Directives are assembler commands that control the code generation but that does not generate code by itself. Some assemblers prefix directives with a period (.org instead of org) so a leading period is accepted but not required for directives.
 
-* **ORG** (same as **PC**): Set the current compiling address.
-* **LOAD** Set the load address for binary formats that support it.
-* **ALIGN** Align the address to a multiple by filling with 0s
-* **MACRO** Declare a macro
-* **EVAL** Log an expression during assembly.
-* **BYTES** Insert comma separated bytes at this address (same as **BYTE**)
-* **WORDS** Insert comma separated 16 bit values at this address (same as **WORD**)
-* **TEXT** Insert text at this address
-* **INCLUDE** Include another source file and assemble at this address
-* **INCBIN** Include a binary file at this address
-* **CONST** Assign a value to a label and make it constant (error if reassigned with other value)
-* **LABEL** Decorative directive to assign an expression to a label
-* **INCSYM** Include a symbol file with an optional set of wanted symbols.
+* [**ORG**](#org) (same as **PC**): Set the current compiling address.
+* [**LOAD**](#load) Set the load address for binary formats that support it.
+* [**ALIGN**](#align) Align the address to a multiple by filling with 0s
+* [**MACRO**](#macro) Declare a macro
+* [**EVAL**](#eval) Log an expression during assembly.
+* [**BYTES**](#bytes) Insert comma separated bytes at this address (same as **BYTE**)
+* [**WORDS**](#words) Insert comma separated 16 bit values at this address (same as **WORD**)
+* [**TEXT**](#text) Insert text at this address
+* [**INCLUDE**](#include) Include another source file and assemble at this address
+* [**INCBIN**](#incbin) Include a binary file at this address
+* [**CONST**](#const) Assign a value to a label and make it constant (error if reassigned with other value)
+* [**LABEL**](#label) Decorative directive to assign an expression to a label
+* [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
+* [**POOL**](#pool) Add a label pool for temporary address labels
 
-**ORG**
+<a name="org">**ORG**
 
 ```
 org $2000
@@ -113,7 +114,7 @@ org $2000
 
 Sets the current assembler address to this address
 
-**LOAD**
+<a name="load">**LOAD**
 
 ```
 load $2000
@@ -121,7 +122,7 @@ load $2000
 
 For c64 .prg files this prefixes the binary file with this address.
 
-**ALIGN**
+<a name="align">**ALIGN**
 
 ```
 align $100
@@ -129,11 +130,11 @@ align $100
 
 Add bytes of 0 up to the next address divisible by the alignment
 
-**MACRO**
+<a name="macro">**MACRO**
 
 See the 'Macro' section below
 
-**EVAL**
+<a name="eval">**EVAL**
 
 Example:
 ```
@@ -146,7 +147,7 @@ Eval (15): Current PC : "*" = $2010
 
 When eval is encountered on a line print out "EVAL (\<line#\>) \<message\>: \<expression\> = \<evaluated expression\>" to stdout. This can be useful to see the size of things or debugging expressions.
 
-**BYTES**
+<a name="bytes">**BYTES**
 
 Adds the comma separated values on the current line to the assembled output, for example
 
@@ -161,11 +162,11 @@ RandomBytes:
 
 byte is also recognized
 
-**WORDS**
+<a name="words">**WORDS**
 
 Adds comma separated 16 bit values similar to how **BYTES** work
 
-**TEXT**
+<a name="text">**TEXT**
 
 Copies the string in quotes on the same line. The plan is to do a petscii conversion step. Use the modifier 'petscii' or 'petscii_shifted' to convert alphabetic characters to range.
 
@@ -175,7 +176,7 @@ Example:
 text petscii_shifted "This might work"
 ```
 
-**INCLUDE**
+<a name="include">**INCLUDE**
 
 Include another source file. This should also work with .sym files to import labels from another build. The plan is for Asm6502 to export .sym files as well.
 
@@ -186,7 +187,7 @@ include "wizfx.s"
 ```
 
 
-**INCBIN**
+<a name="incbin">**INCBIN**
 
 Include binary data from a file, this inserts the binary data at the current address.
 
@@ -196,7 +197,7 @@ Example:
 incbin "wizfx.gfx"
 ```
 
-**CONST**
+<a name="const">**CONST**
 
 Prefix a label assignment with 'const' or '.const' to cause an error if the label gets reassigned.
 
@@ -204,7 +205,7 @@ Prefix a label assignment with 'const' or '.const' to cause an error if the labe
 const zpData = $fe
 ```
 
-**LABEL**
+<a name="label">**LABEL**
 
 Decorative directive to assign an expression to a label, label assignments are followed by '=' and an expression.
 
@@ -214,12 +215,48 @@ label zpDest = $fc
 zpDest = $fa
 ```
 
-**INCSYM** Include a symbol file with an optional set of wanted symbols.
+<a name="incsym">**INCSYM**
 
-Open a symbol file and extract a set of symbols, or all symbols if no set was specified.
+Include a symbol file with an optional set of wanted symbols.
+
+Open a symbol file and extract a set of symbols, or all symbols if no set was specified. Local labels will be discarded if possible.
 
 ```
 incsym Part1_Init, Part1_Update, Part1_Exit "part1.sym"
+```
+
+<a name="pool">**POOL**
+
+Add a label pool for temporary address labels. This is similar to how stack frame variables are assigned in C.
+
+A label pool is a mini stack of addresses that can be assigned as temporary labels with a scope ('{' and '}'). This can be handy for large functions trying to minimize use of zero page addresses, the function can declare a range (or set of ranges) of available zero page addresses and labels can be assigned within a scope and be deleted on scope closure. The format of a label pool is: "pool <pool name> start-end, start-end" and labels can then be allocated from that range by '<pool name> <label name>[.b][.w]' where .b means allocate one byte and .w means allocate two bytes. The label pools themselves are local to the scope they are defined in so you can have label pools that are only valid for a section of your code. Label pools works with any addresses, not just zero page addresses.
+
+Example:
+```
+Function_Name: {
+	pool zpWork $f6-$100		; these zero page addresses are available for temporary labels
+	zpWork zpTrg.w				; zpTrg will be $fe
+	zpWork zpSrc.w				; zpSrc will be $fc
+
+	lda #>Src
+	sta zpSrc
+	lda #<Src
+	sta zpSrc+1
+	lda #>Dest
+	sta zpDst
+	lda #<Dest
+	sta zpDst+1
+
+	{
+		zpWork zpLen			; zpLen will be $fb
+		lda #Length
+		sta zpLen
+	}
+	nop
+	{
+		zpWork zpOff			; zpOff will be $fb (shared with previous scope zpLen)
+	}
+	rts
 ```
 
 ## <a name="expressions">Expression syntax
@@ -270,12 +307,14 @@ Scopes are lines inbetween '{' and '}' including macros. The purpose of scopes i
 
 This means you can write
 ```
-lda #0
-ldx #8
 {
-    sta Label,x
-	dex
-	bpl !
+    lda #0
+    ldx #8
+    {
+        sta Label,x
+    	dex
+    	bpl !
+    }
 }
 ```	
 (where ; represents line breaks) to construct a loop without adding a label.
@@ -305,18 +344,20 @@ FindFirstSpace
 Currently the assembler is in the first public revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state (such as the TEXT directive not bothering to convert ascii to petscii for example).
 
 **TODO**
-* Bracket scoping closure ('}') should clean up local variables within that scope (better handling of local variables within macros).
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
 * ifdef / if / elif / else / endif conditional code generation directives
 * rept / irp macro helpers (repeat, indefinite repeat)
 
 **FIXED**
+* Label Pools added
+* Bracket scoping closure ('}') cleans up local variables within that scope (better handling of local variables within macros).
 * Context stack cleanup
 * % in expressions is interpreted as binary value if immediately followed by 0 or 1
 * Add a const directive for labels that shouldn't be allowed to change (currently ignoring const)
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 2015-10-01 Added Label Pools
 * 2015-09-29 Moved Asm6502 out of Struse Samples.
 * 2015-09-28 First commit
