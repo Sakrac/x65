@@ -104,6 +104,7 @@ Directives are assembler commands that control the code generation but that does
 * [**LABEL**](#label) Decorative directive to assign an expression to a label
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
 * [**POOL**](#pool) Add a label pool for temporary address labels
+* [**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**](#conditional) Conditional assembly
 
 <a name="org">**ORG**
 
@@ -259,6 +260,22 @@ Function_Name: {
 	rts
 ```
 
+<a name="conditional">**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**
+
+Conditional code parsing is very similar to C directive conditional compilation.
+
+Example:
+
+```
+DEBUG = 1
+
+#if DEBUG
+    lda #2
+#else
+    lda #0
+#endif
+```
+
 ## <a name="expressions">Expression syntax
 
 Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overrided. In addition there are some special characters supported:
@@ -346,10 +363,10 @@ Currently the assembler is in the first public revision and while features are t
 **TODO**
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
-* ifdef / if / elif / else / endif conditional code generation directives
 * rept / irp macro helpers (repeat, indefinite repeat)
 
 **FIXED**
+* ifdef / if / elif / else / endif conditional code generation directives
 * Label Pools added
 * Bracket scoping closure ('}') cleans up local variables within that scope (better handling of local variables within macros).
 * Context stack cleanup
@@ -358,6 +375,6 @@ Currently the assembler is in the first public revision and while features are t
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
-* 2015-10-01 Added Label Pools
+* 2015-10-01 Added Label Pools and conditional assembly
 * 2015-09-29 Moved Asm6502 out of Struse Samples.
 * 2015-09-28 First commit
