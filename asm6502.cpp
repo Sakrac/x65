@@ -520,6 +520,7 @@ public:
 	bool conditional_consumed[MAX_CONDITIONAL_DEPTH];
 	bool set_load_address;
 	bool symbol_export, last_label_local;
+	bool errorEncountered;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename);
@@ -579,7 +580,7 @@ public:
 	bool ConditionalConsumed();		// Has a block of this conditional already been assembled?
 	void SetConditional();			// This conditional block is not going to be assembled so mark that it is nesting
 	bool ConditionalAvail();		// Returns true if this conditional can be consumed
-	StatusCode ConditionalElse();	// Conditional else that does not enable block
+	void ConditionalElse();	// Conditional else that does not enable block
 	void EnableConditional(bool enable); // This conditional block is enabled and the prior wasn't
 
 	// Conditional statement evaluation (A==B? A?)
@@ -620,6 +621,7 @@ void Asm::Cleanup() {
 	output_capacity = false;
 	symbol_export = false;
 	last_label_local = false;
+	errorEncountered = false;
 }
 
 // Make sure there is room to assemble in
@@ -1366,12 +1368,9 @@ void Asm::EnableConditional(bool enable) {
 }
 
 // Conditional else that does not enable block
-StatusCode Asm::ConditionalElse() {
-	if (conditional_consumed[conditional_depth]) {
+void Asm::ConditionalElse() {
+	if (conditional_consumed[conditional_depth])
 		conditional_nesting[conditional_depth]++;
-		return STATUS_OK;
-	}
-	return ERROR_ELSE_WITHOUT_IF;
 }
 
 // Conditional statement evaluation (true/false)
@@ -1790,15 +1789,20 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_ELSE:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
-					error = ConditionalElse();
+					ConditionalElse();
+				else
+					error = ERROR_ELSE_WITHOUT_IF;
 			} else if (ConditionalAvail())
 				EnableConditional(true);
 			break;
 		case AD_ELIF:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
-					error = ConditionalElse();
-			} else if (ConditionalAvail()) {
+					ConditionalElse();
+				else
+					error = ERROR_ELSE_WITHOUT_IF;
+			}
+			else if (ConditionalAvail()) {
 				bool conditional_result;
 				error = EvalStatement(line, conditional_result);
 				EnableConditional(conditional_result);
@@ -2196,6 +2200,7 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 				errorText.append("\"\n");
 				errorText.c_str();
 				fwrite(errorText.get(), errorText.get_len(), 1, stderr);
+				errorEncountered = true;
 			}
 			if (error > ERROR_STOP_PROCESSING_ON_HIGHER)
 				break;
@@ -2249,17 +2254,13 @@ void Asm::Assemble(strref source, strref filename)
 			fwrite(errorText.get(), errorText.get_len(), 1, stderr);
 		}
 	}
-
-//	for (unsigned int i = 0; i<labels.count(); i++) {
-//		printf("Label 0x%08x: " STRREF_FMT " = " STRREF_FMT " = 0x%04x\n", labels.getKey(i),
-//			   STRREF_ARG(labels.getValue(i).label_name), STRREF_ARG(labels.getValue(i).expression), labels.getValue(i).value);
-//	}
-
 }
 
 int main(int argc, char **argv)
 {
+	int return_value = 0;
 	bool c64 = true;
+
 	const char* source_filename=nullptr, *binary_out_name=nullptr;
 	const char* sym_file=nullptr;
 	for (int a=1; a<argc; a++) {
@@ -2306,10 +2307,11 @@ int main(int argc, char **argv)
 					fclose(f);
 				}
 			}
-		
+			if (assembler.errorEncountered)
+				return_value = 1;
 			// free some memory
 			assembler.Cleanup();
 		}
 	}
-    return 0;
+	return return_value;
 }
