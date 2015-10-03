@@ -27,12 +27,14 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
-// https://github.com/Sakrac/struse/wiki/Asm6502-Syntax
+// Details, source and documentation at https://github.com/Sakrac/Asm6502.
+//
+// "struse.h" can be found at https://github.com/Sakrac/struse, only the header file is required.
 //
 
 #define _CRT_SECURE_NO_WARNINGS		// Windows shenanigans
 #define STRUSE_IMPLEMENTATION		// include implementation of struse in this file
-#include "struse.h"
+#include "struse.h"					// https://github.com/Sakrac/struse/blob/master/struse.h
 #include <vector>
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +131,29 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Conditional could not be resolved",
 	"#endif encountered outside conditional block",
 	"#else or #elif outside conditional block",
+};
+
+// Assembler directives
+enum AssemblerDirective {
+	AD_ORG,			// ORG: Assemble as if loaded at this address
+	AD_LOAD,		// LOAD: If applicable, instruct to load at this address
+	AD_ALIGN,		// ALIGN: Add to address to make it evenly divisible by this
+	AD_MACRO,		// MACRO: Create a macro
+	AD_EVAL,		// EVAL: Print expression to stdout during assemble
+	AD_BYTES,		// BYTES: Add 8 bit values to output
+	AD_WORDS,		// WORDS: Add 16 bit values to output
+	AD_TEXT,		// TEXT: Add text to output
+	AD_INCLUDE,		// INCLUDE: Load and assemble another file at this address
+	AD_INCBIN,		// INCBIN: Load and directly insert another file at this address
+	AD_CONST,		// CONST: Prevent a label from mutating during assemble
+	AD_LABEL,		// LABEL: Create a mutable label (optional)
+	AD_INCSYM,		// INCSYM: Reference labels from another assemble
+	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
+	AD_IF,			// #IF: Conditional assembly follows based on expression
+	AD_IFDEF,		// #IFDEF: Conditional assembly follows based on label defined or not
+	AD_ELSE,		// #ELSE: Otherwise assembly
+	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
+	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
 };
 
 // Operators are either instructions or directives
@@ -242,7 +267,75 @@ static const strref keyword_equ("equ");
 static const strref str_label("label");
 static const strref str_const("const");
 
-// pairArray is basically two vectors sharing a size without using constructors
+// Binary search over an array of unsigned integers, may contain multiple instances of same key
+unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
+{
+	unsigned int max = count;
+	unsigned int first = 0;
+	while (count!=first) {
+		int index = (first+count)/2;
+		unsigned int read = table[index];
+		if (hash==read) {
+			while (index && table[index-1]==hash)
+				index--;	// guarantee first identical index returned on match
+			return index;
+		} else if (hash>read)
+			first = index+1;
+		else
+			count = index;
+	}
+	if (count<max && table[count]<hash)
+		count++;
+	else if (count && table[count-1]>hash)
+		count--;
+	return count;
+}
+
+// Read in text data (main source, include, etc.)
+char* LoadText(strref filename, size_t &size) {
+	strown<512> file(filename);
+	if (FILE *f = fopen(file.c_str(), "r")) {
+		fseek(f, 0, SEEK_END);
+		size_t _size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (char *buf = (char*)calloc(_size, 1)) {
+			fread(buf, 1, _size, f);
+			fclose(f);
+			size = _size;
+			return buf;
+		}
+		fclose(f);
+	}
+	size = 0;
+	return nullptr;
+}
+
+// Read in binary data (incbin)
+char* LoadBinary(strref filename, size_t &size) {
+	strown<512> file(filename);
+	if (FILE *f = fopen(file.c_str(), "rb")) {
+		fseek(f, 0, SEEK_END);
+		size_t _size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (char *buf = (char*)malloc(_size)) {
+			fread(buf, _size, 1, f);
+			fclose(f);
+			size = _size;
+			return buf;
+		}
+		fclose(f);
+	}
+	size = 0;
+	return nullptr;
+}
+
+//
+//
+// ASSEMBLER STATE
+//
+//
+
+// pairArray is basically two vectors sharing a size without constructors on growth or insert
 template <class H, class V> class pairArray {
 protected:
 	H *keys;
@@ -326,24 +419,22 @@ public:
 	bool constant;			// the value of this label can not change
 } Label;
 
-// When an expression is evaluated late, determine how to encode the result
-enum LateEvalType {
-	LET_LABEL,				// this evaluation applies to a label and not memory
-	LET_ABS_REF,			// calculate an absolute address and store at 0, +1
-	LET_BRANCH,				// calculate a branch offset and store at this address
-	LET_BYTE,				// calculate a byte and store at this address
-};
-
 // If an expression can't be evaluated immediately, this is required
 // to reconstruct the result when it can be.
 typedef struct {
+	enum Type {				// When an expression is evaluated late, determine how to encode the result
+		LET_LABEL,			// this evaluation applies to a label and not memory
+		LET_ABS_REF,		// calculate an absolute address and store at 0, +1
+		LET_BRANCH,			// calculate a branch offset and store at this address
+		LET_BYTE,			// calculate a byte and store at this address
+	};
 	unsigned char* target;	// offset into output buffer
 	int address;			// current pc
 	int scope;				// scope pc
 	strref label;			// valid if this is not a target but another label
 	strref expression;
 	strref source_file;
-	LateEvalType type;
+	Type type;
 } LateEval;
 
 // A macro is a text reference to where it was defined
@@ -372,10 +463,10 @@ typedef struct {
 // Label pools allows C like stack frame label allocation
 typedef struct {
 	strref pool_name;
-	short numRanges; // normally 1 range, support multiple for ease of use
-	short scopeDepth; // for scope closure cleanup
-	unsigned short ranges[MAX_POOL_RANGES*2]; // 2 shorts per range
-	unsigned int usedMap[(MAX_POOL_BYTES+15)>>4]; // 2 bits per byte to store byte count of label
+	short numRanges;		// normally 1 range, support multiple for ease of use
+	short scopeDepth;		// Required for scope closure cleanup
+	unsigned short ranges[MAX_POOL_RANGES*2];		// 2 shorts per range
+	unsigned int usedMap[(MAX_POOL_BYTES+15)>>4];	// 2 bits per byte to store byte count of label
 	StatusCode Reserve(int numBytes, unsigned int &addr);
 	StatusCode Release(unsigned int addr);
 } LabelPool;
@@ -401,39 +492,17 @@ public:
 	bool has_work() { return currContext!=nullptr; }
 };
 
-// Assembler directives such as org / pc / load / etc.
-enum AssemblerDirective {
-	AD_ORG,
-	AD_LOAD,
-	AD_ALIGN,
-	AD_MACRO,
-	AD_EVAL,
-	AD_BYTES,
-	AD_WORDS,
-	AD_TEXT,
-	AD_INCLUDE,
-	AD_INCBIN,
-	AD_CONST,
-	AD_LABEL,
-	AD_INCSYM,
-	AD_LABPOOL,
-	AD_IF,
-	AD_IFDEF,
-	AD_ELSE,
-	AD_ELIF,
-	AD_ENDIF,
-};
-
-// The state of the assembly
+// The state of the assembler
 class Asm {
 public:
 	pairArray<unsigned int, Label> labels;
 	pairArray<unsigned int, Macro> macros;
 	pairArray<unsigned int, LabelPool> labelPools;
+
 	std::vector<LateEval> lateEval;
-	std::vector<LocalLabelRecord> localLabels; // remove these labels when a global pc label is added
-	std::vector<char*> loadedData;	// free when assembly is completed
-	strovl symbols;
+	std::vector<LocalLabelRecord> localLabels;
+	std::vector<char*> loadedData;	// free when assembler is completed
+	strovl symbols; // for building a symbol output file
 	
 	// context for macros / include files
 	ContextStack contextStack;
@@ -455,22 +524,19 @@ public:
 	// Convert source to binary
 	void Assemble(strref source, strref filename);
 
-	// Clean up memory allocations
+	// Clean up memory allocations, reset assembler state
 	void Cleanup();
 	
 	// Make sure there is room to write more code
 	void CheckOutputCapacity(unsigned int addSize);
 
-	// Add and build a macro
+	// Macro management
 	StatusCode AddMacro(strref macro, strref source_name, strref source_file);
 	StatusCode BuildMacro(Macro &m, strref arg_list);
 
 	// Calculate a value based on an expression.
 	StatusCode EvalExpression(strref expression, int pc, int scope_pc,
 							  int scope_end_pc, int &result);
-
-	// Conditional statement eval
-	StatusCode EvalStatement(strref line, bool &result);
 
 	// Access labels
 	Label* GetLabel(strref label);
@@ -492,9 +558,9 @@ public:
 
 	// Late expression evaluation
 	void AddLateEval(int pc, int scope_pc, unsigned char *target,
-					 strref expression, strref source_file, LateEvalType type);
+					 strref expression, strref source_file, LateEval::Type type);
 	void AddLateEval(strref label, int pc, int scope_pc,
-					 strref expression, LateEvalType type);
+					 strref expression, LateEval::Type type);
 	StatusCode CheckLateEval(strref added_label=strref(), int scope_end = -1);
 
 	// Assembler steps
@@ -504,74 +570,25 @@ public:
 	StatusCode AddOpcode(strref line, int group, int index, strref source_file);
 	StatusCode BuildSegment(OP_ID *pInstr, int numInstructions);
 
+	// Conditional Status
+	bool ConditionalAsm();			// Assembly is currently enabled
+	bool NewConditional();			// Start a new conditional block
+	void CloseConditional();		// Close a conditional block
+	void CheckConditionalDepth();	// Check if this conditional will nest the assembly (a conditional is already consumed)
+	void ConsumeConditional();		// This conditional block is going to be assembled, mark it as consumed
+	bool ConditionalConsumed();		// Has a block of this conditional already been assembled?
+	void SetConditional();			// This conditional block is not going to be assembled so mark that it is nesting
+	bool ConditionalAvail();		// Returns true if this conditional can be consumed
+	StatusCode ConditionalElse();	// Conditional else that does not enable block
+	void EnableConditional(bool enable); // This conditional block is enabled and the prior wasn't
+
+	// Conditional statement evaluation (A==B? A?)
+	StatusCode EvalStatement(strref line, bool &result);
+
 	// constructor
-	Asm() {
-		Cleanup();
-		localLabels.reserve(256);
-	}
+	Asm() : output(nullptr) {
+		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
-
-// Binary search over an array of unsigned integers, may contain multiple instances of same key
-unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
-{
-	unsigned int max = count;
-	unsigned int first = 0;
-	while (count!=first) {
-		int index = (first+count)/2;
-		unsigned int read = table[index];
-		if (hash==read) {
-			while (index && table[index-1]==hash)
-				index--;	// guarantee first identical index returned on match
-			return index;
-		} else if (hash>read)
-			first = index+1;
-		else
-			count = index;
-	}
-	if (count<max && table[count]<hash)
-		count++;
-	else if (count && table[count-1]>hash)
-		count--;
-	return count;
-}
-
-// Read in text data (main source, include, etc.)
-char* LoadText(strref filename, size_t &size) {
-	strown<512> file(filename);
-	if (FILE *f = fopen(file.c_str(), "r")) {
-		fseek(f, 0, SEEK_END);
-		size_t _size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (char *buf = (char*)calloc(_size, 1)) {
-			fread(buf, 1, _size, f);
-			fclose(f);
-			size = _size;
-			return buf;
-		}
-		fclose(f);
-	}
-	size = 0;
-	return nullptr;
-}
-
-// Read in binary data (incbin)
-char* LoadBinary(strref filename, size_t &size) {
-	strown<512> file(filename);
-	if (FILE *f = fopen(file.c_str(), "rb")) {
-		fseek(f, 0, SEEK_END);
-		size_t _size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (char *buf = (char*)malloc(_size)) {
-			fread(buf, _size, 1, f);
-			fclose(f);
-			size = _size;
-			return buf;
-		}
-		fclose(f);
-	}
-	size = 0;
-	return nullptr;
-}
 
 // Clean up work allocations
 void Asm::Cleanup() {
@@ -622,6 +639,16 @@ void Asm::CheckOutputCapacity(unsigned int addSize) {
 	}
 }
 
+
+
+//
+//
+// MACROS
+//
+//
+
+
+
 // add a custom macro
 StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file)
 {
@@ -657,153 +684,55 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file)
 	return STATUS_OK;
 }
 
-
-// if an expression could not be evaluated, add it along with
-// the action to perform if it can be evaluated later.
-void Asm::AddLateEval(int pc, int scope_pc, unsigned char *target, strref expression, strref source_file, LateEvalType type)
+// Compile in a macro
+StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 {
-	LateEval le;
-	le.address = pc;
-	le.scope = scope_pc;
-	le.target = target;
-	le.label.clear();
-	le.expression = expression;
-	le.source_file = source_file;
-	le.type = type;
-	
-	lateEval.push_back(le);
-}
-
-void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEvalType type)
-{
-	LateEval le;
-	le.address = pc;
-	le.scope = scope_pc;
-	le.target = 0;
-	le.label = label;
-	le.expression = expression;
-	le.source_file.clear();
-	le.type = type;
-	
-	lateEval.push_back(le);
-}
-
-// When a label is defined or a scope ends check if there are
-// any related late label evaluators that can now be evaluated.
-StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
-{
-	std::vector<LateEval>::iterator i = lateEval.begin();
-	bool evaluated_label = true;
-	strref new_labels[MAX_LABELS_EVAL_ALL];
-	int num_new_labels = 0;
-	if (added_label)
-		new_labels[num_new_labels++] = added_label;
-	
-	while (evaluated_label) {
-		evaluated_label = false;
-		while (i != lateEval.end()) {
-			int value = 0;
-			// check if this expression is related to the late change (new label or end of scope)
-			bool check = num_new_labels==MAX_LABELS_EVAL_ALL;
-			for (int l=0; l<num_new_labels && !check; l++)
-				check = i->expression.find(new_labels[l]) >= 0;
-			if (!check && scope_end>0) {
-				int gt_pos = 0;
-				while (gt_pos>=0 && !check) {
-					gt_pos = i->expression.find_at('%', gt_pos);
-					if (gt_pos>=0) {
-						if (i->expression[gt_pos+1]=='%')
-							gt_pos++;
-						else
-							check = true;
-						gt_pos++;
-					}
-				}
+	strref macro_src = m.macro;
+	strref params = macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref();
+	params.trim_whitespace();
+	arg_list.trim_whitespace();
+	macro_src.skip_whitespace();
+	if (params) {
+		arg_list = arg_list.scoped_block_skip();
+		strref pchk = params;
+		strref arg = arg_list;
+		int dSize = 0;
+		while (strref param = pchk.split_token_trim(',')) {
+			strref a = arg.split_token_trim(',');
+			if (param.get_len() < a.get_len()) {
+				int count = macro_src.substr_case_count(param);
+				dSize += count * ((int)a.get_len() - (int)param.get_len());
 			}
-			if (check) {
-				int ret = EvalExpression(i->expression, i->address, i->scope, scope_end, value);
-				if (ret == STATUS_OK) {
-					switch (i->type) {
-						case LET_BRANCH:
-							value -= i->address;
-							if (value<-128 || value>127)
-								return ERROR_BRANCH_OUT_OF_RANGE;
-							*i->target = (unsigned char)value;
-							break;
-						case LET_BYTE:
-							i->target[0] = value&0xff;
-							break;
-						case LET_ABS_REF:
-							i->target[0] = value&0xff;
-							i->target[1] = (value>>8)&0xff;
-							break;
-						case LET_LABEL: {
-							Label *label = GetLabel(i->label);
-							if (!label)
-								return ERROR_LABEL_MISPLACED_INTERNAL;
-							label->value = value;
-							label->evaluated = true;
-							if (num_new_labels<MAX_LABELS_EVAL_ALL)
-								new_labels[num_new_labels++] = label->label_name;
-							evaluated_label = true;
-							char f = i->label[0], l = i->label.get_last();
-							LabelAdded(label, f=='.' || f=='!' || f=='@' || l=='$');
-							break;
-						}
-						default:
-							break;
-					}
-					i = lateEval.erase(i);
-				} else
-					++i;
-			} else
-				++i;
 		}
-		added_label.clear();
+		int mac_size = macro_src.get_len() + dSize + 32;
+		if (char *buffer = (char*)malloc(mac_size)) {
+			loadedData.push_back(buffer);
+			strovl macexp(buffer, mac_size);
+			macexp.copy(macro_src);
+			while (strref param = params.split_token_trim(',')) {
+				strref a = arg_list.split_token_trim(',');
+				macexp.replace(param, a);
+			}
+			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+			FlushLocalLabels();
+			return STATUS_OK;
+		} else
+			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
 	}
+	contextStack.push(m.source_name, m.source_file, macro_src);
+	FlushLocalLabels();
 	return STATUS_OK;
 }
 
-// Get a labelc record if it exists
-Label *Asm::GetLabel(strref label)
-{
-	unsigned int label_hash = label.fnv1a();
-	unsigned int index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
-	while (index < labels.count() && label_hash == labels.getKey(index)) {
-		if (label.same_str(labels.getValue(index).label_name))
-			return labels.getValues() + index;
-		index++;
-	}
-	return nullptr;
-}
 
-// If exporting labels, append this label to the list
-void Asm::LabelAdded(Label *pLabel, bool local)
-{
-	if (pLabel && pLabel->evaluated && symbol_export) {
-		int space = 1 + str_label.get_len() + 1 + pLabel->label_name.get_len() + 1 + 9 + 2;
-		if ((symbols.get_len()+space) > symbols.cap()) {
-			strl_t new_size = ((symbols.get_len()+space)+8*1024);
-			if (char *new_charstr = (char*)malloc(new_size)) {
-				if (symbols.charstr()) {
-					memcpy(new_charstr, symbols.charstr(), symbols.get_len());
-					free(symbols.charstr());
-				}
-				symbols.set_overlay(new_charstr, new_size, symbols.get_len());
-			}
-		}
-		if (local && !last_label_local)
-			symbols.append("{\n");
-		else if (!local && last_label_local)
-			symbols.append("}\n");
-		symbols.append(local ? " ." : ".");
-		symbols.append(pLabel->constant ? str_const : str_label);
-		symbols.append(' ');
-		symbols.append(pLabel->label_name);
-		symbols.sprintf_append("=$%04x\n", pLabel->value);
-		last_label_local = local;
-	}
-}
+
+//
+//
+// EXPRESSIONS AND LATE EVALUATION
+//
+//
+
+
 
 // These are expression tokens in order of precedence (last is highest precedence)
 enum EvalOperator {
@@ -848,8 +777,7 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 	bool loByte = false;
 	values[0] = 0;
 
-	if (expression[0]=='>') { hiByte = true; ++expression; }
-	else if (expression[0]=='<') { loByte = true; ++expression; }
+	if (expression[0]=='>') { hiByte = true; ++expression; } else if (expression[0]=='<') { loByte = true; ++expression; }
 
 	EvalOperator prev_op = EVOP_NONE;
 	while (expression) {
@@ -869,9 +797,9 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 				break;
 			case '/': ++expression; op = EVOP_DIV; break;
 			case '>': if (expression.get_len()>=2 && expression[1]=='>') {
-					expression += 2; op = EVOP_SHR;	} break;
+				expression += 2; op = EVOP_SHR; } break;
 			case '<': if (expression.get_len()>=2 && expression[1]=='<') {
-					expression += 2; op = EVOP_SHL; } break;
+				expression += 2; op = EVOP_SHL; } break;
 			case '%': // % means both binary and scope closure, disambiguate!
 				if (expression[1]=='0' || expression[1]=='1') {
 					++expression; value = expression.abinarytoui_skip(); op = EVOP_VAL; break; }
@@ -932,7 +860,7 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 			return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
 		else if (numOps==MAX_EVAL_OPER || sp==MAX_EVAL_OPER)
 			return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
-		
+
 		prev_op = op;
 	}
 	while (sp) {
@@ -981,8 +909,166 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 	else if (loByte)
 		val &= 0xff;
 	result = val;
-	
+
 	return STATUS_OK;
+}
+
+
+// if an expression could not be evaluated, add it along with
+// the action to perform if it can be evaluated later.
+void Asm::AddLateEval(int pc, int scope_pc, unsigned char *target, strref expression, strref source_file, LateEval::Type type)
+{
+	LateEval le;
+	le.address = pc;
+	le.scope = scope_pc;
+	le.target = target;
+	le.label.clear();
+	le.expression = expression;
+	le.source_file = source_file;
+	le.type = type;
+	
+	lateEval.push_back(le);
+}
+
+void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEval::Type type)
+{
+	LateEval le;
+	le.address = pc;
+	le.scope = scope_pc;
+	le.target = 0;
+	le.label = label;
+	le.expression = expression;
+	le.source_file.clear();
+	le.type = type;
+	
+	lateEval.push_back(le);
+}
+
+// When a label is defined or a scope ends check if there are
+// any related late label evaluators that can now be evaluated.
+StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
+{
+	std::vector<LateEval>::iterator i = lateEval.begin();
+	bool evaluated_label = true;
+	strref new_labels[MAX_LABELS_EVAL_ALL];
+	int num_new_labels = 0;
+	if (added_label)
+		new_labels[num_new_labels++] = added_label;
+	
+	while (evaluated_label) {
+		evaluated_label = false;
+		while (i != lateEval.end()) {
+			int value = 0;
+			// check if this expression is related to the late change (new label or end of scope)
+			bool check = num_new_labels==MAX_LABELS_EVAL_ALL;
+			for (int l=0; l<num_new_labels && !check; l++)
+				check = i->expression.find(new_labels[l]) >= 0;
+			if (!check && scope_end>0) {
+				int gt_pos = 0;
+				while (gt_pos>=0 && !check) {
+					gt_pos = i->expression.find_at('%', gt_pos);
+					if (gt_pos>=0) {
+						if (i->expression[gt_pos+1]=='%')
+							gt_pos++;
+						else
+							check = true;
+						gt_pos++;
+					}
+				}
+			}
+			if (check) {
+				int ret = EvalExpression(i->expression, i->address, i->scope, scope_end, value);
+				if (ret == STATUS_OK) {
+					switch (i->type) {
+						case LateEval::LET_BRANCH:
+							value -= i->address;
+							if (value<-128 || value>127)
+								return ERROR_BRANCH_OUT_OF_RANGE;
+							*i->target = (unsigned char)value;
+							break;
+						case LateEval::LET_BYTE:
+							i->target[0] = value&0xff;
+							break;
+						case LateEval::LET_ABS_REF:
+							i->target[0] = value&0xff;
+							i->target[1] = (value>>8)&0xff;
+							break;
+						case LateEval::LET_LABEL: {
+							Label *label = GetLabel(i->label);
+							if (!label)
+								return ERROR_LABEL_MISPLACED_INTERNAL;
+							label->value = value;
+							label->evaluated = true;
+							if (num_new_labels<MAX_LABELS_EVAL_ALL)
+								new_labels[num_new_labels++] = label->label_name;
+							evaluated_label = true;
+							char f = i->label[0], l = i->label.get_last();
+							LabelAdded(label, f=='.' || f=='!' || f=='@' || l=='$');
+							break;
+						}
+						default:
+							break;
+					}
+					i = lateEval.erase(i);
+				} else
+					++i;
+			} else
+				++i;
+		}
+		added_label.clear();
+	}
+	return STATUS_OK;
+}
+
+
+
+//
+//
+// LABELS
+//
+//
+
+
+
+// Get a labelc record if it exists
+Label *Asm::GetLabel(strref label)
+{
+	unsigned int label_hash = label.fnv1a();
+	unsigned int index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
+	while (index < labels.count() && label_hash == labels.getKey(index)) {
+		if (label.same_str(labels.getValue(index).label_name))
+			return labels.getValues() + index;
+		index++;
+	}
+	return nullptr;
+}
+
+// If exporting labels, append this label to the list
+void Asm::LabelAdded(Label *pLabel, bool local)
+{
+	if (pLabel && pLabel->evaluated && symbol_export) {
+		int space = 1 + str_label.get_len() + 1 + pLabel->label_name.get_len() + 1 + 9 + 2;
+		if ((symbols.get_len()+space) > symbols.cap()) {
+			strl_t new_size = ((symbols.get_len()+space)+8*1024);
+			if (char *new_charstr = (char*)malloc(new_size)) {
+				if (symbols.charstr()) {
+					memcpy(new_charstr, symbols.charstr(), symbols.get_len());
+					free(symbols.charstr());
+				}
+				symbols.set_overlay(new_charstr, new_size, symbols.get_len());
+			}
+		}
+		if (local && !last_label_local)
+			symbols.append("{\n");
+		else if (!local && last_label_local)
+			symbols.append("}\n");
+		symbols.append(local ? " ." : ".");
+		symbols.append(pLabel->constant ? str_const : str_label);
+		symbols.append(' ');
+		symbols.append(pLabel->label_name);
+		symbols.sprintf_append("=$%04x\n", pLabel->value);
+		last_label_local = local;
+	}
 }
 
 // Add a label entry
@@ -1141,7 +1227,6 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	return error;
 }
 
-
 // Request a label from a pool
 StatusCode LabelPool::Reserve(int numBytes, unsigned int &ret_addr)
 {
@@ -1207,6 +1292,119 @@ StatusCode LabelPool::Release(unsigned int addr) {
 	}
 	return STATUS_OK;
 }
+
+
+
+//
+//
+// CONDITIONAL ASSEMBLY
+//
+//
+
+
+
+// Encountered #if or #ifdef, return true if assembly is enabled
+bool Asm::NewConditional() {
+	if (conditional_nesting[conditional_depth]) {
+		conditional_nesting[conditional_depth]++;
+		return false;
+	}
+	return true;
+}
+
+// Encountered #endif, close out the current conditional
+void Asm::CloseConditional() {
+	if (conditional_depth)
+		conditional_depth--;
+	else
+		conditional_consumed[conditional_depth] = false;
+}
+
+// Check if this conditional will nest the assembly (a conditional is already consumed)
+void Asm::CheckConditionalDepth() {
+	if (conditional_consumed[conditional_depth]) {
+		conditional_depth++;
+		conditional_consumed[conditional_depth] = false;
+		conditional_nesting[conditional_depth] = 0;
+	}
+}
+
+// This conditional block is going to be assembled, mark it as consumed
+void Asm::ConsumeConditional()
+{
+	conditional_consumed[conditional_depth] = true;
+}
+
+// This conditional block is not going to be assembled so mark that it is nesting
+void Asm::SetConditional()
+{
+	conditional_nesting[conditional_depth] = 1;
+}
+
+// Returns true if assembly is currently enabled
+bool Asm::ConditionalAsm() {
+	return conditional_nesting[conditional_depth]==0;
+}
+
+// Returns true if this conditional has a block that has already been assembled
+bool Asm::ConditionalConsumed() {
+	return conditional_consumed[conditional_depth];
+}
+
+// Returns true if this conditional can be consumed
+bool Asm::ConditionalAvail() {
+	return conditional_nesting[conditional_depth]==1 &&
+		!conditional_consumed[conditional_depth];
+}
+
+// This conditional block is enabled and the prior wasn't
+void Asm::EnableConditional(bool enable) {
+	if (enable) {
+		conditional_nesting[conditional_depth] = 0;
+		conditional_consumed[conditional_depth] = true;
+	}
+}
+
+// Conditional else that does not enable block
+StatusCode Asm::ConditionalElse() {
+	if (conditional_consumed[conditional_depth]) {
+		conditional_nesting[conditional_depth]++;
+		return STATUS_OK;
+	}
+	return ERROR_ELSE_WITHOUT_IF;
+}
+
+// Conditional statement evaluation (true/false)
+StatusCode Asm::EvalStatement(strref line, bool &result)
+{
+	int equ = line.find('=');
+	if (equ >=0) {
+		// (EXP) == (EXP)
+		strref left = line.get_clipped(equ);
+		bool equal = left.get_last()!='!';
+		left.trim_whitespace();
+		strref right = line + equ + 1;
+		if (right.get_first()=='=')
+			++right;
+		right.trim_whitespace();
+		int value_left, value_right;
+		if (STATUS_OK != EvalExpression(left, address, scope_address[scope_depth], -1, value_left))
+			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
+		if (STATUS_OK != EvalExpression(right, address, scope_address[scope_depth], -1, value_right))
+			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
+		result = (value_left==value_right && equal) || (value_left!=value_right && !equal);
+	} else {
+		bool invert = line.get_first()=='!';
+		if (invert)
+			++line;
+		int value;
+		if (STATUS_OK != EvalExpression(line, address, scope_address[scope_depth], -1, value))
+			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
+		result = (value!=0 && !invert) || (value==0 && invert);
+	}
+	return STATUS_OK;
+}
+
 
 
 
@@ -1334,10 +1532,10 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
 				addrMode = AM_IMMEDIATE;
 				expression = line;
 				break;
-			case '.': {	// .z => force zp (needs more info)
+			case '.': {	// .z => force zp (needs further parsing for address mode)
 				++line;
 				char c = line.get_first();
-				if (c=='z' || c=='Z') {
+				if ((c=='z' || c=='Z') && strref::is_sep_ws(line[1])) {
 					force_zp = true;
 					++line;
 					need_more = true;
@@ -1372,47 +1570,14 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
 	return addrMode;
 }
 
-// Conditional statement eval (true/false)
-StatusCode Asm::EvalStatement(strref line, bool &result)
-{
-	int equ = line.find('=');
-	if (equ >=0) {
-		// (EXP) == (EXP)
-		strref left = line.get_clipped(equ);
-		bool equal = left.get_last()!='!';
-		left.trim_whitespace();
-		strref right = line + equ + 1;
-		if (right.get_first()=='=')
-			++right;
-		right.trim_whitespace();
-		int value_left, value_right;
-		if (STATUS_OK != EvalExpression(left, address, scope_address[scope_depth], -1, value_left))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		if (STATUS_OK != EvalExpression(right, address, scope_address[scope_depth], -1, value_right))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		result = (value_left==value_right && equal) || (value_left!=value_right && !equal);
-	} else {
-		bool invert = line.get_first()=='!';
-		if (invert)
-			++line;
-		int value;
-		if (STATUS_OK != EvalExpression(line, address, scope_address[scope_depth], -1, value))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		result = (value!=0 && !invert) || (value==0 && invert);
-	}
-	return STATUS_OK;
-}
-
 // Action based on assembler directive
 StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref source_file)
 {
 	StatusCode error = STATUS_OK;
-
-	if (conditional_nesting[conditional_depth]) {
+	if (!ConditionalAsm()) {	// If conditionally blocked from assembling only check conditional directives
 		if (dir!=AD_IF && dir!=AD_IFDEF && dir!=AD_ELSE && dir!=AD_ELIF && dir!=AD_ELSE && dir!=AD_ENDIF)
 			return STATUS_OK;
 	}
-	
 	switch (dir) {
 		case AD_ORG: {		// org / pc: current address of code
 			int addr;
@@ -1491,7 +1656,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				if (error>STATUS_NOT_READY)
 					break;
 				else if (error==STATUS_NOT_READY)
-					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LET_BYTE);
+					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
 				CheckOutputCapacity(1);
 				*curr++ = value;
 				address++;
@@ -1504,7 +1669,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				if (error>STATUS_NOT_READY)
 					break;
 				else if (error==STATUS_NOT_READY)
-					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LET_ABS_REF);
+					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_ABS_REF);
 				CheckOutputCapacity(2);
 				*curr++ = (char)value;
 				*curr++ = (char)(value>>8);
@@ -1600,87 +1765,63 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			AddLabelPool(label, line);
 			break;
 		}
-		case AD_IF: {
-			if (conditional_nesting[conditional_depth])
-				conditional_nesting[conditional_depth]++;
-			else {
-				// #if within #if?
-				if (conditional_consumed[conditional_depth]) {
-					conditional_depth++;
-					conditional_consumed[conditional_depth] = false;
-					conditional_nesting[conditional_depth] = 0;
-				}
+		case AD_IF:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
 				bool conditional_result;
 				error = EvalStatement(line, conditional_result);
 				if (conditional_result)
-					conditional_consumed[conditional_depth] = true;
+					ConsumeConditional();
 				else
-					conditional_nesting[conditional_depth] = 1;
+					SetConditional();
 			}
 			break;
-		}
 		case AD_IFDEF:
-			if (conditional_nesting[conditional_depth])
-				conditional_nesting[conditional_depth]++;
-			else {
-				// #if within #if?
-				if (conditional_consumed[conditional_depth]) {
-					conditional_depth++;
-					conditional_consumed[conditional_depth] = false;
-					conditional_nesting[conditional_depth] = 0;
-				}
-				if (GetLabel(line.get_trimmed_ws()) == nullptr)
-					conditional_nesting[conditional_depth] = 1;
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				bool conditional_result;
+				error = EvalStatement(line, conditional_result);
+				if (GetLabel(line.get_trimmed_ws()) != nullptr)
+					ConsumeConditional();
 				else
-					conditional_consumed[conditional_depth] = true;
+					SetConditional();
 			}
 			break;
 		case AD_ELSE:
-			if (conditional_nesting[conditional_depth]==0) {
-				if (conditional_consumed[conditional_depth])
-					conditional_nesting[conditional_depth]++;
-				else
-					error = ERROR_ELSE_WITHOUT_IF;
-			} else if (conditional_nesting[conditional_depth]==1 &&
-					 !conditional_consumed[conditional_depth]) {
-				conditional_nesting[conditional_depth] = 0;
-				conditional_consumed[conditional_depth] = true;
-			}
+			if (ConditionalAsm()) {
+				if (ConditionalConsumed())
+					error = ConditionalElse();
+			} else if (ConditionalAvail())
+				EnableConditional(true);
 			break;
 		case AD_ELIF:
-			if (conditional_nesting[conditional_depth]==0) {
-				if (conditional_consumed[conditional_depth])
-					conditional_nesting[conditional_depth]++;
-				else
-					error = ERROR_ELSE_WITHOUT_IF;
-			}
-			if (conditional_nesting[conditional_depth]==1 &&
-				!conditional_consumed[conditional_depth]) {
+			if (ConditionalAsm()) {
+				if (ConditionalConsumed())
+					error = ConditionalElse();
+			} else if (ConditionalAvail()) {
 				bool conditional_result;
 				error = EvalStatement(line, conditional_result);
-				if (conditional_result) {
-					conditional_nesting[conditional_depth] = 0;
-					conditional_consumed[conditional_depth] = true;
-				}
+				EnableConditional(conditional_result);
 			}
 			break;
 		case AD_ENDIF:
-			if (conditional_nesting[conditional_depth]) {
+			if (ConditionalAsm()) {
+				if (ConditionalConsumed())
+					CloseConditional();
+				else
+					error = ERROR_ENDIF_WITHOUT_CONDITION;
+			} else {
 				conditional_nesting[conditional_depth]--;
-				if (!conditional_nesting[conditional_depth]) {
-					conditional_consumed[conditional_depth] = false;
-					if (conditional_depth)
-						conditional_depth--;
-				}
-			} else if (conditional_consumed[conditional_depth]) {
-				conditional_consumed[conditional_depth] = false;
-				if (conditional_depth)
-					conditional_depth--;
-			} else
-				error = ERROR_ENDIF_WITHOUT_CONDITION;
+				if (ConditionalAsm())
+					CloseConditional();
+			}
+			break;
+
 	}
 	return error;
 }
+
+
 
 // Push an opcode to the output buffer
 StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
@@ -1819,7 +1960,7 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 			case CA_BRANCH:
 				address += 2;
 				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr+1, expression, source_file, LET_BRANCH);
+					AddLateEval(address, scope_address[scope_depth], curr+1, expression, source_file, LateEval::LET_BRANCH);
 				else if (((int)value-(int)address)<-128 || ((int)value-(int)address)>127) {
 					error = ERROR_BRANCH_OUT_OF_RANGE;
 					break;
@@ -1830,14 +1971,14 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 			case CA_ONE_BYTE:
 				*curr++ = opcode;
 				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LET_BYTE);
+					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_BYTE);
 				*curr++ = (char)value;
 				address += 2;
 				break;
 			case CA_TWO_BYTES:
 				*curr++ = opcode;
 				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LET_ABS_REF);
+					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_ABS_REF);
 				*curr++ = (char)value;
 				*curr++ = (char)(value>>8);
 				address += 3;
@@ -1849,46 +1990,6 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 		}
 	}
 	return error;
-}
-
-// Compile in a macro
-StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
-{
-	strref macro_src = m.macro;
-	strref params = macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref();
-	params.trim_whitespace();
-	arg_list.trim_whitespace();
-	macro_src.skip_whitespace();
-	if (params) {
-		arg_list = arg_list.scoped_block_skip();
-		strref pchk = params;
-		strref arg = arg_list;
-		int dSize = 0;
-		while (strref param = pchk.split_token_trim(',')) {
-			strref a = arg.split_token_trim(',');
-			if (param.get_len() < a.get_len()) {
-				int count = macro_src.substr_case_count(param);
-				dSize += count * ((int)a.get_len() - (int)param.get_len());
-			}
-		}
-		int mac_size = macro_src.get_len() + dSize + 32;
-		if (char *buffer = (char*)malloc(mac_size)) {
-			loadedData.push_back(buffer);
-			strovl macexp(buffer, mac_size);
-			macexp.copy(macro_src);
-			while (strref param = params.split_token_trim(',')) {
-				strref a = arg_list.split_token_trim(',');
-				macexp.replace(param, a);
-			}
-			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
-			FlushLocalLabels();
-			return STATUS_OK;
-		} else
-			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
-	}
-	contextStack.push(m.source_name, m.source_file, macro_src);
-	FlushLocalLabels();
-	return STATUS_OK;
 }
 
 // include symbols listed from a .sym file or all if no listing
@@ -1949,7 +2050,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label.get_last()=='$';
 	if (!pLabel->evaluated)
-		AddLateEval(label, address, scope_address[scope_depth], line, LET_LABEL);
+		AddLateEval(label, address, scope_address[scope_depth], line, LateEval::LET_LABEL);
 	else {
 		if (local)
 			MarkLabelLocal(label);
@@ -2007,7 +2108,7 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 				++operation;
 			}
 			if (!operation) {
-				if (!conditional_nesting[conditional_depth]) {
+				if (ConditionalAsm()) {
 					// scope open / close
 					switch (line[0]) {
 						case '{':
@@ -2039,14 +2140,14 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 				if (op_idx >= 0 && line[0]!=':') {
 					if (pInstr[op_idx].type==OT_DIRECTIVE) {
 						error = ApplyDirective((AssemblerDirective)pInstr[op_idx].index, line, contextStack.curr().source_file);
-					} else if (!conditional_nesting[conditional_depth] && pInstr[op_idx].type==OT_MNEMONIC) {
+					} else if (ConditionalAsm() && pInstr[op_idx].type==OT_MNEMONIC) {
 						OP_ID &id = pInstr[op_idx];
 						int group = id.group;
 						int index = id.index;
 						error = AddOpcode(line, group, index, contextStack.curr().source_file);
 					}
 					line.clear();
-				} else if (conditional_nesting[conditional_depth]) {
+				} else if (!ConditionalAsm()) {
 					line.clear(); // do nothing if conditional nesting so clear the current line
 				} else if (line.get_first()=='=') {
 					++line;

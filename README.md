@@ -2,8 +2,6 @@
 
 6502 Macro Assembler in a single c++ file using the struse single file text parsing library. Supports most syntaxes.
 
-Asm6502 is a struse example that implements a simple 6502 macro assembler.
-
 Every assembler seems to add or change its own quirks to the 6502 syntax. This implementation aims to support all of them at once as long as there is no contradiction.
 
 To keep up with this trend Asm6502 is adding the following features to the mix:
@@ -15,7 +13,8 @@ To keep up with this trend Asm6502 is adding the following features to the mix:
 5. [Directives](#directives) support both with and without leading period.
 6. Labels don't need to end with colon, but they can.
 7. No indentation required for instructions, meaning that labels can't be mnemonics, macros or directives.
-8. As far as achievable, support the syntax of other 6502 assemblers.
+8. Conditional assembly with #if/#ifdef/#else etc.
+9. As far as achievable, support the syntax of other 6502 assemblers.
 
 In summary, if you are familiar with any 6502 assembler syntax you should feel at home with Asm6502. If you're familiar with C programming expressions you should be familiar with '{', '}' scoping and complex expressions.
 
@@ -104,6 +103,7 @@ Directives are assembler commands that control the code generation but that does
 * [**LABEL**](#label) Decorative directive to assign an expression to a label
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
 * [**POOL**](#pool) Add a label pool for temporary address labels
+* [**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**](#conditional) Conditional assembly
 
 <a name="org">**ORG**
 
@@ -259,6 +259,22 @@ Function_Name: {
 	rts
 ```
 
+<a name="conditional">**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**
+
+Conditional code parsing is very similar to C directive conditional compilation.
+
+Example:
+
+```
+DEBUG = 1
+
+#if DEBUG
+    lda #2
+#else
+    lda #0
+#endif
+```
+
 ## <a name="expressions">Expression syntax
 
 Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overrided. In addition there are some special characters supported:
@@ -346,10 +362,10 @@ Currently the assembler is in the first public revision and while features are t
 **TODO**
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
-* ifdef / if / elif / else / endif conditional code generation directives
 * rept / irp macro helpers (repeat, indefinite repeat)
 
 **FIXED**
+* ifdef / if / elif / else / endif conditional code generation directives
 * Label Pools added
 * Bracket scoping closure ('}') cleans up local variables within that scope (better handling of local variables within macros).
 * Context stack cleanup
@@ -358,6 +374,7 @@ Currently the assembler is in the first public revision and while features are t
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
-* 2015-10-01 Added Label Pools
+* 2015-10-02 General cleanup, wrapping conditional assembly in functions
+* 2015-10-01 Added Label Pools and conditional assembly
 * 2015-09-29 Moved Asm6502 out of Struse Samples.
 * 2015-09-28 First commit
