@@ -84,6 +84,7 @@ enum StatusCode {
 	ERROR_STRUCT_ALREADY_DEFINED,
 	ERROR_REFERENCED_STRUCT_NOT_FOUND,
 	ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT,
+	ERROR_REPT_COUNT_EXPRESSION,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 	
@@ -98,6 +99,7 @@ enum StatusCode {
 	ERROR_ELSE_WITHOUT_IF,
 	ERROR_STRUCT_CANT_BE_ASSEMBLED,
 	ERROR_UNTERMINATED_CONDITION,
+	ERROR_REPT_MISSING_SCOPE,
 
 	STATUSCODE_COUNT
 };
@@ -129,9 +131,10 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Struct already defined",
 	"Referenced struct not found",
 	"Declare constant type not recognized (dc.?)",
-	
+	"rept count expression could not be evaluated",
+
 	"Errors after this point will stop execution",
-	
+
 	"Target address must evaluate immediately for this operation",
 	"Scoping is too deep",
 	"Unbalanced scope closure",
@@ -143,6 +146,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"#else or #elif outside conditional block",
 	"Struct can not be assembled as is",
 	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",
+	"rept is missing a scope ('{ ... }')",
 };
 
 // Assembler directives
@@ -168,6 +172,7 @@ enum AssemblerDirective {
 	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
 	AD_STRUCT,		// STRUCT: Declare a set of labels offset from a base address
+	AD_REPT,		// REPT: Repeat the assembly of the bracketed code a number of times
 };
 
 // Operators are either instructions or directives
@@ -465,15 +470,6 @@ typedef struct {
 	strref source_file;		// entire source file (req. for line #)
 } Macro;
 
-// Source context is current file (include file, etc.) or current macro.
-typedef struct {
-	strref source_name;		// source file name (error output)
-	strref source_file;		// entire source file (req. for line #)
-	strref code_segment;	// the segment of the file for this context
-	strref read_source;		// current position/length in source file
-	strref next_source;		// next position/length in source file
-} SourceContext;
-
 // All local labels are removed when a global label is defined but some when a scope ends
 typedef struct {
 	strref label;
@@ -508,6 +504,18 @@ typedef struct {
 	unsigned short size;
 } LabelStruct;
 
+// Source context is current file (include file, etc.) or current macro.
+typedef struct {
+	strref source_name;		// source file name (error output)
+	strref source_file;		// entire source file (req. for line #)
+	strref code_segment;	// the segment of the file for this context
+	strref read_source;		// current position/length in source file
+	strref next_source;		// next position/length in source file
+	int repeat;				// how many times to repeat this code segment
+	void restart() { read_source = code_segment; }
+	bool complete() { repeat--; return repeat <= 0; }
+} SourceContext;
+
 // Context stack is a stack of currently processing text
 class ContextStack {
 private:
@@ -516,7 +524,7 @@ private:
 public:
 	ContextStack() : currContext(nullptr) { stack.reserve(32); }
 	SourceContext& curr() { return *currContext; }
-	void push(strref src_name, strref src_file, strref code_seg) {
+	void push(strref src_name, strref src_file, strref code_seg, int rept=1) {
 		if (currContext)
 			currContext->read_source = currContext->next_source;
 		SourceContext context;
@@ -525,6 +533,7 @@ public:
 		context.code_segment = code_seg;
 		context.read_source = code_seg;
 		context.next_source = code_seg;
+		context.repeat = rept;
 		stack.push_back(context);
 		currContext = &stack[stack.size()-1];
 	}
@@ -1724,6 +1733,7 @@ DirectiveName aDirectiveNames[] {
 	{ "#ELIF", AD_ELIF },
 	{ "#ENDIF", AD_ENDIF },
 	{ "STRUCT", AD_STRUCT },
+	{ "REPT", AD_REPT },
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -2021,12 +2031,35 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
 			break;
 		}
-			
+		case AD_REPT: {
+			SourceContext &ctx = contextStack.curr();
+			strref read_source = ctx.read_source;
+			if (read_source.is_substr(line.get())) {
+				read_source.skip(strl_t(line.get() - read_source.get()));
+				int block = read_source.find('{');
+				if (block<0) {
+					error = ERROR_REPT_MISSING_SCOPE;
+					break;
+				}
+				strref expression = read_source.get_substr(0, block);
+				read_source += block;
+				read_source.skip_whitespace();
+				expression.trim_whitespace();
+				int count;
+				if (STATUS_OK != EvalExpression(expression, address,
+					scope_address[scope_depth], -1, count)) {
+					error = ERROR_REPT_COUNT_EXPRESSION;
+					break;
+				}
+				strref recur = read_source.scoped_block_skip();
+				ctx.next_source = read_source;
+				contextStack.push(ctx.source_name, ctx.source_file, recur, count);
+			}
+			break;
+		}
 	}
 	return error;
 }
-
-
 
 int sortHashLookup(const void *A, const void *B) {
 	const OP_ID *_A = (const OP_ID*)A;
@@ -2472,7 +2505,10 @@ void Asm::Assemble(strref source, strref filename)
 	scope_address[scope_depth] = address;
 	while (contextStack.has_work()) {
 		error = BuildSegment(pInstr, numInstructions);
-		contextStack.pop();
+		if (contextStack.curr().complete())
+			contextStack.pop();
+		else
+			contextStack.curr().restart();
 	}
 	if (error == STATUS_OK) {
 		error = CheckLateEval();

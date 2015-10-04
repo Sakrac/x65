@@ -103,8 +103,9 @@ Directives are assembler commands that control the code generation but that does
 * [**LABEL**](#label) Decorative directive to assign an expression to a label
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
 * [**POOL**](#pool) Add a label pool for temporary address labels
-* [**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**](#conditional) Conditional assembly
+* [**#IF / #ELSE / #IFDEF / #ELIF / #ENDIF**](#conditional) Conditional assembly
 * [**STRUCT**](#struct) Hierarchical data structures (dot separated sub structures)
+* [**REPT**](#rept) Repeat a scoped block of code a number of times.
 
 <a name="org">**ORG**
 
@@ -260,7 +261,7 @@ Function_Name: {
 	rts
 ```
 
-<a name="conditional">**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**
+<a name="conditional">**#IF / #ELSE / #IFDEF / #ELIF / #ENDIF**
 
 Conditional code parsing is very similar to C directive conditional compilation.
 
@@ -317,6 +318,40 @@ EVAL(28): "Mixed.things.thing_two.pointer" = $6
 EVAL(29): "Mixed.things.thing_one.count" = $2
 ```
 
+<a name="rept">**REPT**
+
+Repeat a scoped block of code a number of times. The syntax is rept \<count\> { \<code\> }.
+
+Example:
+
+```
+columns = 40
+rows = 25
+screen_col = $400
+height_buf = $1000
+rept columns {
+	screen_addr = screen_col
+	ldx height_buf
+	dest = screen_addr
+	remainder = 3
+	rept (rows+remainder)/4 {
+		stx dest
+		dest = dest + 4*40
+	}
+	rept 3 {
+		inx
+		remainder = remainder-1
+		screen_addr = screen_addr + 40
+		dest = screen_addr
+		rept (rows+remainder)/4 {
+			stx dest
+			dest = dest + 4*40
+		}
+	}
+	screen_col = screen_col+1
+	height_buf = height_buf+1
+}
+```
 
 ## <a name="expressions">Expression syntax
 
@@ -329,6 +364,13 @@ Expressions contain values, such as labels or raw numbers and operators includin
 * %: First address after scope (use like an address label in expression)
 * $: Preceeds hexadecimal value
 * %: If immediately followed by '0' or '1' this is a binary value and not scope closure address
+
+Example:
+
+```
+lda #(((>SCREEN_MATRIX)&$3c)*4)+8
+sta $d018
+```
 
 ## Macros
 
@@ -405,9 +447,10 @@ Currently the assembler is in the first public revision and while features are t
 **TODO**
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
-* rept / irp macro helpers (repeat, indefinite repeat)
+* irp (indefinite repeat)
 
 **FIXED**
+* [REPT](#rept)
 * fixed a flaw in expressions that ignored the next operator after raw hex values if no whitespace
 * expressions now handles high byte/low byte (\>, \<) as RPN tokens and not special cased.
 * structs
@@ -420,9 +463,10 @@ Currently the assembler is in the first public revision and while features are t
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
-* 2015-10-04 Added STRUCT directive, sorted functions by grouping a bit more, bug fixes
+* 2015-10-04 Added [REPT](#rept) directive
+* 2015-10-04 Added [STRUCT](#struct) directive, sorted functions by grouping a bit more, bug fixes
 * 2015-10-02 Cleanup hid an error (#else without #if), exit with nonzero if error was encountered
-* 2015-10-02 General cleanup, wrapping conditional assembly in functions
-* 2015-10-01 Added Label Pools and conditional assembly
+* 2015-10-02 General cleanup, wrapping [conditional assembly](#conditional) in functions
+* 2015-10-01 Added [Label Pools](#pool) and conditional assembly
 * 2015-09-29 Moved Asm6502 out of Struse Samples.
 * 2015-09-28 First commit
