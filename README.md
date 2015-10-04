@@ -104,6 +104,7 @@ Directives are assembler commands that control the code generation but that does
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
 * [**POOL**](#pool) Add a label pool for temporary address labels
 * [**#IF/#ELSE/#IFDEF/#ELIF/#ENDIF**](#conditional) Conditional assembly
+* [**STRUCT**](#struct) Hierarchical data structures (dot separated sub structures)
 
 <a name="org">**ORG**
 
@@ -275,13 +276,55 @@ DEBUG = 1
 #endif
 ```
 
+<a name="struct">**STRUCT**
+
+Hierarchical data structures (dot separated sub structures)
+
+Structs helps define complex data types, there are two basic types to define struct members, and as long as a struct is declared it can be used as a member type of another struct.
+
+The result of a struct is that each member is an offset from the start of the data block in memory. Each substruct is referenced by separating the struct names with dots.
+
+Example:
+
+```
+struct MyStruct {
+	byte	count
+	word	pointer
+}
+
+struct TwoThings {
+	MyStruct thing_one
+	MyStruct thing_two
+}
+
+struct Mixed {
+	word banana
+	TwoThings things
+}
+
+Eval Mixed.things
+Eval Mixed.things.thing_two
+Eval Mixed.things.thing_two.pointer
+Eval Mixed.things.thing_one.count
+```
+
+results in the output:
+
+```
+EVAL(16): "Mixed.things" = $2
+EVAL(27): "Mixed.things.thing_two" = $5
+EVAL(28): "Mixed.things.thing_two.pointer" = $6
+EVAL(29): "Mixed.things.thing_one.count" = $2
+```
+
+
 ## <a name="expressions">Expression syntax
 
 Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overrided. In addition there are some special characters supported:
 
 * \*: Current address (PC). This conflicts with the use of \* as multiply so multiply will be interpreted only after a value or right parenthesis
-* <: If less than is the first character in an expression this evaluates to the low byte (and $ff)
-* >: If greater than is the first character in an expression this evaluates to the high byte (>>8)
+* <: If less than is not follwed by another '<' in an expression this evaluates to the low byte of a value (and $ff)
+* >: If greater than is not followed by another '>' in an expression this evaluates to the high byte of a value (>>8)
 * !: Start of scope (use like an address label in expression)
 * %: First address after scope (use like an address label in expression)
 * $: Preceeds hexadecimal value
@@ -333,7 +376,7 @@ This means you can write
     }
 }
 ```	
-(where ; represents line breaks) to construct a loop without adding a label.
+to construct a loop without adding a label.
 
 ##Examples
 
@@ -357,7 +400,7 @@ FindFirstSpace
 
 ### Development Status
 
-Currently the assembler is in the first public revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state (such as the TEXT directive not bothering to convert ascii to petscii for example).
+Currently the assembler is in the first public revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
 
 **TODO**
 * Macro parameters should replace only whole words instead of any substring
@@ -365,6 +408,9 @@ Currently the assembler is in the first public revision and while features are t
 * rept / irp macro helpers (repeat, indefinite repeat)
 
 **FIXED**
+* fixed a flaw in expressions that ignored the next operator after raw hex values if no whitespace
+* expressions now handles high byte/low byte (\>, \<) as RPN tokens and not special cased.
+* structs
 * ifdef / if / elif / else / endif conditional code generation directives
 * Label Pools added
 * Bracket scoping closure ('}') cleans up local variables within that scope (better handling of local variables within macros).
@@ -374,6 +420,7 @@ Currently the assembler is in the first public revision and while features are t
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 2015-10-04 Added STRUCT directive, sorted functions by grouping a bit more, bug fixes
 * 2015-10-02 Cleanup hid an error (#else without #if), exit with nonzero if error was encountered
 * 2015-10-02 General cleanup, wrapping conditional assembly in functions
 * 2015-10-01 Added Label Pools and conditional assembly
