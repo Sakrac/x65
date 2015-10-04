@@ -94,8 +94,8 @@ Directives are assembler commands that control the code generation but that does
 * [**ALIGN**](#align) Align the address to a multiple by filling with 0s
 * [**MACRO**](#macro) Declare a macro
 * [**EVAL**](#eval) Log an expression during assembly.
-* [**BYTES**](#bytes) Insert comma separated bytes at this address (same as **BYTE**)
-* [**WORDS**](#words) Insert comma separated 16 bit values at this address (same as **WORD**)
+* [**BYTES**](#bytes) Insert comma separated bytes at this address (same as **BYTE** or **DC.B**)
+* [**WORDS**](#words) Insert comma separated 16 bit values at this address (same as **WORD** or **DC.W**)
 * [**TEXT**](#text) Insert text at this address
 * [**INCLUDE**](#include) Include another source file and assemble at this address
 * [**INCBIN**](#incbin) Include a binary file at this address
@@ -161,11 +161,11 @@ RandomBytes:
 	}
 ```
 
-byte is also recognized
+**byte** or **dc.b** are also recognized.
 
 <a name="words">**WORDS**
 
-Adds comma separated 16 bit values similar to how **BYTES** work
+Adds comma separated 16 bit values similar to how **BYTES** work. **word** or **dc.w** are also recognized.
 
 <a name="text">**TEXT**
 
