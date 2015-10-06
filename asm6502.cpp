@@ -173,6 +173,7 @@ enum AssemblerDirective {
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
 	AD_STRUCT,		// STRUCT: Declare a set of labels offset from a base address
 	AD_REPT,		// REPT: Repeat the assembly of the bracketed code a number of times
+	AD_INCDIR,		// INCDIR: Add a folder to search for include files
 };
 
 // Operators are either instructions or directives
@@ -287,44 +288,6 @@ static const strref str_label("label");
 static const strref str_const("const");
 static const strref struct_byte("byte");
 static const strref struct_word("word");
-
-// Read in text data (main source, include, etc.)
-char* LoadText(strref filename, size_t &size) {
-	strown<512> file(filename);
-	if (FILE *f = fopen(file.c_str(), "r")) {
-		fseek(f, 0, SEEK_END);
-		size_t _size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (char *buf = (char*)calloc(_size, 1)) {
-			fread(buf, 1, _size, f);
-			fclose(f);
-			size = _size;
-			return buf;
-		}
-		fclose(f);
-	}
-	size = 0;
-	return nullptr;
-}
-
-// Read in binary data (incbin)
-char* LoadBinary(strref filename, size_t &size) {
-	strown<512> file(filename);
-	if (FILE *f = fopen(file.c_str(), "rb")) {
-		fseek(f, 0, SEEK_END);
-		size_t _size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (char *buf = (char*)malloc(_size)) {
-			fread(buf, _size, 1, f);
-			fclose(f);
-			size = _size;
-			return buf;
-		}
-		fclose(f);
-	}
-	size = 0;
-	return nullptr;
-}
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
@@ -553,6 +516,7 @@ public:
 	std::vector<LocalLabelRecord> localLabels;
 	std::vector<char*> loadedData;	// free when assembler is completed
 	std::vector<MemberOffset> structMembers; // labelStructs refer to sets of structMembers
+	std::vector<strref> includePaths;
 	strovl symbols; // for building a symbol output file
 	
 	// context for macros / include files
@@ -644,6 +608,11 @@ public:
 
 	// Conditional statement evaluation (A==B? A?)
 	StatusCode EvalStatement(strref line, bool &result);
+	
+	// Add include folder
+	void AddIncludeFolder(strref path);
+	char* LoadText(strref filename, size_t &size);
+	char* LoadBinary(strref filename, size_t &size);
 
 	// constructor
 	Asm() : output(nullptr) {
@@ -682,6 +651,65 @@ void Asm::Cleanup() {
 	last_label_local = false;
 	errorEncountered = false;
 }
+
+// Read in text data (main source, include, etc.)
+char* Asm::LoadText(strref filename, size_t &size) {
+	strown<512> file(filename);
+	std::vector<strref>::iterator i = includePaths.begin();
+	for(;;) {
+		if (FILE *f = fopen(file.c_str(), "r")) {
+			fseek(f, 0, SEEK_END);
+			size_t _size = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (char *buf = (char*)calloc(_size, 1)) {
+				fread(buf, 1, _size, f);
+				fclose(f);
+				size = _size;
+				return buf;
+			}
+			fclose(f);
+		}
+		if (i==includePaths.end())
+			break;
+		file.copy(*i);
+		if (file.get_last()!='/' && file.get_last()!='\\')
+			file.append('/');
+		file.append(filename);
+		++i;
+	}
+	size = 0;
+	return nullptr;
+}
+
+// Read in binary data (incbin)
+char* Asm::LoadBinary(strref filename, size_t &size) {
+	strown<512> file(filename);
+	std::vector<strref>::iterator i = includePaths.begin();
+	for(;;) {
+		if (FILE *f = fopen(file.c_str(), "rb")) {
+			fseek(f, 0, SEEK_END);
+			size_t _size = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (char *buf = (char*)malloc(_size)) {
+				fread(buf, _size, 1, f);
+				fclose(f);
+				size = _size;
+				return buf;
+			}
+			fclose(f);
+		}
+		if (i==includePaths.end())
+			break;
+		file.copy(*i);
+		if (file.get_last()!='/' && file.get_last()!='\\')
+			file.append('/');
+		file.append(filename);
+		++i;
+	}
+	size = 0;
+	return nullptr;
+}
+
 
 // Make sure there is room to assemble in
 void Asm::CheckOutputCapacity(unsigned int addSize) {
@@ -1682,8 +1710,19 @@ StatusCode Asm::EvalStatement(strref line, bool &result)
 	return STATUS_OK;
 }
 
-
-
+// Add a folder for including files
+void Asm::AddIncludeFolder(strref path)
+{
+	if (!path)
+		return;
+	for (std::vector<strref>::const_iterator i=includePaths.begin(); i!=includePaths.end(); ++i) {
+		if (path.same_str(*i))
+			return;
+	}
+	if (includePaths.size()==includePaths.capacity())
+		includePaths.reserve(includePaths.size() + 16);
+	includePaths.push_back(path);
+}
 
 // unique key binary search
 int LookupOpCodeIndex(unsigned int hash, OP_ID *lookup, int count)
@@ -1734,6 +1773,7 @@ DirectiveName aDirectiveNames[] {
 	{ "#ENDIF", AD_ENDIF },
 	{ "STRUCT", AD_STRUCT },
 	{ "REPT", AD_REPT },
+	{ "INCDIR", AD_INCDIR },
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -2057,6 +2097,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			break;
 		}
+		case AD_INCDIR:
+			AddIncludeFolder(line.between('"', '"'));
+			break;
 	}
 	return error;
 }
@@ -2539,21 +2582,36 @@ void Asm::Assemble(strref source, strref filename)
 	}
 }
 
+
 int main(int argc, char **argv)
 {
 	int return_value = 0;
 	bool c64 = true;
+	Asm assembler;
 
-	const char* source_filename=nullptr, *binary_out_name=nullptr;
-	const char* sym_file=nullptr;
+	const char *source_filename=nullptr, *binary_out_name=nullptr;
+	const char *sym_file=nullptr, *vs_file=nullptr;
 	for (int a=1; a<argc; a++) {
 		strref arg(argv[a]);
-		if (arg.same_str("-c64"))
-			c64 = true;
-		else if (arg.same_str("-bin"))
-			c64 = false;
-		else if (arg.same_str("-sym") && (a+1)<argc)
-			sym_file = argv[++a];
+		if (arg.get_first()=='-') {
+			++arg;
+			if (arg.get_first()=='i')
+				assembler.AddIncludeFolder(arg+1);
+			else if (arg.get_first()=='D' || arg.get_first()=='d') {
+				++arg;
+				if (arg.find('=')>0)
+					assembler.AssignLabel(arg.before('='), arg.after('='));
+				else
+					assembler.AssignLabel(arg, "1");
+			} else if (arg.same_str("c64"))
+				c64 = true;
+			else if (arg.same_str("bin"))
+				c64 = false;
+			else if (arg.same_str("sym") && (a + 1) < argc)
+				sym_file = argv[++a];
+			else if (arg.same_str("vice") && (a + 1) < argc)
+				vs_file = argv[++a];
+		}
 		else if (!source_filename)
 			source_filename = arg.get();
 		else if (!binary_out_name)
@@ -2561,37 +2619,57 @@ int main(int argc, char **argv)
 	}
 
 	if (!source_filename) {
-		puts("Usage:\nAsm6502 <-c64 / -bin> filename.s code.prg <-sym code.sym> \n"
-			 "* -c64: Include load address\n * -bin: Raw binary\n * -sym: vice/kick asm symbol file\n");
+		puts("Usage:\nAsm6502 [options] filename.s code.prg\n"
+			 " * -i<path>: Add include path\n * -D<label>[=<value>]: Define a label with an optional value (otherwise 1)\n"
+			 " * -c64: Include load address\n * -bin: Raw binary\n * -sym <file.sym>: vice/kick asm symbol file\n"
+			 " * -vice <file.vs>: export a vice symbol file\nhttps://github.com/sakrac/Asm6502\n");
 		return 0;
 	}
 	
 	// Load source
 	if (source_filename) {
 		size_t size = 0;
-		if (char *buffer = LoadText(source_filename, size)) {
-			Asm assembler;
+		if (char *buffer = assembler.LoadText(source_filename, size)) {
 			assembler.symbol_export = sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]));
 			
-			if (binary_out_name && assembler.curr > assembler.output) {
-				if (FILE *f = fopen(binary_out_name, "wb")) {
-					if (c64) {
-						char addr[2] = { (char)assembler.load_address, (char)(assembler.load_address>>8) };
-						fwrite(addr, 2, 1, f);
-					}
-					fwrite(assembler.output, assembler.curr-assembler.output, 1, f);
-					fclose(f);
-				}
-			}
-			if (sym_file && assembler.symbols.get_len()) {
-				if (FILE *f = fopen(sym_file, "w")) {
-					fwrite(assembler.symbols.get(), assembler.symbols.get_len(), 1, f);
-					fclose(f);
-				}
-			}
 			if (assembler.errorEncountered)
 				return_value = 1;
+			else {
+				if (binary_out_name && assembler.curr > assembler.output) {
+					if (FILE *f = fopen(binary_out_name, "wb")) {
+						if (c64) {
+							char addr[2] = { (char)assembler.load_address, (char)(assembler.load_address >> 8) };
+							fwrite(addr, 2, 1, f);
+						}
+						fwrite(assembler.output, assembler.curr - assembler.output, 1, f);
+						fclose(f);
+					}
+				}
+				if (sym_file && assembler.symbols.get_len()) {
+					if (FILE *f = fopen(sym_file, "w")) {
+						fwrite(assembler.symbols.get(), assembler.symbols.get_len(), 1, f);
+						fclose(f);
+					}
+				}
+				if (vs_file && assembler.symbols.get_len()) {
+					if (FILE *f = fopen(vs_file, "w")) {
+						strref syms = assembler.symbols.get_strref();
+						while (strref label = syms.line()) {
+							if (label.has_prefix(".label")) {
+								label.next_word_ws();
+								strref name = label.split_token_trim('=');
+								if (label[0] == '$')
+									++label;
+								fprintf(f, "al " STRREF_FMT " " STRREF_FMT"\n", STRREF_ARG(label), STRREF_ARG(name));
+							}
+						}
+						fclose(f);
+					}
+				}
+
+				
+			}
 			// free some memory
 			assembler.Cleanup();
 		}
