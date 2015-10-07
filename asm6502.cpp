@@ -85,6 +85,8 @@ enum StatusCode {
 	ERROR_REFERENCED_STRUCT_NOT_FOUND,
 	ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT,
 	ERROR_REPT_COUNT_EXPRESSION,
+	ERROR_HEX_WITH_ODD_NIBBLE_COUNT,
+	ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 	
@@ -98,6 +100,7 @@ enum StatusCode {
 	ERROR_ENDIF_WITHOUT_CONDITION,
 	ERROR_ELSE_WITHOUT_IF,
 	ERROR_STRUCT_CANT_BE_ASSEMBLED,
+	ERROR_ENUM_CANT_BE_ASSEMBLED,
 	ERROR_UNTERMINATED_CONDITION,
 	ERROR_REPT_MISSING_SCOPE,
 
@@ -132,6 +135,8 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Referenced struct not found",
 	"Declare constant type not recognized (dc.?)",
 	"rept count expression could not be evaluated",
+	"hex must be followed by an even number of hex numbers",
+	"DS directive failed to evaluate immediately",
 
 	"Errors after this point will stop execution",
 
@@ -145,6 +150,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"#endif encountered outside conditional block",
 	"#else or #elif outside conditional block",
 	"Struct can not be assembled as is",
+	"Enum can not be assembled as is",
 	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",
 	"rept is missing a scope ('{ ... }')",
 };
@@ -172,8 +178,15 @@ enum AssemblerDirective {
 	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
 	AD_STRUCT,		// STRUCT: Declare a set of labels offset from a base address
+	AD_ENUM,		// ENUM: Declare a set of incremental labels
 	AD_REPT,		// REPT: Repeat the assembly of the bracketed code a number of times
 	AD_INCDIR,		// INCDIR: Add a folder to search for include files
+	AD_HEX,			// HEX: LISA assembler data block
+	AD_EJECT,		// EJECT: Page break for printing assembler code, ignore
+	AD_LST,			// LST: Controls symbol listing
+	AD_DUMMY,		// DUM: Start a dummy section (increment address but don't write anything???)
+	AD_DUMMY_END,	// DEND: End a dummy section
+	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 };
 
 // Operators are either instructions or directives
@@ -536,6 +549,7 @@ public:
 	bool set_load_address;
 	bool symbol_export, last_label_local;
 	bool errorEncountered;
+	bool dummySection;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename);
@@ -553,6 +567,7 @@ public:
 	// Structs
 	StatusCode BuildStruct(strref name, strref declaration);
 	StatusCode EvalStruct(strref name, int &value);
+	StatusCode BuildEnum(strref name, strref declaration);
 
 	// Calculate a value based on an expression.
 	StatusCode EvalExpression(strref expression, int pc, int scope_pc,
@@ -650,6 +665,7 @@ void Asm::Cleanup() {
 	symbol_export = false;
 	last_label_local = false;
 	errorEncountered = false;
+	dummySection = false;
 }
 
 // Read in text data (main source, include, etc.)
@@ -657,12 +673,12 @@ char* Asm::LoadText(strref filename, size_t &size) {
 	strown<512> file(filename);
 	std::vector<strref>::iterator i = includePaths.begin();
 	for(;;) {
-		if (FILE *f = fopen(file.c_str(), "r")) {
+		if (FILE *f = fopen(file.c_str(), "rb")) {
 			fseek(f, 0, SEEK_END);
 			size_t _size = ftell(f);
 			fseek(f, 0, SEEK_SET);
 			if (char *buf = (char*)calloc(_size, 1)) {
-				fread(buf, 1, _size, f);
+				fread(buf, _size, 1, f);
 				fclose(f);
 				size = _size;
 				return buf;
@@ -824,6 +840,54 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 //
 //
 
+// Enums are Structs in disguise
+StatusCode Asm::BuildEnum(strref name, strref declaration)
+{
+	unsigned int hash = name.fnv1a();
+	unsigned int ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+	LabelStruct *pEnum = nullptr;
+	while (ins < labelStructs.count() && labelStructs.getKey(ins)==hash) {
+		if (name.same_str_case(labelStructs.getValue(ins).name)) {
+			pEnum = labelStructs.getValues() + ins;
+			break;
+		}
+		++ins;
+	}
+	if (pEnum)
+		return ERROR_STRUCT_ALREADY_DEFINED;
+	labelStructs.insert(ins, hash);
+	pEnum = labelStructs.getValues() + ins;
+	pEnum->name = name;
+	pEnum->first_member = (unsigned short)structMembers.size();
+	pEnum->numMembers = 0;
+	pEnum->size = 0;		// enums are 0 sized
+	int value = 0;
+
+	while (strref line = declaration.line()) {
+		line = line.before_or_full(',');
+		line.trim_whitespace();
+		strref name = line.split_token_trim('=');
+		if (line) {
+			StatusCode error = EvalExpression(line, address, scope_address[scope_depth], -1, value);
+			if (error == STATUS_NOT_READY)
+				return ERROR_ENUM_CANT_BE_ASSEMBLED;
+			else if (error != STATUS_OK)
+				return error;
+		}
+		struct MemberOffset member;
+		member.offset = value;
+		member.name = name;
+		member.name_hash = member.name.fnv1a();
+		member.sub_struct = strref();
+
+		printf(STRREF_FMT " : " STRREF_FMT " = %d\n", STRREF_ARG(name), STRREF_ARG(member.name), member.offset);
+		structMembers.push_back(member);
+		++value;
+		pEnum->numMembers++;
+	}
+	return STATUS_OK;
+}
+
 StatusCode Asm::BuildStruct(strref name, strref declaration)
 {
 	unsigned int hash = name.fnv1a();
@@ -963,6 +1027,7 @@ enum EvalOperator {
 	EVOP_SHR,	// >>
 	EVOP_LOB,	// low byte of 16 bit value
 	EVOP_HIB,	// high byte of 16 bit value
+	EVOP_STP,	// Unexpected input, should stop and evaluate what we have
 };
 
 //
@@ -1001,7 +1066,8 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 			case '-': ++expression; op = EVOP_SUB; break;
 			case '+': ++expression;	op = EVOP_ADD; break;
 			case '*': // asterisk means both multiply and current PC, disambiguate!
-				if (prev_op==EVOP_VAL || prev_op==EVOP_RPR)	op = EVOP_MUL;
+				if (expression[1]=='*') op = EVOP_STP; // double asterisks indicates comment
+				else if (prev_op==EVOP_VAL || prev_op==EVOP_RPR) op = EVOP_MUL;
 				else { op = EVOP_VAL; value = pc; }
 				++expression;
 				break;
@@ -1017,28 +1083,38 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 				++expression; op = EVOP_VAL; value = scope_end_pc; break;
 			case '|': ++expression; op = EVOP_OR; break;
 			case '&': ++expression; op = EVOP_AND; break;
-			case '(': ++expression; op = EVOP_LPR; break;
+			case '(': if (prev_op!=EVOP_VAL) { ++expression; op = EVOP_LPR; } else { op = EVOP_STP; } break;
 			case ')': ++expression; op = EVOP_RPR; break;
+			case ',':
+			case '\'': op = EVOP_STP; break;
 			default: {
-				if (c=='!' && !(expression+1).len_label()) {
-					if (scope_pc<0)	// ! by itself is current scope, !+label char is a local label
+				if (c == '!' && !(expression + 1).len_label()) {
+					if (scope_pc < 0)	// ! by itself is current scope, !+label char is a local label
 						return STATUS_NOT_READY;
 					++expression;
 					op = EVOP_VAL; value = scope_pc;
 					break;
-				} else if (strref::is_number(c)) {
-					value = expression.atoi_skip(); op = EVOP_VAL;
-				} else if (c=='!' || strref::is_valid_label(c)) {
-					strref label = expression.split_range_trim(label_char_range);//.split_label();
-					Label *pValue = GetLabel(label);
-					if (!pValue) {
-						StatusCode ret = EvalStruct(label, value);
-						if (ret == STATUS_OK) { op = EVOP_VAL; break;
-						} else if (ret != STATUS_NOT_STRUCT) return ret;	// partial struct
+				}
+				else if (strref::is_number(c)) {
+					if (prev_op == EVOP_VAL) op = EVOP_STP;	// value followed by value doesn't make sense, stop
+					else { value = expression.atoi_skip(); op = EVOP_VAL; }
+				}
+				else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
+					if (prev_op == EVOP_VAL)
+						op = EVOP_STP;	// a value followed by a value does not make sense, probably start of a comment
+					else {
+						strref label = expression.split_range_trim(label_char_range);//.split_label();
+						Label *pValue = GetLabel(label);
+						if (!pValue) {
+							StatusCode ret = EvalStruct(label, value);
+							if (ret == STATUS_OK) {
+								op = EVOP_VAL; break;
+							} else if (ret != STATUS_NOT_STRUCT) return ret;	// partial struct
+						}
+						if (!pValue || !pValue->evaluated)	// this label could not be found (yet)
+							return STATUS_NOT_READY;
+						value = pValue->value; op = EVOP_VAL;
 					}
-					if (!pValue || !pValue->evaluated)	// this label could not be found (yet)
-						return STATUS_NOT_READY;
-					value = pValue->value; op = EVOP_VAL;
 				} else
 					return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
 				break;
@@ -1060,6 +1136,8 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 			if (!sp || op_stack[sp-1]!=EVOP_LPR)
 				return ERROR_UNBALANCED_RIGHT_PARENTHESIS;
 			sp--; // skip open paren
+		} else if (op == EVOP_STP) {
+			break;
 		} else {
 			while (sp) {
 				EvalOperator p = (EvalOperator)op_stack[sp-1];
@@ -1215,7 +1293,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 								new_labels[num_new_labels++] = label->label_name;
 							evaluated_label = true;
 							char f = i->label[0], l = i->label.get_last();
-							LabelAdded(label, f=='.' || f=='!' || f=='@' || l=='$');
+							LabelAdded(label, f=='.' || f=='!' || f=='@' || f==':' || l=='$');
 							break;
 						}
 						default:
@@ -1529,7 +1607,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	pLabel->pc_relative = false;
 	pLabel->constant = make_constant;
 	
-	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label.get_last()=='$';
+	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (!pLabel->evaluated)
 		AddLateEval(label, address, scope_address[scope_depth], line, LateEval::LET_LABEL);
 	else {
@@ -1560,7 +1638,7 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->pc_relative = true;
 	pLabel->constant = constLabel;
 	pLabel->zero_page = false;
-	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label.get_last()=='$';
+	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	LabelAdded(pLabel, local);
 	if (local)
 		MarkLabelLocal(label);
@@ -1753,12 +1831,19 @@ DirectiveName aDirectiveNames[] {
 	{ "ALIGN", AD_ALIGN },
 	{ "MACRO", AD_MACRO },
 	{ "EVAL", AD_EVAL },
+	{ "PRINT", AD_EVAL },
 	{ "BYTE", AD_BYTES },
 	{ "BYTES", AD_BYTES },
+	{ "DB", AD_BYTES },
+	{ "DFB", AD_BYTES },
 	{ "WORD", AD_WORDS },
+	{ "DA", AD_WORDS },
+	{ "DW", AD_WORDS },
+	{ "DDB", AD_WORDS },
 	{ "WORDS", AD_WORDS },
 	{ "DC", AD_DC },
 	{ "TEXT", AD_TEXT },
+	{ "ASC", AD_TEXT },
 	{ "INCLUDE", AD_INCLUDE },
 	{ "INCBIN", AD_INCBIN },
 	{ "CONST", AD_CONST },
@@ -1771,9 +1856,21 @@ DirectiveName aDirectiveNames[] {
 	{ "#ELSE", AD_ELSE },
 	{ "#ELIF", AD_ELIF },
 	{ "#ENDIF", AD_ENDIF },
+	{ "IF", AD_IF },
+	{ "IFDEF", AD_IFDEF },
+	{ "ELSE", AD_ELSE },
+	{ "ELIF", AD_ELIF },
+	{ "ENDIF", AD_ENDIF },
 	{ "STRUCT", AD_STRUCT },
+	{ "ENUM", AD_ENUM },
 	{ "REPT", AD_REPT },
 	{ "INCDIR", AD_INCDIR },
+	{ "HEX", AD_HEX },
+	{ "EJECT", AD_EJECT },
+	{ "DUM", AD_DUMMY },
+	{ "DEND", AD_DUMMY_END },
+	{ "LST", AD_LST },
+	{ "DS", AD_DS },
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -1788,6 +1885,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	}
 	switch (dir) {
 		case AD_ORG: {		// org / pc: current address of code
+			if (line.has_prefix("org"))
+				break;
 			int addr;
 			if (line[0]=='=' || keyword_equ.is_prefix_word(line))	// optional '=' or equ
 				line.next_word_ws();
@@ -1795,9 +1894,10 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 				break;
 			}
+			bool no_code = address == load_address;
 			address = addr;
 			scope_address[scope_depth] = address;
-			if (!set_load_address) {
+			if (!set_load_address || no_code) {
 				load_address = address;
 				set_load_address = true;
 			}
@@ -1830,9 +1930,11 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				else if (status == STATUS_OK && value>0) {
 					int add = (address + value-1) % value;
 					address += add;
-					CheckOutputCapacity(add);
-					for (int a = 0; a<add; a++)
-						*curr++ = 0;
+					if (!dummySection) {
+						CheckOutputCapacity(add);
+						for (int a = 0; a < add; a++)
+							*curr++ = 0;
+					}
 				}
 			}
 			break;
@@ -1865,22 +1967,26 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					break;
 				else if (error==STATUS_NOT_READY)
 					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
-				CheckOutputCapacity(1);
-				*curr++ = value;
+				if (!dummySection) {
+					CheckOutputCapacity(1);
+					*curr++ = value;
+				}
 				address++;
 			}
 			break;
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
 			while (strref exp = line.split_token_trim(',')) {
-				int value;
-				error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
-				if (error>STATUS_NOT_READY)
-					break;
-				else if (error==STATUS_NOT_READY)
-					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_ABS_REF);
-				CheckOutputCapacity(2);
-				*curr++ = (char)value;
-				*curr++ = (char)(value>>8);
+				if (!dummySection) {
+					int value;
+					error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
+					if (error>STATUS_NOT_READY)
+						break;
+					else if (error==STATUS_NOT_READY)
+						AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_ABS_REF);
+					CheckOutputCapacity(2);
+					*curr++ = (char)value;
+					*curr++ = (char)(value >> 8);
+				}
 				address += 2;
 			}
 			break;
@@ -1897,22 +2003,63 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				line.skip_whitespace();
 			}
 			while (strref exp = line.split_token_trim(',')) {
-				int value;
-				error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
-				if (error>STATUS_NOT_READY)
-					break;
-				else if (error==STATUS_NOT_READY)
-					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
-				CheckOutputCapacity(2);
-				*curr++ = value;
+				int value = 0;
+				if (!dummySection) {
+					error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
+					if (error > STATUS_NOT_READY)
+						break;
+					else if (error == STATUS_NOT_READY)
+						AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
+					CheckOutputCapacity(2);
+					*curr++ = value;
+				}
 				address++;
 				if (words) {
-					*curr++ = (char)(value>>8);
+					if (!dummySection)
+						*curr++ = (char)(value>>8);
 					address++;
 				}
 			}
 			break;
 		}
+		case AD_HEX: {
+			unsigned char b = 0, v = 0;
+			while (line) {	// indeterminable length, can't read hex to int
+				char c = *line.get();
+				++line;
+				if (c == ',') {
+					if (b) { // probably an error but seems safe
+						if (!dummySection) {
+							CheckOutputCapacity(1);
+							*curr++ = v;
+						}
+						address++;
+					}
+					b = 0;
+					line.skip_whitespace();
+				}
+				else {
+					if (c >= '0' && c <= '9') v = (v << 4) + (c - '0');
+					else if (c >= 'A' && c <= 'Z') v = (v << 4) + (c - 'A' + 10);
+					else if (c >= 'a' && c <= 'z') v = (v << 4) + (c - 'a' + 10);
+					else break;
+					b ^= 1;
+					if (!b) {
+						if (!dummySection) {
+							CheckOutputCapacity(1);
+							*curr++ = v;
+						}
+						address++;
+					}
+				}
+			}
+			if (b)
+				error = ERROR_HEX_WITH_ODD_NIBBLE_COUNT;
+			break;
+		}
+		case AD_EJECT:
+			line.clear();
+			break;
 		case AD_TEXT: {		// text: add text within quotes
 			// for now just copy the windows ascii. TODO: Convert to petscii.
 			// https://en.wikipedia.org/wiki/PETSCII
@@ -1924,21 +2071,27 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			CheckOutputCapacity(line.get_len());
 			{
 				if (!text_prefix || text_prefix.same_str("ascii")) {
-					memcpy(curr, line.get(), line.get_len());
-					curr += line.get_len();
+					if (!dummySection) {
+						memcpy(curr, line.get(), line.get_len());
+						curr += line.get_len();
+					}
 					address += line.get_len();
 				} else if (text_prefix.same_str("petscii")) {
 					while (line) {
-						char c = line[0];
-						*curr++ = (c>='a' && c<='z') ? (c-'a'+'A') : (c>0x60 ? ' ' : line[0]);
+						if (!dummySection) {
+							char c = line[0];
+							*curr++ = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c > 0x60 ? ' ' : line[0]);
+						}
 						address++;
 						++line;
 					}
 				} else if (text_prefix.same_str("petscii_shifted")) {
 					while (line) {
-						char c = line[0];
-						*curr++ = (c>='a' && c<='z') ? (c-'a'+0x61) :
-						((c>='A' && c<='Z') ? (c-'A'+0x61) : (c>0x60 ? ' ' : line[0]));
+						if (!dummySection) {
+							char c = line[0];
+							*curr++ = (c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
+								((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0]));
+						}
 						address++;
 						++line;
 					}
@@ -1971,11 +2124,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			strown<512> filename(line);
 			size_t size = 0;
 			if (char *buffer = LoadBinary(line, size)) {
-				CheckOutputCapacity((unsigned int)size);
-				memcpy(curr, buffer, size);
-				free(buffer);
-				curr += size;
+				if (!dummySection) {
+					CheckOutputCapacity((unsigned int)size);
+					memcpy(curr, buffer, size);
+					free(buffer);
+					curr += size;
+				}
 				address += (unsigned int)size;
+				free(buffer);
 			}
 			break;
 		}
@@ -2055,6 +2211,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					CloseConditional();
 			}
 			break;
+		case AD_ENUM:
 		case AD_STRUCT: {
 			strref read_source = contextStack.curr().read_source;
 			if (read_source.is_substr(line.get())) {
@@ -2062,10 +2219,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				line.skip(struct_name.get_len());
 				line.skip_whitespace();
 				read_source.skip(strl_t(line.get() - read_source.get()));
-				if (read_source[0]=='{')
-					BuildStruct(struct_name, read_source.scoped_block_skip());
-				else
-					error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
+				if (read_source[0]=='{') {
+					if (dir == AD_STRUCT)
+						BuildStruct(struct_name, read_source.scoped_block_skip());
+					else
+						BuildEnum(struct_name, read_source.scoped_block_skip());
+				} else
+					error = dir == AD_STRUCT ? ERROR_STRUCT_CANT_BE_ASSEMBLED :
+					ERROR_ENUM_CANT_BE_ASSEMBLED;
 				contextStack.curr().next_source = read_source;
 			} else
 				error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
@@ -2100,6 +2261,29 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_INCDIR:
 			AddIncludeFolder(line.between('"', '"'));
 			break;
+		case AD_LST:
+			line.clear();
+			break;
+		case AD_DUMMY:
+			dummySection = true;
+			break;
+		case AD_DUMMY_END:
+			dummySection = false;
+			break;
+		case AD_DS: {
+			int value;
+			if (STATUS_OK != EvalExpression(line, address, scope_address[scope_depth], -1, value))
+				error = ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
+			else {
+				if (value > 0 && !dummySection) {
+					CheckOutputCapacity(value);
+					for (int n = 0; n < value; n++)
+						*curr++ = 0;
+				}
+					address += value;
+			}
+			break;
+		}
 	}
 	return error;
 }
@@ -2242,7 +2426,7 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	}
 	
 	// check if address is in zero page range and should use a ZP mode instead of absolute
-	if (!evalLater && value>=0 && value<0x100) {
+	if (!evalLater && value>=0 && value<0x100 && group!=OPG_BRANCH) {
 		switch (addrMode) {
 			case AM_ABSOLUTE:
 				addrMode = AM_ZP;
@@ -2354,32 +2538,39 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 		switch (codeArg) {
 			case CA_BRANCH:
 				address += 2;
-				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr+1, expression, source_file, LateEval::LET_BRANCH);
-				else if (((int)value-(int)address)<-128 || ((int)value-(int)address)>127) {
-					error = ERROR_BRANCH_OUT_OF_RANGE;
-					break;
+				if (!dummySection) {
+					if (evalLater)
+						AddLateEval(address, scope_address[scope_depth], curr + 1, expression, source_file, LateEval::LET_BRANCH);
+					else if (((int)value - (int)address) < -128 || ((int)value - (int)address) > 127) {
+						error = ERROR_BRANCH_OUT_OF_RANGE;
+						break;
+					}
+					*curr++ = opcode;
+					*curr++ = evalLater ? 0 : (unsigned char)((int)value - (int)address);
 				}
-				*curr++ = opcode;
-				*curr++ = evalLater ? 0 : (unsigned char)((int)value-(int)address);
 				break;
 			case CA_ONE_BYTE:
-				*curr++ = opcode;
-				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_BYTE);
-				*curr++ = (char)value;
+				if (!dummySection) {
+					*curr++ = opcode;
+					if (evalLater)
+						AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_BYTE);
+					*curr++ = (char)value;
+				}
 				address += 2;
 				break;
 			case CA_TWO_BYTES:
-				*curr++ = opcode;
-				if (evalLater)
-					AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_ABS_REF);
-				*curr++ = (char)value;
-				*curr++ = (char)(value>>8);
+				if (!dummySection) {
+					*curr++ = opcode;
+					if (evalLater)
+						AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_ABS_REF);
+					*curr++ = (char)value;
+					*curr++ = (char)(value >> 8);
+				}
 				address += 3;
 				break;
 			case CA_NONE:
-				*curr++ = opcode;
+				if (!dummySection)
+					*curr++ = opcode;
 				address++;
 				break;
 		}
@@ -2415,9 +2606,13 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 		line = line.before_or_full(';');
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
-		if (line[0]==':')	// some assemblers use a colon prefix to indicate macro usage
+		strref label_line = line;
+		if (line[0]==':' || line[0]==']')	// some assemblers use a colon prefix to indicate macro usage
 			++line;
-		strref operation = line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0);
+		strref operation = line.split_range(word_char_range, line[0]=='.' ? 1 : 0);
+		bool force_label = line[0] == ':';
+		operation.clip_trailing_whitespace();
+		line.trim_whitespace();
 		// instructions and directives ignores leading periods, labels include them.
 		strref label = operation;
 		if (operation[0]=='.') {
@@ -2447,13 +2642,20 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						++line;
 						line.skip_whitespace();
 						break;
+					case '*':
+						// if first char is '*' this seems like a line comment on some assemblers
+						line.clear();
+						break;
+					case 127:
+						++line;	// bad character?
+						break;
 				}
 			}
 		} else  {
 			// ignore leading period for instructions and directives - not for labels
 			unsigned int op_hash = operation.fnv1a_lower();
 			int op_idx = LookupOpCodeIndex(op_hash, pInstr, numInstructions);
-			if (op_idx >= 0 && line[0]!=':') {
+			if (op_idx >= 0 && !force_label) {
 				if (pInstr[op_idx].type==OT_DIRECTIVE) {
 					error = ApplyDirective((AssemblerDirective)pInstr[op_idx].index, line, contextStack.curr().source_file);
 				} else if (ConditionalAsm() && pInstr[op_idx].type==OT_MNEMONIC) {
@@ -2467,6 +2669,11 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 				line.clear(); // do nothing if conditional nesting so clear the current line
 			} else if (line.get_first()=='=') {
 				++line;
+				error = AssignLabel(label, line);
+				line.clear();
+			} else if (keyword_equ.is_prefix_word(line)) {
+				line += keyword_equ.get_len();
+				line.skip_whitespace();
 				error = AssignLabel(label, line);
 				line.clear();
 			} else {
@@ -2495,8 +2702,10 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						labPool++;
 					}
 					if (!gotConstruct) {
+						if (label_line.is_substr(label.get()))
+							label = strref(label_line.get(), strl_t(label.get() + label.get_len() - label_line.get()));
 						error = AddressLabel(label);
-						if (line[0]==':')
+						if (line[0]==':' || line[0]=='?')
 							++line;
 					}
 					// there may be codes after the label
@@ -2661,7 +2870,7 @@ int main(int argc, char **argv)
 								strref name = label.split_token_trim('=');
 								if (label[0] == '$')
 									++label;
-								fprintf(f, "al " STRREF_FMT " " STRREF_FMT"\n", STRREF_ARG(label), STRREF_ARG(name));
+								fprintf(f, "al " STRREF_FMT " %s" STRREF_FMT "\n", STRREF_ARG(label), name[0]=='.' ? "" : ".", STRREF_ARG(name));
 							}
 						}
 						fclose(f);
