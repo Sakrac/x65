@@ -187,6 +187,7 @@ enum AssemblerDirective {
 	AD_DUMMY,		// DUM: Start a dummy section (increment address but don't write anything???)
 	AD_DUMMY_END,	// DEND: End a dummy section
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
+	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
 };
 
 // Operators are either instructions or directives
@@ -295,7 +296,8 @@ unsigned char CC10Mask[] = { 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0xae, 0xaa, 0xaa };
 // hardtexted strings
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
-static const strref label_char_range("!0-9a-zA-Z_@$!.");
+static const strref label_end_char_range("!0-9a-zA-Z_@$!.]:?");
+static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()\\-");
 static const strref keyword_equ("equ");
 static const strref str_label("label");
 static const strref str_const("const");
@@ -879,8 +881,6 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		member.name = name;
 		member.name_hash = member.name.fnv1a();
 		member.sub_struct = strref();
-
-		printf(STRREF_FMT " : " STRREF_FMT " = %d\n", STRREF_ARG(name), STRREF_ARG(member.name), member.offset);
 		structMembers.push_back(member);
 		++value;
 		pEnum->numMembers++;
@@ -1086,6 +1086,7 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 			case '(': if (prev_op!=EVOP_VAL) { ++expression; op = EVOP_LPR; } else { op = EVOP_STP; } break;
 			case ')': ++expression; op = EVOP_RPR; break;
 			case ',':
+			case '?':
 			case '\'': op = EVOP_STP; break;
 			default: {
 				if (c == '!' && !(expression + 1).len_label()) {
@@ -1103,7 +1104,9 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 					if (prev_op == EVOP_VAL)
 						op = EVOP_STP;	// a value followed by a value does not make sense, probably start of a comment
 					else {
-						strref label = expression.split_range_trim(label_char_range);//.split_label();
+						char e0 = expression[0];
+						int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
+						strref label = expression.split_range_trim(label_end_char_range, start_pos);//.split_label();
 						Label *pValue = GetLabel(label);
 						if (!pValue) {
 							StatusCode ret = EvalStruct(label, value);
@@ -1642,7 +1645,7 @@ StatusCode Asm::AddressLabel(strref label)
 	LabelAdded(pLabel, local);
 	if (local)
 		MarkLabelLocal(label);
-	else
+	else if (label[0]!=']')	// MERLIN: Variable label does not invalidate local labels
 		FlushLocalLabels();
 	return CheckLateEval(label);
 }
@@ -1845,6 +1848,7 @@ DirectiveName aDirectiveNames[] {
 	{ "TEXT", AD_TEXT },
 	{ "ASC", AD_TEXT },
 	{ "INCLUDE", AD_INCLUDE },
+	{ "PUT", AD_INCLUDE },
 	{ "INCBIN", AD_INCBIN },
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
@@ -1867,6 +1871,7 @@ DirectiveName aDirectiveNames[] {
 	{ "INCDIR", AD_INCDIR },
 	{ "HEX", AD_HEX },
 	{ "EJECT", AD_EJECT },
+	{ "USR", AD_USR },
 	{ "DUM", AD_DUMMY },
 	{ "DEND", AD_DUMMY_END },
 	{ "LST", AD_LST },
@@ -1894,7 +1899,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 				break;
 			}
-			bool no_code = address == load_address;
+			bool no_code = curr == output;
 			address = addr;
 			scope_address[scope_depth] = address;
 			if (!set_load_address || no_code) {
@@ -2060,6 +2065,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_EJECT:
 			line.clear();
 			break;
+		case AD_USR:
+			line.clear();
+			break;
 		case AD_TEXT: {		// text: add text within quotes
 			// for now just copy the windows ascii. TODO: Convert to petscii.
 			// https://en.wikipedia.org/wiki/PETSCII
@@ -2110,12 +2118,35 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 		}
 		case AD_INCLUDE: {	// include: assemble another file in place
-			line = line.between('"', '"');
+			strref file = line.between('"', '"');
+			if (!file)								// MERLIN: No quotes around PUT filenames
+				file = line.split_range(filename_end_char_range);
 			size_t size = 0;
-			if (char *buffer = LoadText(line, size)) {
+			char *buffer = nullptr;
+			if (buffer = LoadText(file, size)) {
 				loadedData.push_back(buffer);
 				strref src(buffer, strl_t(size));
-				contextStack.push(line, src, src);
+				contextStack.push(file, src, src);
+			} else if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
+				loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
+				strref src(buffer, strl_t(size));
+				contextStack.push(file+1, src, src);
+			} else {
+				strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
+				fileadd.append(".s");
+				if (buffer = LoadText(fileadd.get_strref(), size)) {
+					loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
+					strref src(buffer, strl_t(size));
+					contextStack.push(file, src, src);
+				} else {
+					fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
+					fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
+					if (buffer = LoadText(fileadd.get_strref(), size)) {
+						loadedData.push_back(buffer);
+						strref src(buffer, strl_t(size));
+						contextStack.push(file, src, src);
+					}
+				}
 			}
 			break;
 		}
@@ -2266,6 +2297,12 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 		case AD_DUMMY:
 			dummySection = true;
+			line.trim_whitespace();
+			if (line) {
+				int reorg;
+				if (STATUS_OK == EvalExpression(line, address, scope_address[scope_depth], -1, reorg))
+					address = reorg;
+			}
 			break;
 		case AD_DUMMY_END:
 			dummySection = false;
@@ -2602,23 +2639,18 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 	StatusCode error = STATUS_OK;
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
-		line.skip_whitespace();
-		line = line.before_or_full(';');
+		line.skip_whitespace();	// skip to first character
+		line = line.before_or_full(';'); // clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
-		strref label_line = line;
-		if (line[0]==':' || line[0]==']')	// some assemblers use a colon prefix to indicate macro usage
-			++line;
-		strref operation = line.split_range(word_char_range, line[0]=='.' ? 1 : 0);
-		bool force_label = line[0] == ':';
-		operation.clip_trailing_whitespace();
+		strref line_nocom = line;
+		strref operation = line.split_range(label_end_char_range);
+		char char0 = operation[0];			// first char
+		char charE = operation.get_last();	// end char
 		line.trim_whitespace();
-		// instructions and directives ignores leading periods, labels include them.
-		strref label = operation;
-		if (operation[0]=='.') {
-			++operation;
-		}
-		if (!operation) {
+		// MERLIN fixes and PoP does some naughty stuff like 'and = 0'
+		bool force_label = char0==']' || charE==':' || charE=='?' || charE=='$';
+		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
 				// scope open / close
 				switch (line[0]) {
@@ -2653,10 +2685,18 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 			}
 		} else  {
 			// ignore leading period for instructions and directives - not for labels
-			unsigned int op_hash = operation.fnv1a_lower();
-			int op_idx = LookupOpCodeIndex(op_hash, pInstr, numInstructions);
-			if (op_idx >= 0 && !force_label) {
+			strref label = operation;
+			if (operation[0]==':' || operation[0]=='.')
+				++operation;
+			operation = operation.before_or_full('.');
+
+			int op_idx = LookupOpCodeIndex(operation.fnv1a_lower(), pInstr, numInstructions);
+			if (op_idx >= 0 && !force_label && (pInstr[op_idx].type==OT_DIRECTIVE || line[0]!='=')) {
 				if (pInstr[op_idx].type==OT_DIRECTIVE) {
+					if (line_nocom.is_substr(operation.get())) {
+						line = line_nocom + strl_t(operation.get()+operation.get_len()-line_nocom.get());
+						line.skip_whitespace();
+					}
 					error = ApplyDirective((AssemblerDirective)pInstr[op_idx].index, line, contextStack.curr().source_file);
 				} else if (ConditionalAsm() && pInstr[op_idx].type==OT_MNEMONIC) {
 					OP_ID &id = pInstr[op_idx];
@@ -2702,13 +2742,12 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						labPool++;
 					}
 					if (!gotConstruct) {
-						if (label_line.is_substr(label.get()))
-							label = strref(label_line.get(), strl_t(label.get() + label.get_len() - label_line.get()));
+						if (label.get_last()==':')
+							label.clip(1);
 						error = AddressLabel(label);
 						if (line[0]==':' || line[0]=='?')
-							++line;
+							++line;	// there may be codes after the label
 					}
-					// there may be codes after the label
 				}
 			}
 		}
@@ -2748,8 +2787,8 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 // create an instruction table (mnemonic hash lookup + directives)
 void Asm::Assemble(strref source, strref filename)
 {
-	OP_ID *pInstr = new OP_ID[100];
-	int numInstructions = BuildInstructionTable(pInstr, strref(aInstr, strl_t(sizeof(aInstr)-1)), 100);
+	OP_ID *pInstr = new OP_ID[256];
+	int numInstructions = BuildInstructionTable(pInstr, strref(aInstr, strl_t(sizeof(aInstr)-1)), 256);
 
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
@@ -2795,7 +2834,8 @@ void Asm::Assemble(strref source, strref filename)
 int main(int argc, char **argv)
 {
 	int return_value = 0;
-	bool c64 = true;
+	bool load_header = true;
+	bool size_header = false;
 	Asm assembler;
 
 	const char *source_filename=nullptr, *binary_out_name=nullptr;
@@ -2812,11 +2852,16 @@ int main(int argc, char **argv)
 					assembler.AssignLabel(arg.before('='), arg.after('='));
 				else
 					assembler.AssignLabel(arg, "1");
-			} else if (arg.same_str("c64"))
-				c64 = true;
-			else if (arg.same_str("bin"))
-				c64 = false;
-			else if (arg.same_str("sym") && (a + 1) < argc)
+			} else if (arg.same_str("c64")) {
+				load_header = true;
+				size_header = false;
+			} else if (arg.same_str("a2b")) {
+				load_header = true;
+				size_header = true;
+			} else if (arg.same_str("bin")) {
+				load_header = false;
+				size_header = false;
+			} else if (arg.same_str("sym") && (a + 1) < argc)
 				sym_file = argv[++a];
 			else if (arg.same_str("vice") && (a + 1) < argc)
 				vs_file = argv[++a];
@@ -2830,26 +2875,36 @@ int main(int argc, char **argv)
 	if (!source_filename) {
 		puts("Usage:\nAsm6502 [options] filename.s code.prg\n"
 			 " * -i<path>: Add include path\n * -D<label>[=<value>]: Define a label with an optional value (otherwise 1)\n"
-			 " * -c64: Include load address\n * -bin: Raw binary\n * -sym <file.sym>: vice/kick asm symbol file\n"
-			 " * -vice <file.vs>: export a vice symbol file\nhttps://github.com/sakrac/Asm6502\n");
+			 " * -bin: Raw binary\n * -c64: Include load address\n * -a2b: Apple II Dos 3.3 binary executable\n"
+			 " * -sym <file.sym>: vice/kick asm symbol file\n * -vice <file.vs>: export a vice symbol file\n"
+			"https://github.com/sakrac/Asm6502\n");
 		return 0;
 	}
 	
 	// Load source
 	if (source_filename) {
 		size_t size = 0;
-		if (char *buffer = assembler.LoadText(source_filename, size)) {
+		strref srcname(source_filename);
+		if (char *buffer = assembler.LoadText(srcname, size)) {
+			// if source_filename contains a path add that as a search path for include files
+			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));
+
 			assembler.symbol_export = sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]));
 			
-			if (assembler.errorEncountered)
+			if (0 && assembler.errorEncountered)
 				return_value = 1;
 			else {
 				if (binary_out_name && assembler.curr > assembler.output) {
 					if (FILE *f = fopen(binary_out_name, "wb")) {
-						if (c64) {
+						if (load_header) {
 							char addr[2] = { (char)assembler.load_address, (char)(assembler.load_address >> 8) };
 							fwrite(addr, 2, 1, f);
+						}
+						if (size_header) {
+							int int_size = int(assembler.curr - assembler.output);
+							char byte_size[2] = { (char)int_size, (char)(int_size >> 8) };
+							fwrite(byte_size, 2, 1, f);
 						}
 						fwrite(assembler.output, assembler.curr - assembler.output, 1, f);
 						fclose(f);
