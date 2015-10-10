@@ -57,11 +57,21 @@
 #define MAX_POOL_RANGES 4
 #define MAX_POOL_BYTES 128
 
+// To simplify some syntax disambiguation the preferred
+// ruleset can be specified on the command line.
+enum AsmSyntax {
+	SYNTAX_SANE,
+	SYNTAX_MERLIN
+};
+
 // Internal status and error type
 enum StatusCode {
 	STATUS_OK,			// everything is fine
+	STATUS_RELATIVE_SECTION, // value is relative to a single section
 	STATUS_NOT_READY,	// label could not be evaluated at this time
 	STATUS_NOT_STRUCT,	// return is not a struct.
+	FIRST_ERROR,
+	ERROR_UNDEFINED_CODE = FIRST_ERROR,
 	ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION,
 	ERROR_TOO_MANY_VALUES_IN_EXPRESSION,
 	ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION,
@@ -103,6 +113,8 @@ enum StatusCode {
 	ERROR_ENUM_CANT_BE_ASSEMBLED,
 	ERROR_UNTERMINATED_CONDITION,
 	ERROR_REPT_MISSING_SCOPE,
+	ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION,
+	ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
 
 	STATUSCODE_COUNT
 };
@@ -110,8 +122,10 @@ enum StatusCode {
 // The following strings are in the same order as StatusCode
 const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"ok",
+	"relative section",
 	"not ready",
 	"name is not a struct",
+	"Undefined code",
 	"Unexpected character in expression",
 	"Too many values in expression",
 	"Too many operators in expression",
@@ -153,12 +167,16 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Enum can not be assembled as is",
 	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",
 	"rept is missing a scope ('{ ... }')",
+	"Link can only be used in a fixed address section",
+	"Link can not be used in dummy sections",
 };
 
 // Assembler directives
 enum AssemblerDirective {
 	AD_ORG,			// ORG: Assemble as if loaded at this address
 	AD_LOAD,		// LOAD: If applicable, instruct to load at this address
+	AD_SECTION,		// SECTION: Enable code that will be assigned a start address during a link step
+	AD_LINK,		// LINK: Put sections with this name at this address (must be ORG / fixed address section)
 	AD_ALIGN,		// ALIGN: Add to address to make it evenly divisible by this
 	AD_MACRO,		// MACRO: Create a macro
 	AD_EVAL,		// EVAL: Print expression to stdout during assemble
@@ -229,6 +247,8 @@ enum AddressingMode {
 	AM_INVALID,			// 11
 };
 
+enum EvalOperator;
+
 // How instruction argument is encoded
 enum CODE_ARG {
 	CA_NONE,			// single byte instruction
@@ -296,7 +316,8 @@ unsigned char CC10Mask[] = { 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0xae, 0xaa, 0xaa };
 // hardtexted strings
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
-static const strref label_end_char_range("!0-9a-zA-Z_@$!.]:?");
+static const strref label_end_char_range("!0-9a-zA-Z_@$!.:");
+static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$!.]:?");
 static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()\\-");
 static const strref keyword_equ("equ");
 static const strref str_label("label");
@@ -410,12 +431,104 @@ public:
 	~pairArray() { clear(); }
 };
 
+// relocs are cheaper than full expressions and work with
+// local labels for relative sections which would otherwise
+// be out of scope at link time.
+
+struct Reloc {
+	enum Type {
+		NONE,
+		WORD,
+		LO_BYTE,
+		HI_BYTE
+	};
+	int base_value;
+	int section_offset;		// offset into this section
+	int target_section;		// which section does this reloc target?
+	Type value_type;		// byte or word size
+
+	Reloc() : base_value(0), section_offset(-1), target_section(-1), value_type(NONE) {}
+	Reloc(int base, int offs, int sect, Type t = WORD) :
+		base_value(base), section_offset(offs), target_section(sect), value_type(t) {}
+};
+typedef std::vector<struct Reloc> relocList;
+
+// start of data section support
+// Default is a fixed address section at $1000
+// Whenever org or dum with address is encountered => new section
+// If org is fixed and < $200 then it is a dummy section Otherwise clear dummy section
+typedef struct Section {
+	// section name, same named section => append
+	strref name;			// name of section for comparison
+
+	// generated address status
+	int load_address;		// if assigned a load address
+	int start_address;
+	int address;			// relative or absolute PC
+	bool address_assigned;	// address is absolute if assigned
+
+	// merged sections
+	int merged_offset;		// -1 if not merged
+	int merged_section;		// which section merged with
+
+	// data output
+	unsigned char *output;	// memory for this section
+	unsigned char *curr;	// current pointer for this section
+	size_t output_capacity;	// current output capacity
+
+	// reloc data
+	relocList *pRelocs;		// link time resolve (not all sections need this)
+	bool dummySection;		// true if section does not generate data, only labels
+
+	void reset() {
+		name.clear(); start_address = address = load_address = 0x0;
+		address_assigned = false; output = nullptr; curr = nullptr;
+		dummySection = false;  output_capacity = 0;
+		merged_offset = -1;
+		if (pRelocs) delete pRelocs; pRelocs = nullptr;
+	}
+
+	void Cleanup() { if (output) free(output); reset(); }
+	bool empty() const { return merged_offset<0 && curr==output; }
+
+	size_t DataOffset() const { return curr - output; }
+	size_t size() const { return curr - output; }
+	const unsigned char *get() { return output; }
+
+	int GetPC() const { return address; }
+	void AddAddress(int value) { address += value; }
+	void SetLoadAddress(int addr) { load_address = addr; }
+	int GetLoadAddress() const { return load_address; }
+
+	void SetDummySection(bool enable) { dummySection = enable; }
+	bool IsDummySection() const { return dummySection;  }
+	bool IsRelativeSection() const { return address_assigned == false; }
+	bool IsMergedSection() const { return merged_offset >= 0;  }
+	void AddReloc(int base, int offset, int section, Reloc::Type type = Reloc::WORD);
+
+	Section() : pRelocs(nullptr) { reset(); }
+	Section(strref _name, int _address) : pRelocs(nullptr) { reset(); name = _name;
+		start_address = load_address = address = _address; address_assigned = true; }
+	Section(strref _name) : pRelocs(nullptr) { reset(); name = _name;
+		start_address = load_address = address = 0; address_assigned = false; }
+	~Section() { reset(); }
+
+	// Appending data to a section
+	void CheckOutputCapacity(unsigned int addSize);
+	void AddByte(int b);
+	void AddWord(int w);
+	void AddBin(unsigned const char *p, int size);
+	void SetByte(size_t offs, int b) { output[offs] = b; }
+	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
+} Section;
+
 // Data related to a label
 typedef struct {
 public:
 	strref label_name;		// the name of this label
 	strref expression;		// the expression of this label (optional, if not possible to evaluate yet)
 	int value;
+	int section;			// rel section address labels belong to a section, -1 if fixed address or assigned
 	bool evaluated;			// a value may not yet be evaluated
 	bool zero_page;			// addresses known to be zero page
 	bool pc_relative;		// this is an inline label describing a point in the code
@@ -431,9 +544,10 @@ typedef struct {
 		LET_BRANCH,			// calculate a branch offset and store at this address
 		LET_BYTE,			// calculate a byte and store at this address
 	};
-	unsigned char* target;	// offset into output buffer
+	size_t target;	// offset into output buffer
 	int address;			// current pc
 	int scope;				// scope pc
+	int section;			// which section to apply to.
 	strref label;			// valid if this is not a target but another label
 	strref expression;
 	strref source_file;
@@ -532,26 +646,34 @@ public:
 	std::vector<char*> loadedData;	// free when assembler is completed
 	std::vector<MemberOffset> structMembers; // labelStructs refer to sets of structMembers
 	std::vector<strref> includePaths;
+	std::vector<Section> allSections;
 	strovl symbols; // for building a symbol output file
 	
 	// context for macros / include files
 	ContextStack contextStack;
 	
-	// target output memory
-	unsigned char *output, *curr;
-	size_t output_capacity;
+	// Current section (temp private so I don't access this directly and forget about it)
+private:
+	Section *current_section;
+public:
 
-	unsigned int address;
-	unsigned int load_address;
-	int scope_address[MAX_SCOPE_DEPTH];
-	int scope_depth;
+	// Special syntax rules
+	AsmSyntax syntax;
+
+	// Conditional assembly vars
 	int conditional_depth;
 	char conditional_nesting[MAX_CONDITIONAL_DEPTH];
 	bool conditional_consumed[MAX_CONDITIONAL_DEPTH];
-	bool set_load_address;
+
+	// Scope info
+	int scope_address[MAX_SCOPE_DEPTH];
+	int scope_depth;
+
+	// Eval result
+	int lastEvalSection;
+
 	bool symbol_export, last_label_local;
 	bool errorEncountered;
-	bool dummySection;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename);
@@ -561,6 +683,19 @@ public:
 	
 	// Make sure there is room to write more code
 	void CheckOutputCapacity(unsigned int addSize);
+
+	// Operations on current section
+	void SetSection(strref name, int address);	// fixed address section
+	void SetSection(strref name); // relative address section
+	StatusCode LinkSections(strref name); // link relative address sections with this name here
+	void DummySection(int address);
+	void DummySection();
+	void EndSection();
+	Section& CurrSection() { return *current_section; }
+	int SectionId() { return int(current_section - &allSections[0]); }
+	void AddByte(int b) { CurrSection().AddByte(b); }
+	void AddWord(int w) { CurrSection().AddWord(w); }
+	void AddBin(unsigned const char *p, int size) { CurrSection().AddBin(p, size); }
 
 	// Macro management
 	StatusCode AddMacro(strref macro, strref source_name, strref source_file, strref &left);
@@ -572,8 +707,12 @@ public:
 	StatusCode BuildEnum(strref name, strref declaration);
 
 	// Calculate a value based on an expression.
+	EvalOperator RPNToken_Merlin(strref &expression, int pc, int scope_pc,
+		int scope_end_pc, EvalOperator prev_op, short &section, int &value);
+	EvalOperator RPNToken(strref &expression, int pc, int scope_pc,
+		int scope_end_pc, EvalOperator prev_op, short &section, int &value);
 	StatusCode EvalExpression(strref expression, int pc, int scope_pc,
-							  int scope_end_pc, int &result);
+							  int scope_end_pc, int relative_section, int &result);
 
 	// Access labels
 	Label* GetLabel(strref label);
@@ -594,8 +733,8 @@ public:
 	void FlushLabelPools(int scope_exit);
 
 	// Late expression evaluation
-	void AddLateEval(int pc, int scope_pc, unsigned char *target,
-					 strref expression, strref source_file, LateEval::Type type);
+	void AddLateEval(int pc, int scope_pc, strref expression,
+					 strref source_file, LateEval::Type type);
 	void AddLateEval(strref label, int pc, int scope_pc,
 					 strref expression, LateEval::Type type);
 	StatusCode CheckLateEval(strref added_label=strref(), int scope_end = -1);
@@ -632,8 +771,7 @@ public:
 	char* LoadBinary(strref filename, size_t &size);
 
 	// constructor
-	Asm() : output(nullptr) {
-		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
+	Asm() { Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
 
 // Clean up work allocations
@@ -650,24 +788,17 @@ void Asm::Cleanup() {
 	loadedData.clear();
 	labels.clear();
 	macros.clear();
-	if (output)
-		free(output);
-	output = nullptr;
-	curr = nullptr;
-	output_capacity = 0;
-
-	address = 0x1000;
-	load_address = 0x1000;
+	allSections.clear();
+	SetSection(strref("default"), 0x1000);
+	current_section = &allSections[0];
+	syntax = SYNTAX_SANE;
 	scope_depth = 0;
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
-	set_load_address = false;
-	output_capacity = false;
 	symbol_export = false;
 	last_label_local = false;
 	errorEncountered = false;
-	dummySection = false;
 }
 
 // Read in text data (main source, include, etc.)
@@ -728,9 +859,148 @@ char* Asm::LoadBinary(strref filename, size_t &size) {
 	return nullptr;
 }
 
+void Asm::SetSection(strref name, int address)
+{
+	if (name) {
+		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
+			if (i->name && name.same_str(i->name)) {
+				current_section = &*i;
+				return;
+			}
+		}
+	}
+	if (allSections.size()==allSections.capacity())
+		allSections.reserve(allSections.size() + 16);
+	Section newSection(name, address);
+	if (address < 0x200)	// don't compile over zero page and stack frame (may be bad assumption)
+		newSection.SetDummySection(true);
+	allSections.push_back(newSection);
+	current_section = &allSections[allSections.size()-1];
+}
 
+void Asm::SetSection(strref name)
+{
+/*	if (name) {
+		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
+			if (i->name && name.same_str(i->name)) {
+				current_section = &*i;
+				return;
+			}
+		}
+	}*/
+	if (allSections.size()==allSections.capacity())
+		allSections.reserve(allSections.size() + 16);
+	Section newSection(name);
+	allSections.push_back(newSection);
+	current_section = &allSections[allSections.size()-1];
+}
+
+// Fixed address dummy section
+void Asm::DummySection(int address) {
+	if (CurrSection().empty() && address == CurrSection().GetPC()) {
+		CurrSection().SetDummySection(true);
+		return;
+	}
+
+	if (allSections.size()==allSections.capacity())
+		allSections.reserve(allSections.size() + 16);
+	Section newSection(strref(), address);
+	newSection.SetDummySection(true);
+	allSections.push_back(newSection);
+	current_section = &allSections[allSections.size()-1];
+}
+
+// Current address dummy section
+void Asm::DummySection() {
+	DummySection(CurrSection().GetPC());
+}
+
+void Asm::EndSection() {
+	int section = (int)(current_section - &allSections[0]);
+	if (section)
+		current_section = &allSections[section-1];
+}
+
+StatusCode Asm::LinkSections(strref name) {
+	if (CurrSection().IsRelativeSection())
+		return ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION;
+	if (CurrSection().IsDummySection())
+		return ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION;
+
+	int section_id = 0;
+	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+		if (i->name.same_str_case(name) && i->IsRelativeSection() && !i->IsMergedSection()) {
+			// found a section to link!
+			Section &s = *i;
+			// Get base addresses
+			CheckOutputCapacity((int)s.size());
+
+			int section_address = CurrSection().GetPC();
+			unsigned char *section_out = CurrSection().curr;
+			memcpy(section_out, s.output, s.size());
+			CurrSection().address += (int)s.size();
+			CurrSection().curr += s.size();
+			free(s.output);
+			s.output = 0;
+			s.curr = 0;
+			s.output_capacity = 0;
+
+			// Update address range and mark section as merged
+			s.start_address = section_address;
+			s.address += section_address;
+			s.address_assigned = true;
+			s.merged_section = SectionId();
+			s.merged_offset = (int)(section_out - CurrSection().output);
+
+			// All labels in this section can now be assigned
+			Label *pLabels = labels.getValues();
+			int numLabels = labels.count();
+			for (int l = 0; l < numLabels; l++) {
+				if (pLabels->section == section_id) {
+					pLabels->value += section_address;
+					pLabels->section = -1;
+					CheckLateEval(pLabels->label_name);
+				}
+				++pLabels;
+			}
+
+			// go through relocs in all sections to see if any targets this section
+			// relocate section to address!
+			for (std::vector<Section>::iterator j = allSections.begin(); j != allSections.end(); ++j) {
+				Section &s2 = *j;
+				if (s2.pRelocs) {
+					relocList *pList = s2.pRelocs;
+					relocList::iterator i = pList->end();
+					while (i != pList->begin()) {
+						--i;
+						if (i->target_section == section_id) {
+							unsigned char *trg = s2.merged_offset < 0 ? s2.output :
+								(allSections[s2.merged_section].output + s2.merged_offset);
+							trg += i->section_offset;
+							int value = i->base_value + section_address;
+							if (i->value_type == Reloc::WORD) {
+								*trg++ = (unsigned char)value;
+								*trg = (unsigned char)(value >> 8);
+							} else if (i->value_type == Reloc::LO_BYTE)
+								*trg = (unsigned char)value;
+							else if (i->value_type == Reloc::HI_BYTE)
+								*trg = (unsigned char)(value >> 8);
+							i = pList->erase(i);
+							if (i != pList->end())
+								++i;
+						}
+					}
+				}
+			}
+		}
+		++section_id;
+	}
+	return STATUS_OK;
+}
+
+// Section based output capacity
 // Make sure there is room to assemble in
-void Asm::CheckOutputCapacity(unsigned int addSize) {
+void Section::CheckOutputCapacity(unsigned int addSize) {
 	size_t currSize = curr - output;
 	if ((addSize + currSize) >= output_capacity) {
 		size_t newSize = currSize * 2;
@@ -745,6 +1015,49 @@ void Asm::CheckOutputCapacity(unsigned int addSize) {
 		output_capacity = newSize;
 	}
 }
+
+void Section::AddByte(int b) {
+	if (!dummySection) {
+		CheckOutputCapacity(1);
+		*curr++ = (unsigned char)b;
+	}
+	address++;
+}
+
+void Section::AddWord(int w) {
+	if (!dummySection) {
+		CheckOutputCapacity(2);
+		*curr++ = (unsigned char)(w&0xff);
+		*curr++ = (unsigned char)(w>>8);
+	}
+	address += 2;
+}
+
+void Section::AddBin(unsigned const char *p, int size) {
+	if (!dummySection) {
+		CheckOutputCapacity(size);
+		memcpy(curr, p, size);
+		curr += size;
+	}
+	address += size;
+}
+
+void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
+{
+	if (!pRelocs)
+		pRelocs = new relocList;
+	if (pRelocs->size() == pRelocs->capacity())
+		pRelocs->reserve(pRelocs->size() + 32);
+	pRelocs->push_back(Reloc(base, offset, section, type));
+}
+
+// Make sure there is room to assemble in
+void Asm::CheckOutputCapacity(unsigned int addSize) {
+	CurrSection().CheckOutputCapacity(addSize);
+}
+
+
+
 
 
 
@@ -842,6 +1155,8 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 //
 //
 
+
+
 // Enums are Structs in disguise
 StatusCode Asm::BuildEnum(strref name, strref declaration)
 {
@@ -870,7 +1185,8 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		line.trim_whitespace();
 		strref name = line.split_token_trim('=');
 		if (line) {
-			StatusCode error = EvalExpression(line, address, scope_address[scope_depth], -1, value);
+			StatusCode error = EvalExpression(line, CurrSection().GetPC(),
+											  scope_address[scope_depth], -1, -1, value);
 			if (error == STATUS_NOT_READY)
 				return ERROR_ENUM_CANT_BE_ASSEMBLED;
 			else if (error != STATUS_OK)
@@ -1009,6 +1325,14 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 //
 
 
+// Minimal value lookup in short array
+static int _oneOf(short n, short *opt, short numOpt) {
+	for (int s = 0; s<numOpt; s++) {
+		if (opt[s] == n)
+			return s;
+	}
+	return -1;
+}
 
 // These are expression tokens in order of precedence (last is highest precedence)
 enum EvalOperator {
@@ -1028,7 +1352,128 @@ enum EvalOperator {
 	EVOP_LOB,	// low byte of 16 bit value
 	EVOP_HIB,	// high byte of 16 bit value
 	EVOP_STP,	// Unexpected input, should stop and evaluate what we have
+	EVOP_ERR,	// Error
+	EVOP_NRY,	// Not ready yet
 };
+
+// Get a single token from a merlin expression
+EvalOperator Asm::RPNToken_Merlin(strref &expression, int pc, int scope_pc, int scope_end_pc, EvalOperator prev_op, short &section, int &value)
+{
+	char c = expression.get_first();
+	switch (c) {
+		case '$': ++expression; value = expression.ahextoui_skip(); return EVOP_VAL;
+		case '-': ++expression; return EVOP_SUB;
+		case '+': ++expression;	return EVOP_ADD;
+		case '*': // asterisk means both multiply and current PC, disambiguate!
+			++expression;
+			if (expression[0] == '*') return EVOP_STP; // double asterisks indicates comment
+			else if (prev_op==EVOP_VAL || prev_op==EVOP_RPR) return EVOP_MUL;
+			value = pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+		case '/': ++expression; return EVOP_DIV;
+		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
+			++expression; return EVOP_HIB;
+		case '<': if (expression.get_len() >= 2 && expression[1] == '<') { expression += 2; return EVOP_SHL; }
+			++expression; return EVOP_LOB;
+		case '%': // % means both binary and scope closure, disambiguate!
+			if (expression[1]=='0' || expression[1]=='1') {
+				++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
+			if (scope_end_pc<0) return EVOP_NRY;
+			++expression; value = scope_end_pc; return EVOP_VAL;
+		case '|':
+		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
+		case '^': ++expression; return EVOP_EOR;
+		case '&': ++expression; return EVOP_AND;
+		case '(': if (prev_op!=EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
+		case ')': ++expression; return EVOP_RPR;
+		case ',':
+		case '?':
+		case '\'': return EVOP_STP;
+		default: {	// MERLIN: ! is eor
+			if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
+			else if (c == '!' && !(expression + 1).len_label()) {
+				if (scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
+				++expression; value = scope_pc;  return EVOP_VAL;
+			} else if (strref::is_number(c)) {
+				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
+				value = expression.atoi_skip(); return EVOP_VAL;
+			} else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
+				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
+				char e0 = expression[0];
+				int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
+				strref label = expression.split_range_trim(label_end_char_range_merlin, start_pos);
+				Label *pLabel = GetLabel(label);
+				if (!pLabel) {
+					StatusCode ret = EvalStruct(label, value);
+					if (ret == STATUS_OK) return EVOP_VAL;
+					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
+				}
+				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
+				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
+			} else
+				return EVOP_ERR;
+			break;
+		}
+	}
+	return EVOP_NONE; // shouldn't get here normally
+}
+
+// Get a single token from most non-apple II assemblers
+EvalOperator Asm::RPNToken(strref &expression, int pc, int scope_pc, int scope_end_pc, EvalOperator prev_op, short &section, int &value)
+{
+	char c = expression.get_first();
+	switch (c) {
+		case '$': ++expression; value = expression.ahextoui_skip(); return EVOP_VAL;
+		case '-': ++expression; return EVOP_SUB;
+		case '+': ++expression;	return EVOP_ADD;
+		case '*': // asterisk means both multiply and current PC, disambiguate!
+			++expression;
+			if (expression[0] == '*') return EVOP_STP; // double asterisks indicates comment
+			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
+			value = pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+		case '/': ++expression; return EVOP_DIV;
+		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
+				  ++expression; return EVOP_HIB;
+		case '<': if (expression.get_len() >= 2 && expression[1] == '<') { expression += 2; return EVOP_SHL; }
+				  ++expression; return EVOP_LOB;
+		case '%': // % means both binary and scope closure, disambiguate!
+			if (expression[1] == '0' || expression[1] == '1') { ++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
+			if (scope_end_pc<0) return EVOP_NRY;
+			++expression; value = scope_end_pc; return EVOP_VAL;
+		case '|': ++expression; return EVOP_OR;
+		case '^': ++expression; return EVOP_EOR;
+		case '&': ++expression; return EVOP_AND;
+		case '(': if (prev_op != EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
+		case ')': ++expression; return EVOP_RPR;
+		case '.': return EVOP_ERR; // Merlin uses . instead of | for or, but . is allowed for labels in other assemblers
+		case ',':
+		case '?':
+		case '\'': return EVOP_STP;
+		default: {	// ! by itself is current scope, !+label char is a local label
+			if (c == '!' && !(expression + 1).len_label()) {
+				if (scope_pc < 0) return EVOP_NRY;
+				++expression; value = scope_pc; return EVOP_VAL;
+			} else if (strref::is_number(c)) {
+				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
+				value = expression.atoi_skip(); return EVOP_VAL;
+			} else if (c == '!' || c == ':' || strref::is_valid_label(c)) {
+				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
+				char e0 = expression[0];
+				int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
+				strref label = expression.split_range_trim(label_end_char_range, start_pos);
+				Label *pLabel = GetLabel(label);
+				if (!pLabel) {
+					StatusCode ret = EvalStruct(label, value);
+					if (ret == STATUS_OK) return EVOP_VAL;
+					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
+				}
+				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
+				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
+			}
+			return EVOP_ERR;
+		}
+	}
+	return EVOP_NONE; // shouldn't get here normally
+}
 
 //
 // EvalExpression
@@ -1042,179 +1487,191 @@ enum EvalOperator {
 //	ERROR_* means there is an error in the expression
 //
 
-StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scope_end_pc, int &result)
+// Max number of unresolved sections to evaluate in a single expression
+#define MAX_EVAL_SECTIONS 4
+
+StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scope_end_pc, int relative_section, int &result)
 {
-	int sp = 0;
 	int numValues = 0;
 	int numOps = 0;
-	char op_stack[MAX_EVAL_OPER];
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
-
+	short section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
+	short section_val[MAX_EVAL_VALUES];		// each value can be assigned to one section, or -1 if fixed
+	short num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	values[0] = 0;					// Initialize RPN if no expression
-	
-	EvalOperator prev_op = EVOP_NONE;
-	while (expression) {
-		int value = 0;
-		expression.skip_whitespace();
-		// Read a token from the expression (op)
-		EvalOperator op = EVOP_NONE;
-		char c = expression.get_first();
-		switch (c) {
-			case '$': ++expression; value = expression.ahextoui_skip(); op = EVOP_VAL; break;
-			case '-': ++expression; op = EVOP_SUB; break;
-			case '+': ++expression;	op = EVOP_ADD; break;
-			case '*': // asterisk means both multiply and current PC, disambiguate!
-				if (expression[1]=='*') op = EVOP_STP; // double asterisks indicates comment
-				else if (prev_op==EVOP_VAL || prev_op==EVOP_RPR) op = EVOP_MUL;
-				else { op = EVOP_VAL; value = pc; }
-				++expression;
-				break;
-			case '/': ++expression; op = EVOP_DIV; break;
-			case '>': if (expression.get_len()>=2 && expression[1]=='>') {
-				expression += 2; op = EVOP_SHR; } else { ++expression; op = EVOP_HIB; } break;
-			case '<': if (expression.get_len()>=2 && expression[1]=='<') {
-				expression += 2; op = EVOP_SHL; } else { ++expression; op = EVOP_LOB; } break;
-			case '%': // % means both binary and scope closure, disambiguate!
-				if (expression[1]=='0' || expression[1]=='1') {
-					++expression; value = expression.abinarytoui_skip(); op = EVOP_VAL; break; }
-				if (scope_end_pc<0) return STATUS_NOT_READY;
-				++expression; op = EVOP_VAL; value = scope_end_pc; break;
-			case '|': ++expression; op = EVOP_OR; break;
-			case '&': ++expression; op = EVOP_AND; break;
-			case '(': if (prev_op!=EVOP_VAL) { ++expression; op = EVOP_LPR; } else { op = EVOP_STP; } break;
-			case ')': ++expression; op = EVOP_RPR; break;
-			case ',':
-			case '?':
-			case '\'': op = EVOP_STP; break;
-			default: {
-				if (c == '!' && !(expression + 1).len_label()) {
-					if (scope_pc < 0)	// ! by itself is current scope, !+label char is a local label
-						return STATUS_NOT_READY;
-					++expression;
-					op = EVOP_VAL; value = scope_pc;
-					break;
+	StatusCode status = STATUS_OK;
+	{
+		int sp = 0;
+		char op_stack[MAX_EVAL_OPER];
+		EvalOperator prev_op = EVOP_NONE;
+		expression.trim_whitespace();
+		while (expression) {
+			int value = 0;
+			short section = -1, index_section = -1;
+			EvalOperator op = EVOP_NONE;
+			if (syntax == SYNTAX_MERLIN)
+				op = RPNToken_Merlin(expression, pc, scope_pc, scope_end_pc, prev_op, section, value);
+			else
+				op = RPNToken(expression, pc, scope_pc, scope_end_pc, prev_op, section, value);
+			if (op == EVOP_ERR)
+				return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
+			else if (op == EVOP_NRY)
+				return STATUS_NOT_READY;
+			if (section >= 0) {
+				if ((index_section = _oneOf(section, section_ids, num_sections)) < 0) {
+					if (num_sections == MAX_EVAL_SECTIONS) return STATUS_NOT_READY;
+					section_ids[index_section = num_sections++] = section;
 				}
-				else if (strref::is_number(c)) {
-					if (prev_op == EVOP_VAL) op = EVOP_STP;	// value followed by value doesn't make sense, stop
-					else { value = expression.atoi_skip(); op = EVOP_VAL; }
+			}
+
+			// this is the body of the shunting yard algorithm
+			if (op == EVOP_VAL) {
+				section_val[numValues] = index_section;	// only value operators can be section specific
+				values[numValues++] = value;
+				ops[numOps++] = op;
+			} else if (op == EVOP_LPR) {
+				op_stack[sp++] = op;
+			} else if (op == EVOP_RPR) {
+				while (sp && op_stack[sp-1]!=EVOP_LPR) {
+					sp--;
+					ops[numOps++] = op_stack[sp];
 				}
-				else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
-					if (prev_op == EVOP_VAL)
-						op = EVOP_STP;	// a value followed by a value does not make sense, probably start of a comment
-					else {
-						char e0 = expression[0];
-						int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
-						strref label = expression.split_range_trim(label_end_char_range, start_pos);//.split_label();
-						Label *pValue = GetLabel(label);
-						if (!pValue) {
-							StatusCode ret = EvalStruct(label, value);
-							if (ret == STATUS_OK) {
-								op = EVOP_VAL; break;
-							} else if (ret != STATUS_NOT_STRUCT) return ret;	// partial struct
-						}
-						if (!pValue || !pValue->evaluated)	// this label could not be found (yet)
-							return STATUS_NOT_READY;
-						value = pValue->value; op = EVOP_VAL;
-					}
-				} else
-					return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
+				// check that there actually was a left parenthesis
+				if (!sp || op_stack[sp-1]!=EVOP_LPR)
+					return ERROR_UNBALANCED_RIGHT_PARENTHESIS;
+				sp--; // skip open paren
+			} else if (op == EVOP_STP) {
 				break;
+			} else {
+				while (sp) {
+					EvalOperator p = (EvalOperator)op_stack[sp-1];
+					if (p==EVOP_LPR || op>p)
+						break;
+					ops[numOps++] = p;
+					sp--;
+				}
+				op_stack[sp++] = op;
 			}
+			// check for out of bounds or unexpected input
+			if (numValues==MAX_EVAL_VALUES)
+				return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
+			else if (numOps==MAX_EVAL_OPER || sp==MAX_EVAL_OPER)
+				return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
+
+			prev_op = op;
+			expression.skip_whitespace();
 		}
-
-		// this is the body of the shunting yard algorithm
-		if (op == EVOP_VAL) {
-			values[numValues++] = value;
-			ops[numOps++] = op;
-		} else if (op == EVOP_LPR) {
-			op_stack[sp++] = op;
-		} else if (op == EVOP_RPR) {
-			while (sp && op_stack[sp-1]!=EVOP_LPR) {
-				sp--;
-				ops[numOps++] = op_stack[sp];
-			}
-			// check that there actually was a left parenthesis
-			if (!sp || op_stack[sp-1]!=EVOP_LPR)
-				return ERROR_UNBALANCED_RIGHT_PARENTHESIS;
-			sp--; // skip open paren
-		} else if (op == EVOP_STP) {
-			break;
-		} else {
-			while (sp) {
-				EvalOperator p = (EvalOperator)op_stack[sp-1];
-				if (p==EVOP_LPR || op>p)
-					break;
-				ops[numOps++] = p;
-				sp--;
-			}
-			op_stack[sp++] = op;
+		while (sp) {
+			sp--;
+			ops[numOps++] = op_stack[sp];
 		}
-		// check for out of bounds or unexpected input
-		if (numValues==MAX_EVAL_VALUES)
-			return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
-		else if (numOps==MAX_EVAL_OPER || sp==MAX_EVAL_OPER)
-			return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
-
-		prev_op = op;
 	}
-	while (sp) {
-		sp--;
-		ops[numOps++] = op_stack[sp];
-	}
-
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
 	// exceed itself.
-	int valIdx = 0;
-	for (int o = 0; o<numOps; o++) {
-		EvalOperator op = (EvalOperator)ops[o];
-		if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && sp<2)
-			break; // ignore suffix operations that are lacking values
-		switch (op) {
-			case EVOP_VAL:	// value
-				values[sp++] = values[valIdx++]; break;
-			case EVOP_ADD:	// +
-				sp--; values[sp-1] += values[sp]; break;
-			case EVOP_SUB:	// -
-				sp--; values[sp-1] -= values[sp]; break;
-			case EVOP_MUL:	// *
-				sp--; values[sp-1] *= values[sp];; break;
-			case EVOP_DIV:	// /
-				sp--; values[sp-1] /= values[sp]; break;
-			case EVOP_AND:	// &
-				sp--; values[sp-1] &= values[sp]; break;
-			case EVOP_OR:	// |
-				sp--; values[sp-1] |= values[sp]; break;
-			case EVOP_EOR:	// ^
-				sp--; values[sp-1] ^= values[sp]; break;
-			case EVOP_SHL:	// <<
-				sp--; values[sp-1] <<= values[sp]; break;
-			case EVOP_SHR:	// >>
-				sp--; values[sp-1] >>= values[sp]; break;
-			case EVOP_LOB:	// low byte
-				values[sp-1] &= 0xff; break;
-			case EVOP_HIB:
-				values[sp-1] = (values[sp-1]>>8)&0xff; break;
-			default:
-				return ERROR_EXPRESSION_OPERATION;
-				break;
+	{
+		int valIdx = 0;
+		int ri = 0;		// RPN index (value)
+		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES];
+		for (int o = 0; o<numOps; o++) {
+			EvalOperator op = (EvalOperator)ops[o];
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && ri<2)
+				break; // ignore suffix operations that are lacking values
+			switch (op) {
+				case EVOP_VAL:	// value
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri] = i==section_val[ri] ? 1 : 0;
+					values[ri++] = values[valIdx++]; break;
+				case EVOP_ADD:	// +
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] += section_counts[i][ri];
+					values[ri-1] += values[ri]; break;
+				case EVOP_SUB:	// -
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] -= section_counts[i][ri];
+					values[ri-1] -= values[ri]; break;
+				case EVOP_MUL:	// *
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] *= values[ri]; break;
+				case EVOP_DIV:	// /
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] /= values[ri]; break;
+				case EVOP_AND:	// &
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] &= values[ri]; break;
+				case EVOP_OR:	// |
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] |= values[ri]; break;
+				case EVOP_EOR:	// ^
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] ^= values[ri]; break;
+				case EVOP_SHL:	// <<
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] <<= values[ri]; break;
+				case EVOP_SHR:	// >>
+					ri--;
+					for (int i = 0; i<num_sections; i++)
+						section_counts[i][ri-1] |= section_counts[i][ri];
+					values[ri-1] >>= values[ri]; break;
+				case EVOP_LOB:	// low byte
+					values[ri-1] &= 0xff; break;
+				case EVOP_HIB:
+					values[ri-1] = (values[ri-1]>>8)&0xff; break;
+				default:
+					return ERROR_EXPRESSION_OPERATION;
+					break;
+			}
+		}
+		int section_index = -1;
+		bool curr_relative = false;
+		// If relative to any section unless specifically interested in a relative value then return not ready
+		for (int i = 0; i<num_sections; i++) {
+			if (section_counts[i][0]) {
+				if (section_counts[i][0]!=1 || section_index>=0)
+					return STATUS_NOT_READY;
+				else if (relative_section==section_ids[i])
+					curr_relative = true;
+				else if (relative_section>=0)
+					return STATUS_NOT_READY;
+				section_index = i;
+			}
+		}
+		result = values[0];
+		if (section_index>=0 && !curr_relative) {
+			lastEvalSection = section_ids[section_index];
+			return STATUS_RELATIVE_SECTION;
 		}
 	}
-	result = values[0];
+			
 	return STATUS_OK;
 }
 
 
 // if an expression could not be evaluated, add it along with
 // the action to perform if it can be evaluated later.
-void Asm::AddLateEval(int pc, int scope_pc, unsigned char *target, strref expression, strref source_file, LateEval::Type type)
+void Asm::AddLateEval(int pc, int scope_pc, strref expression, strref source_file, LateEval::Type type)
 {
 	LateEval le;
 	le.address = pc;
 	le.scope = scope_pc;
-	le.target = target;
+	le.target = CurrSection().DataOffset();
+	le.section = (int)(&CurrSection() - &allSections[0]);
 	le.label.clear();
 	le.expression = expression;
 	le.source_file = source_file;
@@ -1270,21 +1727,31 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 				}
 			}
 			if (check) {
-				int ret = EvalExpression(i->expression, i->address, i->scope, scope_end, value);
+				int ret = EvalExpression(i->expression, i->address, i->scope, scope_end,
+										 i->type==LateEval::LET_BRANCH ? SectionId() : -1, value);
 				if (ret == STATUS_OK) {
+					// Check if target section merged with another section
+					size_t trg = i->target;
+					int sec = i->section;
+					if (i->type != LateEval::LET_LABEL) {
+						if (allSections[sec].IsMergedSection()) {
+							trg += allSections[sec].merged_offset;
+							sec = allSections[sec].merged_section;
+						}
+					}
 					switch (i->type) {
 						case LateEval::LET_BRANCH:
-							value -= i->address;
+							value -= i->address+1;
 							if (value<-128 || value>127)
 								return ERROR_BRANCH_OUT_OF_RANGE;
-							*i->target = (unsigned char)value;
+							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_BYTE:
-							i->target[0] = value&0xff;
+							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_ABS_REF:
-							i->target[0] = value&0xff;
-							i->target[1] = (value>>8)&0xff;
+
+							allSections[sec].SetWord(trg, value);
 							break;
 						case LateEval::LET_LABEL: {
 							Label *label = GetLabel(i->label);
@@ -1456,9 +1923,9 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	while (strref arg = args.split_token_trim(',')) {
 		strref start = arg[0]=='(' ? arg.scoped_block_skip() : arg.split_token_trim('-');
 		int addr0 = 0, addr1 = 0;
-		if (STATUS_OK != EvalExpression(start, address, scope_address[scope_depth], -1, addr0))
+		if (STATUS_OK != EvalExpression(start, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, addr0))
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
-		if (STATUS_OK != EvalExpression(arg, address, scope_address[scope_depth], -1, addr1))
+		if (STATUS_OK != EvalExpression(arg, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, addr1))
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 		if (addr1<=addr0 || addr0<0)
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
@@ -1511,6 +1978,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->label_name = label;
 	pLabel->expression = pool.pool_name;
 	pLabel->evaluated = true;
+	pLabel->section = -1;	// pool labels are section-less
 	pLabel->value = addr;
 	pLabel->zero_page = addr<0x100;
 	pLabel->pc_relative = true;
@@ -1591,7 +2059,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 {
 	line.trim_whitespace();
 	int val = 0;
-	StatusCode status = EvalExpression(line, address, scope_address[scope_depth], -1, val);
+	StatusCode status = EvalExpression(line, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, val);
 	if (status != STATUS_NOT_READY && status != STATUS_OK)
 		return status;
 	
@@ -1605,6 +2073,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	pLabel->label_name = label;
 	pLabel->expression = line;
 	pLabel->evaluated = status==STATUS_OK;
+	pLabel->section = -1;	// assigned labels are section-less
 	pLabel->value = val;
 	pLabel->zero_page = pLabel->evaluated && val<0x100;
 	pLabel->pc_relative = false;
@@ -1612,7 +2081,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (!pLabel->evaluated)
-		AddLateEval(label, address, scope_address[scope_depth], line, LateEval::LET_LABEL);
+		AddLateEval(label, CurrSection().GetPC(), scope_address[scope_depth], line, LateEval::LET_LABEL);
 	else {
 		if (local)
 			MarkLabelLocal(label);
@@ -1629,14 +2098,15 @@ StatusCode Asm::AddressLabel(strref label)
 	bool constLabel = false;
 	if (!pLabel)
 		pLabel = AddLabel(label.fnv1a());
-	else if (pLabel->constant && pLabel->value != address)
+	else if (pLabel->constant && pLabel->value != CurrSection().GetPC())
 		return ERROR_MODIFYING_CONST_LABEL;
 	else
 		constLabel = pLabel->constant;
 	
 	pLabel->label_name = label;
 	pLabel->expression.clear();
-	pLabel->value = address;
+	pLabel->section = CurrSection().IsRelativeSection() ? SectionId() : -1;	// address labels are based on section
+	pLabel->value = CurrSection().GetPC();
 	pLabel->evaluated = true;
 	pLabel->pc_relative = true;
 	pLabel->constant = constLabel;
@@ -1774,9 +2244,9 @@ StatusCode Asm::EvalStatement(strref line, bool &result)
 			++right;
 		right.trim_whitespace();
 		int value_left, value_right;
-		if (STATUS_OK != EvalExpression(left, address, scope_address[scope_depth], -1, value_left))
+		if (STATUS_OK != EvalExpression(left, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value_left))
 			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		if (STATUS_OK != EvalExpression(right, address, scope_address[scope_depth], -1, value_right))
+		if (STATUS_OK != EvalExpression(right, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value_right))
 			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
 		result = (value_left==value_right && equal) || (value_left!=value_right && !equal);
 	} else {
@@ -1784,7 +2254,7 @@ StatusCode Asm::EvalStatement(strref line, bool &result)
 		if (invert)
 			++line;
 		int value;
-		if (STATUS_OK != EvalExpression(line, address, scope_address[scope_depth], -1, value))
+		if (STATUS_OK != EvalExpression(line, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value))
 			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
 		result = (value!=0 && !invert) || (value==0 && invert);
 	}
@@ -1831,6 +2301,8 @@ DirectiveName aDirectiveNames[] {
 	{ "PC", AD_ORG },
 	{ "ORG", AD_ORG },
 	{ "LOAD", AD_LOAD },
+	{ "SECTION", AD_SECTION },
+	{ "LINK", AD_LINK },
 	{ "ALIGN", AD_ALIGN },
 	{ "MACRO", AD_MACRO },
 	{ "EVAL", AD_EVAL },
@@ -1869,13 +2341,18 @@ DirectiveName aDirectiveNames[] {
 	{ "ENUM", AD_ENUM },
 	{ "REPT", AD_REPT },
 	{ "INCDIR", AD_INCDIR },
-	{ "HEX", AD_HEX },
-	{ "EJECT", AD_EJECT },
-	{ "USR", AD_USR },
-	{ "DUM", AD_DUMMY },
-	{ "DEND", AD_DUMMY_END },
-	{ "LST", AD_LST },
-	{ "DS", AD_DS },
+	{ "HEX", AD_HEX },			// MERLIN
+	{ "DO", AD_IF },			// MERLIN
+	{ "FIN", AD_ENDIF },		// MERLIN
+	{ "EJECT", AD_EJECT },		// MERLIN
+	{ "OBJ", AD_EJECT },		// MERLIN
+	{ "TR", AD_EJECT },			// MERLIN
+	{ "USR", AD_USR },			// MERLIN
+	{ "DUM", AD_DUMMY },		// MERLIN
+	{ "DEND", AD_DUMMY_END },	// MERLIN
+	{ "LST", AD_LST },			// MERLIN
+	{ "LSTDO", AD_LST },		// MERLIN
+	{ "DS", AD_DS },			// MERLIN
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -1890,56 +2367,53 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	}
 	switch (dir) {
 		case AD_ORG: {		// org / pc: current address of code
-			if (line.has_prefix("org"))
-				break;
 			int addr;
-			if (line[0]=='=' || keyword_equ.is_prefix_word(line))	// optional '=' or equ
+			if (line[0]=='=')
+				++line;
+			else if(keyword_equ.is_prefix_word(line))	// optional '=' or equ
 				line.next_word_ws();
-			if ((error = EvalExpression(line, address, scope_address[scope_depth], -1, addr))) {
+			line.skip_whitespace();
+			if ((error = EvalExpression(line, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, addr))) {
 				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 				break;
 			}
-			bool no_code = curr == output;
-			address = addr;
-			scope_address[scope_depth] = address;
-			if (!set_load_address || no_code) {
-				load_address = address;
-				set_load_address = true;
-			}
+			SetSection(strref(), addr);
 			break;
 		}
 		case AD_LOAD: {		// load: address for target to load code at
 			int addr;
 			if (line[0]=='=' || keyword_equ.is_prefix_word(line))
 				line.next_word_ws();
-			if ((error = EvalExpression(line, address, scope_address[scope_depth], -1, addr))) {
+			if ((error = EvalExpression(line, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, addr))) {
 				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 				break;
 			}
-			address = addr;
-			scope_address[scope_depth] = address;
-			if (!set_load_address) {
-				load_address = address;
-				set_load_address = true;
-			}
+			CurrSection().SetLoadAddress(addr);
 			break;
 		}
+
+		case AD_SECTION:
+			line.trim_whitespace();
+			SetSection(line);
+			break;
+
+		case AD_LINK:
+			line.trim_whitespace();
+			error = LinkSections(line);
+			break;
+
 		case AD_ALIGN:		// align: align address to multiple of value, fill space with 0
 			if (line) {
 				if (line[0]=='=' || keyword_equ.is_prefix_word(line))
 					line.next_word_ws();
 				int value;
-				int status = EvalExpression(line, address, scope_address[scope_depth], -1, value);
+				int status = EvalExpression(line, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 				if (status == STATUS_NOT_READY)
 					error = ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY;
 				else if (status == STATUS_OK && value>0) {
-					int add = (address + value-1) % value;
-					address += add;
-					if (!dummySection) {
-						CheckOutputCapacity(add);
-						for (int a = 0; a < add; a++)
-							*curr++ = 0;
-					}
+					int add = (CurrSection().GetPC() + value-1) % value;
+					for (int a = 0; a < add; a++)
+						AddByte(0);
 				}
 			}
 			break;
@@ -1947,7 +2421,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			int value = 0;
 			strref description = line.find(':')>=0 ? line.split_token_trim(':') : strref();
 			line.trim_whitespace();
-			if (line && EvalExpression(line, address, scope_address[scope_depth], -1, value) == STATUS_OK) {
+			if (line && EvalExpression(line, CurrSection().GetPC(),
+				scope_address[scope_depth], -1, -1, value) == STATUS_OK) {
 				if (description) {
 					printf("EVAL(%d): " STRREF_FMT ": \"" STRREF_FMT "\" = $%x\n",
 						   contextStack.curr().source_file.count_lines(description)+1, STRREF_ARG(description), STRREF_ARG(line), value);
@@ -1967,32 +2442,26 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_BYTES:		// bytes: add bytes by comma separated values/expressions
 			while (strref exp = line.split_token_trim(',')) {
 				int value;
-				error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
+				error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 				if (error>STATUS_NOT_READY)
 					break;
 				else if (error==STATUS_NOT_READY)
-					AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
-				if (!dummySection) {
-					CheckOutputCapacity(1);
-					*curr++ = value;
-				}
-				address++;
+					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
+				else
+					AddByte(value);
 			}
 			break;
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
 			while (strref exp = line.split_token_trim(',')) {
-				if (!dummySection) {
-					int value;
-					error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
+				int value = 0;
+					if (!CurrSection().IsDummySection()) {
+						error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 					if (error>STATUS_NOT_READY)
 						break;
 					else if (error==STATUS_NOT_READY)
-						AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_ABS_REF);
-					CheckOutputCapacity(2);
-					*curr++ = (char)value;
-					*curr++ = (char)(value >> 8);
+						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_ABS_REF);
 				}
-				address += 2;
+				AddWord(value);
 			}
 			break;
 		case AD_DC: {
@@ -2009,21 +2478,18 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			while (strref exp = line.split_token_trim(',')) {
 				int value = 0;
-				if (!dummySection) {
-					error = EvalExpression(exp, address, scope_address[scope_depth], -1, value);
+				if (!CurrSection().IsDummySection()) {
+					error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 					if (error > STATUS_NOT_READY)
 						break;
 					else if (error == STATUS_NOT_READY)
-						AddLateEval(address, scope_address[scope_depth], curr, exp, source_file, LateEval::LET_BYTE);
-					CheckOutputCapacity(2);
-					*curr++ = value;
+						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
+					else if (error == STATUS_RELATIVE_SECTION)
+						CurrSection().AddReloc(value, CurrSection().GetPC(), lastEvalSection, Reloc::WORD);
 				}
-				address++;
-				if (words) {
-					if (!dummySection)
-						*curr++ = (char)(value>>8);
-					address++;
-				}
+				AddByte(value);
+				if (words)
+					AddByte(value>>8);
 			}
 			break;
 		}
@@ -2033,13 +2499,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				char c = *line.get();
 				++line;
 				if (c == ',') {
-					if (b) { // probably an error but seems safe
-						if (!dummySection) {
-							CheckOutputCapacity(1);
-							*curr++ = v;
-						}
-						address++;
-					}
+					if (b) // probably an error but seems safe
+						AddByte(v);
 					b = 0;
 					line.skip_whitespace();
 				}
@@ -2049,13 +2510,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					else if (c >= 'a' && c <= 'z') v = (v << 4) + (c - 'a' + 10);
 					else break;
 					b ^= 1;
-					if (!b) {
-						if (!dummySection) {
-							CheckOutputCapacity(1);
-							*curr++ = v;
-						}
-						address++;
-					}
+					if (!b)
+						AddByte(v);
 				}
 			}
 			if (b)
@@ -2079,28 +2535,18 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			CheckOutputCapacity(line.get_len());
 			{
 				if (!text_prefix || text_prefix.same_str("ascii")) {
-					if (!dummySection) {
-						memcpy(curr, line.get(), line.get_len());
-						curr += line.get_len();
-					}
-					address += line.get_len();
+					AddBin((unsigned const char*)line.get(), line.get_len());
 				} else if (text_prefix.same_str("petscii")) {
 					while (line) {
-						if (!dummySection) {
-							char c = line[0];
-							*curr++ = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c > 0x60 ? ' ' : line[0]);
-						}
-						address++;
+						char c = line[0];
+						AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c > 0x60 ? ' ' : line[0]));
 						++line;
 					}
 				} else if (text_prefix.same_str("petscii_shifted")) {
 					while (line) {
-						if (!dummySection) {
-							char c = line[0];
-							*curr++ = (c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
-								((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0]));
-						}
-						address++;
+						char c = line[0];
+						AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
+							((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0])));
 						++line;
 					}
 				}
@@ -2123,7 +2569,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				file = line.split_range(filename_end_char_range);
 			size_t size = 0;
 			char *buffer = nullptr;
-			if (buffer = LoadText(file, size)) {
+			if ((buffer = LoadText(file, size))) {
 				loadedData.push_back(buffer);
 				strref src(buffer, strl_t(size));
 				contextStack.push(file, src, src);
@@ -2134,14 +2580,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			} else {
 				strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
 				fileadd.append(".s");
-				if (buffer = LoadText(fileadd.get_strref(), size)) {
+				if ((buffer = LoadText(fileadd.get_strref(), size))) {
 					loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
 					strref src(buffer, strl_t(size));
 					contextStack.push(file, src, src);
 				} else {
 					fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
 					fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
-					if (buffer = LoadText(fileadd.get_strref(), size)) {
+					if ((buffer = LoadText(fileadd.get_strref(), size))) {
 						loadedData.push_back(buffer);
 						strref src(buffer, strl_t(size));
 						contextStack.push(file, src, src);
@@ -2155,13 +2601,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			strown<512> filename(line);
 			size_t size = 0;
 			if (char *buffer = LoadBinary(line, size)) {
-				if (!dummySection) {
-					CheckOutputCapacity((unsigned int)size);
-					memcpy(curr, buffer, size);
-					free(buffer);
-					curr += size;
-				}
-				address += (unsigned int)size;
+				AddBin((const unsigned char*)buffer, (int)size);
 				free(buffer);
 			}
 			break;
@@ -2278,8 +2718,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				read_source.skip_whitespace();
 				expression.trim_whitespace();
 				int count;
-				if (STATUS_OK != EvalExpression(expression, address,
-					scope_address[scope_depth], -1, count)) {
+				if (STATUS_OK != EvalExpression(expression, CurrSection().GetPC(),
+					scope_address[scope_depth], -1, -1, count)) {
 					error = ERROR_REPT_COUNT_EXPRESSION;
 					break;
 				}
@@ -2296,28 +2736,34 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			line.clear();
 			break;
 		case AD_DUMMY:
-			dummySection = true;
+//			dummySection = true;
 			line.trim_whitespace();
 			if (line) {
 				int reorg;
-				if (STATUS_OK == EvalExpression(line, address, scope_address[scope_depth], -1, reorg))
-					address = reorg;
+				if (STATUS_OK == EvalExpression(line, CurrSection().GetPC(),
+					scope_address[scope_depth], -1, -1, reorg)) {
+					DummySection(reorg);
+					break;
+				}
 			}
+			DummySection();
 			break;
 		case AD_DUMMY_END:
-			dummySection = false;
+			if (CurrSection().IsDummySection())
+				EndSection();
+//			dummySection = false;
 			break;
 		case AD_DS: {
 			int value;
-			if (STATUS_OK != EvalExpression(line, address, scope_address[scope_depth], -1, value))
+			if (STATUS_OK != EvalExpression(line, CurrSection().GetPC(),
+				scope_address[scope_depth], -1, -1, value))
 				error = ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
 			else {
-				if (value > 0 && !dummySection) {
-					CheckOutputCapacity(value);
+				if (value > 0) {
 					for (int n = 0; n < value; n++)
-						*curr++ = 0;
-				}
-					address += value;
+						AddByte(0);
+				} else
+					CurrSection().AddAddress(value);
 			}
 			break;
 		}
@@ -2451,19 +2897,23 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 		group==OPG_CC10&&index>=OPI_STX&&index<=OPI_LDX, error, expression);
 	
 	int value = 0;
+	int target_section = -1;
 	bool evalLater = false;
 	if (expression) {
-		error = EvalExpression(expression, address, scope_address[scope_depth], -1, value);
+		error = EvalExpression(expression, CurrSection().GetPC(),
+							   scope_address[scope_depth], -1,
+							   (group==OPG_BRANCH ? SectionId() : -1), value);
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
 			error = STATUS_OK;
-		}
-		if (error != STATUS_OK)
+		} else if (error == STATUS_RELATIVE_SECTION)
+			target_section = lastEvalSection;
+		else if (error != STATUS_OK)
 			return error;
 	}
 	
 	// check if address is in zero page range and should use a ZP mode instead of absolute
-	if (!evalLater && value>=0 && value<0x100 && group!=OPG_BRANCH) {
+	if (!evalLater && value>=0 && value<0x100 && group!=OPG_BRANCH && error != STATUS_RELATIVE_SECTION) {
 		switch (addrMode) {
 			case AM_ABSOLUTE:
 				addrMode = AM_ZP;
@@ -2570,45 +3020,35 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 		}
 	}
 	// Add the instruction and argument to the code
-	if (error == STATUS_OK) {
+	if (error == STATUS_OK || error == STATUS_RELATIVE_SECTION) {
 		CheckOutputCapacity(4);
 		switch (codeArg) {
 			case CA_BRANCH:
-				address += 2;
-				if (!dummySection) {
-					if (evalLater)
-						AddLateEval(address, scope_address[scope_depth], curr + 1, expression, source_file, LateEval::LET_BRANCH);
-					else if (((int)value - (int)address) < -128 || ((int)value - (int)address) > 127) {
-						error = ERROR_BRANCH_OUT_OF_RANGE;
-						break;
-					}
-					*curr++ = opcode;
-					*curr++ = evalLater ? 0 : (unsigned char)((int)value - (int)address);
+				AddByte(opcode);
+				if (evalLater)
+					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
+				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127) {
+					error = ERROR_BRANCH_OUT_OF_RANGE;
+					break;
 				}
+				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 			case CA_ONE_BYTE:
-				if (!dummySection) {
-					*curr++ = opcode;
-					if (evalLater)
-						AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_BYTE);
-					*curr++ = (char)value;
-				}
-				address += 2;
+				AddByte(opcode);
+				if (evalLater || error == STATUS_RELATIVE_SECTION)
+					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				AddByte(value);
 				break;
 			case CA_TWO_BYTES:
-				if (!dummySection) {
-					*curr++ = opcode;
-					if (evalLater)
-						AddLateEval(address, scope_address[scope_depth], curr, expression, source_file, LateEval::LET_ABS_REF);
-					*curr++ = (char)value;
-					*curr++ = (char)(value >> 8);
-				}
-				address += 3;
+				AddByte(opcode);
+				if (evalLater)
+					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
+				else
+					CurrSection().AddReloc(value, CurrSection().GetPC(), target_section, Reloc::WORD);
+				AddWord(value);
 				break;
 			case CA_NONE:
-				if (!dummySection)
-					*curr++ = opcode;
-				address++;
+				AddByte(opcode);
 				break;
 		}
 	}
@@ -2637,19 +3077,28 @@ void Asm::PrintError(strref line, StatusCode error)
 StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 {
 	StatusCode error = STATUS_OK;
+
+	// MERLIN: First char of line is * means comment
+	if (syntax==SYNTAX_MERLIN && line[0]=='*')
+		return STATUS_OK;
+
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
+		char char0 = line[0]; // first char including white space
 		line.skip_whitespace();	// skip to first character
 		line = line.before_or_full(';'); // clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
 		strref line_nocom = line;
-		strref operation = line.split_range(label_end_char_range);
-		char char0 = operation[0];			// first char
-		char charE = operation.get_last();	// end char
+		strref operation = line.split_range(syntax==SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+		char char1 = operation[0];			// first char of first word
+		char charE = operation.get_last();	// end char of first word
+
 		line.trim_whitespace();
-		// MERLIN fixes and PoP does some naughty stuff like 'and = 0'
-		bool force_label = char0==']' || charE==':' || charE=='?' || charE=='$';
+		bool force_label = charE==':' || charE=='$';
+		if (!force_label && syntax==SYNTAX_MERLIN && line) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
+			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
+		
 		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
 				// scope open / close
@@ -2658,14 +3107,14 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						if (scope_depth>=(MAX_SCOPE_DEPTH-1))
 							error = ERROR_TOO_DEEP_SCOPE;
 						else {
-							scope_address[++scope_depth] = address;
+							scope_address[++scope_depth] = CurrSection().GetPC();
 							++line;
 							line.skip_whitespace();
 						}
 						break;
 					case '}':
 						// check for late eval of anything with an end scope
-						CheckLateEval(strref(), address);
+						CheckLateEval(strref(), CurrSection().GetPC());
 						FlushLocalLabels(scope_depth);
 						FlushLabelPools(scope_depth);
 						--scope_depth;
@@ -2742,11 +3191,18 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						labPool++;
 					}
 					if (!gotConstruct) {
-						if (label.get_last()==':')
-							label.clip(1);
-						error = AddressLabel(label);
-						if (line[0]==':' || line[0]=='?')
-							++line;	// there may be codes after the label
+						if (syntax==SYNTAX_MERLIN && strref::is_ws(line_start[0])) {
+							error = ERROR_UNDEFINED_CODE;
+						} else if (label[0]=='$' || strref::is_number(label[0]))
+							line.clear();
+						else {
+							if (label.get_last()==':')
+								label.clip(1);
+							error = AddressLabel(label);
+							line = line_start + int(label.get() + label.get_len() -line_start.get());
+							if (line[0]==':' || line[0]=='?')
+								++line;	// there may be codes after the label
+						}
 					}
 				}
 			}
@@ -2779,7 +3235,7 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 		contextStack.curr().read_source = contextStack.curr().next_source;
 	}
 	if (error == STATUS_OK) {
-		error = CheckLateEval(strref(), address);
+		error = CheckLateEval(strref(), CurrSection().GetPC());
 	}
 	return error;
 }
@@ -2793,7 +3249,7 @@ void Asm::Assemble(strref source, strref filename)
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
 
-	scope_address[scope_depth] = address;
+	scope_address[scope_depth] = CurrSection().GetPC();
 	while (contextStack.has_work()) {
 		error = BuildSegment(pInstr, numInstructions);
 		if (contextStack.curr().complete())
@@ -2846,6 +3302,8 @@ int main(int argc, char **argv)
 			++arg;
 			if (arg.get_first()=='i')
 				assembler.AddIncludeFolder(arg+1);
+			else if (arg.same_str("merlin"))
+				assembler.syntax = SYNTAX_MERLIN;
 			else if (arg.get_first()=='D' || arg.get_first()=='d') {
 				++arg;
 				if (arg.find('=')>0)
@@ -2875,12 +3333,13 @@ int main(int argc, char **argv)
 	if (!source_filename) {
 		puts("Usage:\nAsm6502 [options] filename.s code.prg\n"
 			 " * -i<path>: Add include path\n * -D<label>[=<value>]: Define a label with an optional value (otherwise 1)\n"
-			 " * -bin: Raw binary\n * -c64: Include load address\n * -a2b: Apple II Dos 3.3 binary executable\n"
-			 " * -sym <file.sym>: vice/kick asm symbol file\n * -vice <file.vs>: export a vice symbol file\n"
-			"https://github.com/sakrac/Asm6502\n");
+			 " * -bin: Raw binary\n * -c64: Include load address (default)\n * -a2b: Apple II Dos 3.3 Binary\n"
+			 " * -sym <file.sym>: vice/kick asm symbol file\n"
+			 " * -vice <file.vs>: export a vice symbol file\nhttps://github.com/sakrac/Asm6502\n");
 		return 0;
 	}
 	
+
 	// Load source
 	if (source_filename) {
 		size_t size = 0;
@@ -2892,21 +3351,36 @@ int main(int argc, char **argv)
 			assembler.symbol_export = sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]));
 			
-			if (0 && assembler.errorEncountered)
+			/*if (assembler.errorEncountered)
 				return_value = 1;
-			else {
-				if (binary_out_name && assembler.curr > assembler.output) {
+			else*/ {
+
+				printf("SECTIONS SUMMARY\n===============Y\n");
+				for (size_t i = 0; i<assembler.allSections.size(); ++i) {
+					Section &s = assembler.allSections[i];
+					printf("Section %d: \"" STRREF_FMT "\" Dummy: %s Relative: %s Start: 0x%04x End: 0x%04x\n",
+						   (int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
+						   s.IsRelativeSection() ? "yes" : "no", s.start_address, s.address);
+					if (s.pRelocs) {
+						for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
+							printf("\tReloc value $%x at offs $%x section %d\n", i->base_value, i->section_offset, i->target_section);
+					}
+				}
+
+				if (binary_out_name && !assembler.CurrSection().empty()) {
 					if (FILE *f = fopen(binary_out_name, "wb")) {
 						if (load_header) {
-							char addr[2] = { (char)assembler.load_address, (char)(assembler.load_address >> 8) };
+							char addr[2] = {
+								(char)assembler.CurrSection().GetLoadAddress(),
+								(char)(assembler.CurrSection().GetLoadAddress() >> 8) };
 							fwrite(addr, 2, 1, f);
 						}
 						if (size_header) {
-							int int_size = int(assembler.curr - assembler.output);
+							size_t int_size = assembler.CurrSection().size();
 							char byte_size[2] = { (char)int_size, (char)(int_size >> 8) };
 							fwrite(byte_size, 2, 1, f);
 						}
-						fwrite(assembler.output, assembler.curr - assembler.output, 1, f);
+						fwrite(assembler.CurrSection().get(), assembler.CurrSection().size(), 1, f);
 						fclose(f);
 					}
 				}
