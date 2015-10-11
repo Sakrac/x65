@@ -115,6 +115,7 @@ enum StatusCode {
 	ERROR_REPT_MISSING_SCOPE,
 	ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION,
 	ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
+	ERROR_UNABLE_TO_PROCESS,
 
 	STATUSCODE_COUNT
 };
@@ -169,6 +170,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"rept is missing a scope ('{ ... }')",
 	"Link can only be used in a fixed address section",
 	"Link can not be used in dummy sections",
+	"Can not process this line",
 };
 
 // Assembler directives
@@ -215,6 +217,28 @@ enum OperationType {
 	OT_DIRECTIVE
 };
 
+// These are expression tokens in order of precedence (last is highest precedence)
+enum EvalOperator {
+	EVOP_NONE,
+	EVOP_VAL='a',	// a, value => read from value queue
+	EVOP_LPR,		// b, left parenthesis
+	EVOP_RPR,		// c, right parenthesis
+	EVOP_ADD,		// d, +
+	EVOP_SUB,		// e, -
+	EVOP_MUL,		// f, * (note: if not preceded by value or right paren this is current PC)
+	EVOP_DIV,		// g, /
+	EVOP_AND,		// h, &
+	EVOP_OR,		// i, |
+	EVOP_EOR,		// j, ^
+	EVOP_SHL,		// k, <<
+	EVOP_SHR,		// l, >>
+	EVOP_LOB,		// m, low byte of 16 bit value
+	EVOP_HIB,		// n, high byte of 16 bit value
+	EVOP_STP,		// o, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// p, Not ready yet
+	EVOP_ERR,		// q, Error
+};
+
 // Opcode encoding
 typedef struct {
 	unsigned int op_hash;
@@ -246,8 +270,6 @@ enum AddressingMode {
 	AM_NONE,			// 10 <empty>
 	AM_INVALID,			// 11
 };
-
-enum EvalOperator;
 
 // How instruction argument is encoded
 enum CODE_ARG {
@@ -316,7 +338,7 @@ unsigned char CC10Mask[] = { 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0xae, 0xaa, 0xaa };
 // hardtexted strings
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
-static const strref label_end_char_range("!0-9a-zA-Z_@$!.:");
+static const strref label_end_char_range("!0-9a-zA-Z_@$!.");
 static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$!]:?");
 static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()\\-");
 static const strref keyword_equ("equ");
@@ -1339,28 +1361,6 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 //
 
 
-// These are expression tokens in order of precedence (last is highest precedence)
-enum EvalOperator {
-	EVOP_NONE,
-	EVOP_VAL='a',	// a, value => read from value queue
-	EVOP_LPR,		// b, left parenthesis
-	EVOP_RPR,		// c, right parenthesis
-	EVOP_ADD,		// d, +
-	EVOP_SUB,		// e, -
-	EVOP_MUL,		// f, * (note: if not preceded by value or right paren this is current PC)
-	EVOP_DIV,		// g, /
-	EVOP_AND,		// h, &
-	EVOP_OR,		// i, |
-	EVOP_EOR,		// j, ^
-	EVOP_SHL,		// k, <<
-	EVOP_SHR,		// l, >>
-	EVOP_LOB,		// m, low byte of 16 bit value
-	EVOP_HIB,		// n, high byte of 16 bit value
-	EVOP_STP,		// o, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// p, Not ready yet
-	EVOP_ERR,		// q, Error
-};
-
 // Get a single token from a merlin expression
 EvalOperator Asm::RPNToken_Merlin(strref &expression, int pc, int scope_pc, int scope_end_pc, EvalOperator prev_op, short &section, int &value)
 {
@@ -1507,7 +1507,6 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 	short section_val[MAX_EVAL_VALUES];		// each value can be assigned to one section, or -1 if fixed
 	short num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	values[0] = 0;					// Initialize RPN if no expression
-	StatusCode status = STATUS_OK;
 	{
 		int sp = 0;
 		char op_stack[MAX_EVAL_OPER];
@@ -3127,6 +3126,8 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 		line = line.before_or_full(';'); // clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
+		if (line[0]==':' && syntax!=SYNTAX_MERLIN)	// Kick Assembler macro prefix (incompatible with merlin)
+			++line;
 		strref line_nocom = line;
 		strref operation = line.split_range(syntax==SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
 		char char1 = operation[0];			// first char of first word
@@ -3250,6 +3251,9 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 			(!ConditionalAsm() || ConditionalConsumed() || conditional_depth)) {
 			error = ERROR_UNTERMINATED_CONDITION;
 		}
+		
+		if (line.same_str_case(line_start))
+			error = ERROR_UNABLE_TO_PROCESS;
 		
 		if (error > STATUS_NOT_READY)
 			PrintError(line_start, error);
