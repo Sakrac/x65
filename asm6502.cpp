@@ -317,7 +317,7 @@ unsigned char CC10Mask[] = { 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0xae, 0xaa, 0xaa };
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
 static const strref label_end_char_range("!0-9a-zA-Z_@$!.:");
-static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$!.]:?");
+static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$!]:?");
 static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()\\-");
 static const strref keyword_equ("equ");
 static const strref str_label("label");
@@ -526,7 +526,7 @@ typedef struct Section {
 typedef struct {
 public:
 	strref label_name;		// the name of this label
-	strref expression;		// the expression of this label (optional, if not possible to evaluate yet)
+	strref pool_name;		// name of the pool that this label is related to
 	int value;
 	int section;			// rel section address labels belong to a section, -1 if fixed address or assigned
 	bool evaluated;			// a value may not yet be evaluated
@@ -544,7 +544,7 @@ typedef struct {
 		LET_BRANCH,			// calculate a branch offset and store at this address
 		LET_BYTE,			// calculate a byte and store at this address
 	};
-	size_t target;	// offset into output buffer
+	size_t target;			// offset into output buffer
 	int address;			// current pc
 	int scope;				// scope pc
 	int section;			// which section to apply to.
@@ -694,6 +694,7 @@ public:
 	void DummySection();
 	void EndSection();
 	Section& CurrSection() { return *current_section; }
+	Section& ExportSection();
 	int SectionId() { return int(current_section - &allSections[0]); }
 	void AddByte(int b) { CurrSection().AddByte(b); }
 	void AddWord(int w) { CurrSection().AddWord(w); }
@@ -921,6 +922,17 @@ void Asm::EndSection() {
 	int section = (int)(current_section - &allSections[0]);
 	if (section)
 		current_section = &allSections[section-1];
+}
+
+// Return an appropriate section for exporting a binary
+Section& Asm::ExportSection() {
+	std::vector<Section>::iterator i = allSections.end();
+	while (i != allSections.begin()) {
+		--i;
+		if (!i->IsDummySection() && !i->IsMergedSection() && !i->IsRelativeSection())
+			return *i;
+	}
+	return CurrSection();
 }
 
 StatusCode Asm::LinkSections(strref name) {
@@ -1378,9 +1390,10 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, int pc, int scope_pc, int 
 		case '&': ++expression; return EVOP_AND;
 		case '(': if (prev_op!=EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++expression; return EVOP_RPR;
+		case '"': if (expression[2] == '"') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
+		case '\'': if (expression[2] == '\'') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
 		case ',':
 		case '?':
-		case '\'': return EVOP_STP;
 		default: {	// MERLIN: ! is eor
 			if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
 			else if (c == '!' && !(expression + 1).len_label()) {
@@ -1866,7 +1879,7 @@ void Asm::FlushLocalLabels(int scope_exit)
 			while (index<labels.count()) {
 				if (label.same_str_case(labels.getValue(index).label_name)) {
 					if (i->scope_reserve) {
-						if (LabelPool *pool = GetLabelPool(labels.getValue(index).expression)) {
+						if (LabelPool *pool = GetLabelPool(labels.getValue(index).pool_name)) {
 							pool->Release(labels.getValue(index).value);
 							break;
 						}
@@ -1979,7 +1992,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	Label *pLabel = AddLabel(label.fnv1a());
 
 	pLabel->label_name = label;
-	pLabel->expression = pool.pool_name;
+	pLabel->pool_name = pool.pool_name;
 	pLabel->evaluated = true;
 	pLabel->section = -1;	// pool labels are section-less
 	pLabel->value = addr;
@@ -2074,7 +2087,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 		pLabel = AddLabel(label.fnv1a());
 	
 	pLabel->label_name = label;
-	pLabel->expression = line;
+	pLabel->pool_name.clear();
 	pLabel->evaluated = status==STATUS_OK;
 	pLabel->section = -1;	// assigned labels are section-less
 	pLabel->value = val;
@@ -2107,7 +2120,7 @@ StatusCode Asm::AddressLabel(strref label)
 		constLabel = pLabel->constant;
 	
 	pLabel->label_name = label;
-	pLabel->expression.clear();
+	pLabel->pool_name.clear();
 	pLabel->section = CurrSection().IsRelativeSection() ? SectionId() : -1;	// address labels are based on section
 	pLabel->value = CurrSection().GetPC();
 	pLabel->evaluated = true;
@@ -2312,18 +2325,11 @@ DirectiveName aDirectiveNames[] {
 	{ "PRINT", AD_EVAL },
 	{ "BYTE", AD_BYTES },
 	{ "BYTES", AD_BYTES },
-	{ "DB", AD_BYTES },
-	{ "DFB", AD_BYTES },
 	{ "WORD", AD_WORDS },
-	{ "DA", AD_WORDS },
-	{ "DW", AD_WORDS },
-	{ "DDB", AD_WORDS },
 	{ "WORDS", AD_WORDS },
 	{ "DC", AD_DC },
 	{ "TEXT", AD_TEXT },
-	{ "ASC", AD_TEXT },
 	{ "INCLUDE", AD_INCLUDE },
-	{ "PUT", AD_INCLUDE },
 	{ "INCBIN", AD_INCBIN },
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
@@ -2344,6 +2350,13 @@ DirectiveName aDirectiveNames[] {
 	{ "ENUM", AD_ENUM },
 	{ "REPT", AD_REPT },
 	{ "INCDIR", AD_INCDIR },
+	{ "DA", AD_WORDS },			// MERLIN
+	{ "DW", AD_WORDS },			// MERLIN
+	{ "ASC", AD_TEXT },			// MERLIN
+	{ "PUT", AD_INCLUDE },		// MERLIN
+	{ "DDB", AD_WORDS },		// MERLIN
+	{ "DB", AD_BYTES },			// MERLIN
+	{ "DFB", AD_BYTES },		// MERLIN
 	{ "HEX", AD_HEX },			// MERLIN
 	{ "DO", AD_IF },			// MERLIN
 	{ "FIN", AD_ENDIF },		// MERLIN
@@ -2764,7 +2777,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			DummySection();
 			break;
 		case AD_DUMMY_END:
-			if (CurrSection().IsDummySection())
+			while (CurrSection().IsDummySection())
 				EndSection();
 //			dummySection = false;
 			break;
@@ -3376,15 +3389,16 @@ int main(int argc, char **argv)
 			assembler.symbol_export = sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]));
 			
-			/*if (assembler.errorEncountered)
+			if (assembler.errorEncountered)
 				return_value = 1;
-			else*/ {
+			else {
+				Section exportSec = assembler.ExportSection();
 
-				printf("SECTIONS SUMMARY\n===============Y\n");
+				printf("SECTIONS SUMMARY\n================\n");
 				for (size_t i = 0; i<assembler.allSections.size(); ++i) {
 					Section &s = assembler.allSections[i];
-					printf("Section %d: \"" STRREF_FMT "\" Dummy: %s Relative: %s Start: 0x%04x End: 0x%04x\n",
-						   (int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
+					printf("Section %d%s: \"" STRREF_FMT "\" Dummy: %s Relative: %s Start: 0x%04x End: 0x%04x\n",
+						(int)i, (&exportSec == &s) ? " (export)" : "", STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
 						   s.IsRelativeSection() ? "yes" : "no", s.start_address, s.address);
 					if (s.pRelocs) {
 						for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
@@ -3392,20 +3406,20 @@ int main(int argc, char **argv)
 					}
 				}
 
-				if (binary_out_name && !assembler.CurrSection().empty()) {
+				if (binary_out_name && !exportSec.empty()) {
 					if (FILE *f = fopen(binary_out_name, "wb")) {
 						if (load_header) {
 							char addr[2] = {
-								(char)assembler.CurrSection().GetLoadAddress(),
-								(char)(assembler.CurrSection().GetLoadAddress() >> 8) };
+								(char)exportSec.GetLoadAddress(),
+								(char)(exportSec.GetLoadAddress() >> 8) };
 							fwrite(addr, 2, 1, f);
 						}
 						if (size_header) {
-							size_t int_size = assembler.CurrSection().size();
+							size_t int_size = exportSec.size();
 							char byte_size[2] = { (char)int_size, (char)(int_size >> 8) };
 							fwrite(byte_size, 2, 1, f);
 						}
-						fwrite(assembler.CurrSection().get(), assembler.CurrSection().size(), 1, f);
+						fwrite(exportSec.get(), exportSec.size(), 1, f);
 						fclose(f);
 					}
 				}
