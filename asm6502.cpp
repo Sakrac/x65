@@ -340,7 +340,7 @@ static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
 static const strref label_end_char_range("!0-9a-zA-Z_@$!.");
 static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$!]:?");
-static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()\\-");
+static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()/\\-");
 static const strref keyword_equ("equ");
 static const strref str_label("label");
 static const strref str_const("const");
@@ -544,6 +544,15 @@ typedef struct Section {
 	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
 } Section;
 
+// Symbol list entry (in order of parsing)
+struct MapSymbol {
+    strref name;    // string name
+    short section;  // -1 if resolved, otherwise section index
+    short value;
+    bool local;     // local variables
+};
+typedef std::vector<struct MapSymbol> MapSymbolArray;
+
 // Data related to a label
 typedef struct {
 public:
@@ -551,8 +560,8 @@ public:
 	strref pool_name;		// name of the pool that this label is related to
 	int value;
 	int section;			// rel section address labels belong to a section, -1 if fixed address or assigned
+    int mapIndex;           // index into map symbols in case of late resolve
 	bool evaluated;			// a value may not yet be evaluated
-	bool zero_page;			// addresses known to be zero page
 	bool pc_relative;		// this is an inline label describing a point in the code
 	bool constant;			// the value of this label can not change
 } Label;
@@ -669,7 +678,7 @@ public:
 	std::vector<MemberOffset> structMembers; // labelStructs refer to sets of structMembers
 	std::vector<strref> includePaths;
 	std::vector<Section> allSections;
-	strovl symbols; // for building a symbol output file
+    MapSymbolArray map;
 	
 	// context for macros / include files
 	ContextStack contextStack;
@@ -805,10 +814,7 @@ void Asm::Cleanup() {
 		char *data = *i;
 		free(data);
 	}
-	if (symbols.get()) {
-		free(symbols.charstr());
-		symbols.set_overlay(nullptr,0);
-	}
+    map.clear();
 	labelPools.clear();
 	loadedData.clear();
 	labels.clear();
@@ -1450,7 +1456,6 @@ EvalOperator Asm::RPNToken(strref &expression, int pc, int scope_pc, int scope_e
 		case '&': ++expression; return EVOP_AND;
 		case '(': if (prev_op != EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++expression; return EVOP_RPR;
-		case '.': return EVOP_ERR; // Merlin uses . instead of | for or, but . is allowed for labels in other assemblers
 		case ',':
 		case '?':
 		case '\'': return EVOP_STP;
@@ -1461,7 +1466,7 @@ EvalOperator Asm::RPNToken(strref &expression, int pc, int scope_pc, int scope_e
 			} else if (strref::is_number(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
 				value = expression.atoi_skip(); return EVOP_VAL;
-			} else if (c == '!' || c == ':' || strref::is_valid_label(c)) {
+			} else if (c == '!' || c == ':' || c=='.' || c=='@' || strref::is_valid_label(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
 				char e0 = expression[0];
 				int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
@@ -1822,27 +1827,18 @@ Label *Asm::GetLabel(strref label)
 void Asm::LabelAdded(Label *pLabel, bool local)
 {
 	if (pLabel && pLabel->evaluated && symbol_export) {
-		int space = 1 + str_label.get_len() + 1 + pLabel->label_name.get_len() + 1 + 9 + 2;
-		if ((symbols.get_len()+space) > symbols.cap()) {
-			strl_t new_size = ((symbols.get_len()+space)+8*1024);
-			if (char *new_charstr = (char*)malloc(new_size)) {
-				if (symbols.charstr()) {
-					memcpy(new_charstr, symbols.charstr(), symbols.get_len());
-					free(symbols.charstr());
-				}
-				symbols.set_overlay(new_charstr, new_size, symbols.get_len());
-			}
-		}
-		if (local && !last_label_local)
-			symbols.append("{\n");
-		else if (!local && last_label_local)
-			symbols.append("}\n");
-		symbols.append(local ? " ." : ".");
-		symbols.append(pLabel->constant ? str_const : str_label);
-		symbols.append(' ');
-		symbols.append(pLabel->label_name);
-		symbols.sprintf_append("=$%04x\n", pLabel->value);
-		last_label_local = local;
+        if (map.size() == map.capacity())
+            map.reserve(map.size() + 256);
+        MapSymbol sym;
+        sym.name = pLabel->label_name;
+        sym.section = pLabel->section;
+        sym.value = pLabel->value;
+        sym.local = local;
+        if (sym.section>=0)
+            pLabel->mapIndex = (int)map.size();
+        else
+            pLabel->mapIndex = -1;
+        map.push_back(sym);
 	}
 }
 
@@ -1995,7 +1991,6 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->evaluated = true;
 	pLabel->section = -1;	// pool labels are section-less
 	pLabel->value = addr;
-	pLabel->zero_page = addr<0x100;
 	pLabel->pc_relative = true;
 	pLabel->constant = true;
 
@@ -2090,7 +2085,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	pLabel->evaluated = status==STATUS_OK;
 	pLabel->section = -1;	// assigned labels are section-less
 	pLabel->value = val;
-	pLabel->zero_page = pLabel->evaluated && val<0x100;
+    pLabel->mapIndex = -1;
 	pLabel->pc_relative = false;
 	pLabel->constant = make_constant;
 	
@@ -2125,7 +2120,6 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->evaluated = true;
 	pLabel->pc_relative = true;
 	pLabel->constant = constLabel;
-	pLabel->zero_page = false;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	LabelAdded(pLabel, local);
 	if (local)
@@ -2845,6 +2839,7 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
 	bool need_more = true;
 	strref arg, deco;
 	AddressingMode addrMode = AM_INVALID;
+    
 	while (need_more) {
 		need_more = false;
 		switch (line.get_first()) {
@@ -2872,20 +2867,13 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
 				addrMode = AM_IMMEDIATE;
 				expression = line;
 				break;
-			case '.': {	// .z => force zp (needs further parsing for address mode)
-				++line;
-				char c = line.get_first();
-				if ((c=='z' || c=='Z') && strref::is_sep_ws(line[1])) {
-					force_zp = true;
-					++line;
-					need_more = true;
-				} else
-					error = ERROR_UNEXPECTED_CHARACTER_IN_ADDRESSING_MODE;
-				break;
-			}
 			default: {	// accumulator or absolute
 				if (line) {
-					if (line.get_label().same_str("A")) {
+                    if (strref(".z").is_prefix_word(line)) {
+                        force_zp = true;
+                        line += 3;
+                        need_more = true;
+                    } else if (strref("A").is_prefix_word(line)) {
 						addrMode = AM_ACCUMULATOR;
 					} else {	// absolute (zp, offs x, offs y)
 						addrMode = force_zp ? AM_ZP : AM_ABSOLUTE;
@@ -3308,10 +3296,6 @@ void Asm::Assemble(strref source, strref filename)
 			fwrite(errorText.get(), errorText.get_len(), 1, stderr);
 		}
 
-		// close last local label of symbol file
-		if (symbol_export && last_label_local)
-			symbols.append("}\n");
-
 		for (std::vector<LateEval>::iterator i = lateEval.begin(); i!=lateEval.end(); ++i) {
 			strown<512> errorText;
 			int line = i->source_file.count_lines(i->expression);
@@ -3410,7 +3394,8 @@ int main(int argc, char **argv)
 					}
 				}
 
-				if (binary_out_name && !exportSec.empty()) {
+				// export binary file
+				if (binary_out_name && !srcname.same_str(binary_out_name) && !exportSec.empty()) {
 					if (FILE *f = fopen(binary_out_name, "wb")) {
 						if (load_header) {
 							char addr[2] = {
@@ -3427,24 +3412,42 @@ int main(int argc, char **argv)
 						fclose(f);
 					}
 				}
-				if (sym_file && assembler.symbols.get_len()) {
+				// export .sym file
+				if (sym_file && !srcname.same_str(sym_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(sym_file, "w")) {
-						fwrite(assembler.symbols.get(), assembler.symbols.get_len(), 1, f);
+                        bool wasLocal = false;
+                        for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
+                            unsigned int value = (unsigned int)i->value;
+                            if (i->section>=0 && i->section<(int)assembler.allSections.size()) {
+                                Section &s = assembler.allSections[i->section];
+								value += s.start_address;
+                                if (s.IsMergedSection())
+                                    value += assembler.allSections[s.merged_section].start_address;
+                            }
+                            fprintf(f, "%s.label " STRREF_FMT " = $%04x",
+									wasLocal==i->local ? "\n" : (i->local ? " {\n" : "\n}\n"),
+                                    STRREF_ARG(i->name), value);
+                            wasLocal = i->local;
+                        }
+                        fputs(wasLocal ? "\n}\n" : "\n", f);
 						fclose(f);
 					}
 				}
-				if (vs_file && assembler.symbols.get_len()) {
+				// export vice label file
+				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
-						strref syms = assembler.symbols.get_strref();
-						while (strref label = syms.line()) {
-							if (label.has_prefix(".label")) {
-								label.next_word_ws();
-								strref name = label.split_token_trim('=');
-								if (label[0] == '$')
-									++label;
-								fprintf(f, "al " STRREF_FMT " %s" STRREF_FMT "\n", STRREF_ARG(label), name[0]=='.' ? "" : ".", STRREF_ARG(name));
+                        for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
+                            unsigned int value = (unsigned int)i->value;
+                            if (i->section>=0 && i->section<(int)assembler.allSections.size()) {
+								Section &s = assembler.allSections[i->section];
+								value += s.start_address;
+								if (s.IsMergedSection())
+									value += assembler.allSections[s.merged_section].start_address;
 							}
-						}
+                            fprintf(f, "al $%04x %s" STRREF_FMT "\n",
+                                    value, i->name[0]=='.' ? "" : ".",
+                                    STRREF_ARG(i->name));
+                        }
 						fclose(f);
 					}
 				}
