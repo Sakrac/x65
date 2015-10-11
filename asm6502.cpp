@@ -669,8 +669,10 @@ public:
 	int scope_address[MAX_SCOPE_DEPTH];
 	int scope_depth;
 
-	// Eval result
+	// Eval relative result (only valid if EvalExpression returs STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
+	int lastEvalValue;
+	Reloc::Type lastEvalPart;
 
 	bool symbol_export, last_label_local;
 	bool errorEncountered;
@@ -1186,7 +1188,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		strref name = line.split_token_trim('=');
 		if (line) {
 			StatusCode error = EvalExpression(line, CurrSection().GetPC(),
-											  scope_address[scope_depth], -1, -1, value);
+				scope_address[scope_depth], -1, -1, value);
 			if (error == STATUS_NOT_READY)
 				return ERROR_ENUM_CANT_BE_ASSEMBLED;
 			else if (error != STATUS_OK)
@@ -1325,35 +1327,26 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 //
 
 
-// Minimal value lookup in short array
-static int _oneOf(short n, short *opt, short numOpt) {
-	for (int s = 0; s<numOpt; s++) {
-		if (opt[s] == n)
-			return s;
-	}
-	return -1;
-}
-
 // These are expression tokens in order of precedence (last is highest precedence)
 enum EvalOperator {
 	EVOP_NONE,
-	EVOP_VAL,	// value => read from value queue
-	EVOP_LPR,	// left parenthesis
-	EVOP_RPR,	// right parenthesis
-	EVOP_ADD,	// +
-	EVOP_SUB,	// -
-	EVOP_MUL,	// * (note: if not preceded by value or right paren this is current PC)
-	EVOP_DIV,	// /
-	EVOP_AND,	// &
-	EVOP_OR,	// |
-	EVOP_EOR,	// ^
-	EVOP_SHL,	// <<
-	EVOP_SHR,	// >>
-	EVOP_LOB,	// low byte of 16 bit value
-	EVOP_HIB,	// high byte of 16 bit value
-	EVOP_STP,	// Unexpected input, should stop and evaluate what we have
-	EVOP_ERR,	// Error
-	EVOP_NRY,	// Not ready yet
+	EVOP_VAL='a',	// a, value => read from value queue
+	EVOP_LPR,		// b, left parenthesis
+	EVOP_RPR,		// c, right parenthesis
+	EVOP_ADD,		// d, +
+	EVOP_SUB,		// e, -
+	EVOP_MUL,		// f, * (note: if not preceded by value or right paren this is current PC)
+	EVOP_DIV,		// g, /
+	EVOP_AND,		// h, &
+	EVOP_OR,		// i, |
+	EVOP_EOR,		// j, ^
+	EVOP_SHL,		// k, <<
+	EVOP_SHR,		// l, >>
+	EVOP_LOB,		// m, low byte of 16 bit value
+	EVOP_HIB,		// n, high byte of 16 bit value
+	EVOP_STP,		// o, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// p, Not ready yet
+	EVOP_ERR,		// q, Error
 };
 
 // Get a single token from a merlin expression
@@ -1520,9 +1513,14 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 			else if (op == EVOP_NRY)
 				return STATUS_NOT_READY;
 			if (section >= 0) {
-				if ((index_section = _oneOf(section, section_ids, num_sections)) < 0) {
-					if (num_sections == MAX_EVAL_SECTIONS) return STATUS_NOT_READY;
-					section_ids[index_section = num_sections++] = section;
+				for (int s = 0; s<num_sections && index_section<0; s++) {
+					if (section_ids[s] == section) index_section = s;
+				}
+				if (index_section<0) {
+					if (num_sections <= MAX_EVAL_SECTIONS)
+						section_ids[index_section = num_sections++] = section;
+					else
+						return STATUS_NOT_READY;
 				}
 			}
 
@@ -1574,6 +1572,7 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 	{
 		int valIdx = 0;
 		int ri = 0;		// RPN index (value)
+		int preByteVal = 0; // special case for relative reference to low byte / high byte
 		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES];
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
@@ -1630,9 +1629,11 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 						section_counts[i][ri-1] |= section_counts[i][ri];
 					values[ri-1] >>= values[ri]; break;
 				case EVOP_LOB:	// low byte
+					preByteVal = values[ri - 1];
 					values[ri-1] &= 0xff; break;
 				case EVOP_HIB:
-					values[ri-1] = (values[ri-1]>>8)&0xff; break;
+					preByteVal = values[ri - 1];
+					values[ri - 1] = (values[ri - 1] >> 8) & 0xff; break;
 				default:
 					return ERROR_EXPRESSION_OPERATION;
 					break;
@@ -1655,6 +1656,8 @@ StatusCode Asm::EvalExpression(strref expression, int pc, int scope_pc, int scop
 		result = values[0];
 		if (section_index>=0 && !curr_relative) {
 			lastEvalSection = section_ids[section_index];
+			lastEvalValue = (ops[numOps - 1] == EVOP_LOB || ops[numOps - 1] == EVOP_HIB) ? preByteVal : result;
+			lastEvalPart = ops[numOps - 1] == EVOP_LOB ? Reloc::LO_BYTE : (ops[numOps - 1] == EVOP_HIB ? Reloc::HI_BYTE : Reloc::WORD);
 			return STATUS_RELATIVE_SECTION;
 		}
 	}
@@ -2447,19 +2450,25 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					break;
 				else if (error==STATUS_NOT_READY)
 					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
-				else
-					AddByte(value);
+				else if (error == STATUS_RELATIVE_SECTION)
+					CurrSection().AddReloc(lastEvalValue, CurrSection().GetPC(), lastEvalSection,
+						lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+				AddByte(value);
 			}
 			break;
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
 			while (strref exp = line.split_token_trim(',')) {
 				int value = 0;
-					if (!CurrSection().IsDummySection()) {
-						error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
+				if (!CurrSection().IsDummySection()) {
+					error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 					if (error>STATUS_NOT_READY)
 						break;
 					else if (error==STATUS_NOT_READY)
 						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_ABS_REF);
+					else if (error == STATUS_RELATIVE_SECTION) {
+						CurrSection().AddReloc(lastEvalValue, CurrSection().GetPC(), lastEvalSection, lastEvalPart);
+						value = 0;
+					}
 				}
 				AddWord(value);
 			}
@@ -2484,8 +2493,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 						break;
 					else if (error == STATUS_NOT_READY)
 						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
-					else if (error == STATUS_RELATIVE_SECTION)
-						CurrSection().AddReloc(value, CurrSection().GetPC(), lastEvalSection, Reloc::WORD);
+					else if (error == STATUS_RELATIVE_SECTION) {
+						value = 0;
+						if (words)
+							CurrSection().AddReloc(lastEvalValue, CurrSection().GetPC(), lastEvalSection, lastEvalPart);
+						else 
+							CurrSection().AddReloc(lastEvalValue, CurrSection().GetPC(), lastEvalSection,
+								lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					}
 				}
 				AddByte(value);
 				if (words)
@@ -2898,6 +2913,8 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	
 	int value = 0;
 	int target_section = -1;
+	int target_section_offs = -1;
+	Reloc::Type target_section_type = Reloc::NONE;
 	bool evalLater = false;
 	if (expression) {
 		error = EvalExpression(expression, CurrSection().GetPC(),
@@ -2906,9 +2923,11 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
 			error = STATUS_OK;
-		} else if (error == STATUS_RELATIVE_SECTION)
+		} else if (error == STATUS_RELATIVE_SECTION) {
 			target_section = lastEvalSection;
-		else if (error != STATUS_OK)
+			target_section_offs = lastEvalValue;
+			target_section_type = lastEvalPart;
+		} else if (error != STATUS_OK)
 			return error;
 	}
 	
@@ -3035,16 +3054,22 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 				break;
 			case CA_ONE_BYTE:
 				AddByte(opcode);
-				if (evalLater || error == STATUS_RELATIVE_SECTION)
+				if (evalLater)
 					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				else if (error == STATUS_RELATIVE_SECTION)
+					CurrSection().AddReloc(target_section_offs, CurrSection().GetPC(), target_section, 
+						target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				AddByte(value);
 				break;
 			case CA_TWO_BYTES:
 				AddByte(opcode);
 				if (evalLater)
 					AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
-				else
-					CurrSection().AddReloc(value, CurrSection().GetPC(), target_section, Reloc::WORD);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().GetPC(),
+						target_section, target_section_type);
+					value = 0;
+				}
 				AddWord(value);
 				break;
 			case CA_NONE:
@@ -3405,8 +3430,6 @@ int main(int argc, char **argv)
 						fclose(f);
 					}
 				}
-
-				
 			}
 			// free some memory
 			assembler.Cleanup();
