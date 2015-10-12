@@ -820,7 +820,7 @@ void Asm::Cleanup() {
 	labels.clear();
 	macros.clear();
 	allSections.clear();
-	SetSection(strref("default"), 0x1000);
+	SetSection(strref("default"));//, 0x10001);
 	current_section = &allSections[0];
 	syntax = SYNTAX_SANE;
 	scope_depth = 0;
@@ -911,6 +911,7 @@ void Asm::SetSection(strref name, int address)
 
 void Asm::SetSection(strref name)
 {
+// should same name section within the same file be the same section?
 /*	if (name) {
 		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
 			if (i->name && name.same_str(i->name)) {
@@ -955,10 +956,17 @@ void Asm::EndSection() {
 // Return an appropriate section for exporting a binary
 Section& Asm::ExportSection() {
 	std::vector<Section>::iterator i = allSections.end();
+	bool hasRelativeSection = false;
 	while (i != allSections.begin()) {
 		--i;
+		hasRelativeSection = hasRelativeSection || i->IsRelativeSection();
 		if (!i->IsDummySection() && !i->IsMergedSection() && !i->IsRelativeSection())
 			return *i;
+	}
+	if (hasRelativeSection) {
+		// no fixed sections, make a new fixed section and return that for exporting.
+		SetSection(strref(), 0x1000);
+		LinkSections(strref());
 	}
 	return CurrSection();
 }
@@ -971,7 +979,7 @@ StatusCode Asm::LinkSections(strref name) {
 
 	int section_id = 0;
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-		if (i->name.same_str_case(name) && i->IsRelativeSection() && !i->IsMergedSection()) {
+		if ((!name || i->name.same_str_case(name)) && i->IsRelativeSection() && !i->IsMergedSection()) {
 			// found a section to link!
 			Section &s = *i;
 			// Get base addresses
@@ -979,7 +987,8 @@ StatusCode Asm::LinkSections(strref name) {
 
 			int section_address = CurrSection().GetPC();
 			unsigned char *section_out = CurrSection().curr;
-			memcpy(section_out, s.output, s.size());
+			if (s.output)
+				memcpy(section_out, s.output, s.size());
 			CurrSection().address += (int)s.size();
 			CurrSection().curr += s.size();
 			free(s.output);
@@ -1389,7 +1398,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, int pc, int scope_pc, int 
 			if (expression[1]=='0' || expression[1]=='1') {
 				++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
 			if (scope_end_pc<0) return EVOP_NRY;
-			++expression; value = scope_end_pc; return EVOP_VAL;
+			++expression; value = scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|':
 		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
 		case '^': ++expression; return EVOP_EOR;
@@ -1404,7 +1413,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, int pc, int scope_pc, int 
 			if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
 			else if (c == '!' && !(expression + 1).len_label()) {
 				if (scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
-				++expression; value = scope_pc;  return EVOP_VAL;
+				++expression; value = scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 			} else if (strref::is_number(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
 				value = expression.atoi_skip(); return EVOP_VAL;
@@ -1450,7 +1459,7 @@ EvalOperator Asm::RPNToken(strref &expression, int pc, int scope_pc, int scope_e
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (expression[1] == '0' || expression[1] == '1') { ++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
 			if (scope_end_pc<0) return EVOP_NRY;
-			++expression; value = scope_end_pc; return EVOP_VAL;
+			++expression; value = scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|': ++expression; return EVOP_OR;
 		case '^': ++expression; return EVOP_EOR;
 		case '&': ++expression; return EVOP_AND;
@@ -1462,7 +1471,7 @@ EvalOperator Asm::RPNToken(strref &expression, int pc, int scope_pc, int scope_e
 		default: {	// ! by itself is current scope, !+label char is a local label
 			if (c == '!' && !(expression + 1).len_label()) {
 				if (scope_pc < 0) return EVOP_NRY;
-				++expression; value = scope_pc; return EVOP_VAL;
+				++expression; value = scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 			} else if (strref::is_number(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
 				value = expression.atoi_skip(); return EVOP_VAL;
@@ -1718,19 +1727,20 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 // any related late label evaluators that can now be evaluated.
 StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 {
-	std::vector<LateEval>::iterator i = lateEval.begin();
 	bool evaluated_label = true;
 	strref new_labels[MAX_LABELS_EVAL_ALL];
 	int num_new_labels = 0;
 	if (added_label)
 		new_labels[num_new_labels++] = added_label;
-	
+
+	bool all = !added_label;
+	std::vector<LateEval>::iterator i = lateEval.begin();
 	while (evaluated_label) {
 		evaluated_label = false;
 		while (i != lateEval.end()) {
 			int value = 0;
 			// check if this expression is related to the late change (new label or end of scope)
-			bool check = num_new_labels==MAX_LABELS_EVAL_ALL;
+			bool check = all || num_new_labels==MAX_LABELS_EVAL_ALL;
 			for (int l=0; l<num_new_labels && !check; l++)
 				check = i->expression.find(new_labels[l]) >= 0;
 			if (!check && scope_end>0) {
@@ -1747,9 +1757,9 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 				}
 			}
 			if (check) {
-				int ret = EvalExpression(i->expression, i->address, i->scope, scope_end,
+				StatusCode ret = EvalExpression(i->expression, i->address, i->scope, scope_end,
 										 i->type==LateEval::LET_BRANCH ? SectionId() : -1, value);
-				if (ret == STATUS_OK) {
+				if (ret == STATUS_OK || ret==STATUS_RELATIVE_SECTION) {
 					// Check if target section merged with another section
 					size_t trg = i->target;
 					int sec = i->section;
@@ -1759,18 +1769,36 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 							sec = allSections[sec].merged_section;
 						}
 					}
+					bool resolved = true;
 					switch (i->type) {
 						case LateEval::LET_BRANCH:
 							value -= i->address+1;
 							if (value<-128 || value>127)
 								return ERROR_BRANCH_OUT_OF_RANGE;
+							if (ret==STATUS_RELATIVE_SECTION)
 							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_BYTE:
+							if (ret==STATUS_RELATIVE_SECTION) {
+								if (i->section<0)
+									resolved = false;
+								else {
+									allSections[i->section].AddReloc(lastEvalValue, i->address, lastEvalSection,
+										 lastEvalPart==Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+									value = 0;
+								}
+							}
 							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_ABS_REF:
-
+							if (ret==STATUS_RELATIVE_SECTION) {
+								if (i->section<0)
+									resolved = false;
+								else {
+									allSections[i->section].AddReloc(lastEvalValue, i->address, lastEvalSection, lastEvalPart);
+									value = 0;
+								}
+							}
 							allSections[sec].SetWord(trg, value);
 							break;
 						case LateEval::LET_LABEL: {
@@ -1789,12 +1817,14 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 						default:
 							break;
 					}
-					i = lateEval.erase(i);
+					if (resolved)
+						i = lateEval.erase(i);
 				} else
 					++i;
 			} else
 				++i;
 		}
+		all = false;
 		added_label.clear();
 	}
 	return STATUS_OK;
@@ -2311,6 +2341,7 @@ DirectiveName aDirectiveNames[] {
 	{ "ORG", AD_ORG },
 	{ "LOAD", AD_LOAD },
 	{ "SECTION", AD_SECTION },
+//	{ "SEG", AD_SECTION },		// DASM version of SECTION
 	{ "LINK", AD_LINK },
 	{ "ALIGN", AD_ALIGN },
 	{ "MACRO", AD_MACRO },
@@ -2386,7 +2417,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 				break;
 			}
-			SetSection(strref(), addr);
+			// Section immediately followed by ORG reassigns that section to be fixed
+			if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
+				CurrSection().start_address = addr;
+				CurrSection().load_address = addr;
+				CurrSection().address = addr;
+				CurrSection().address_assigned  = true;
+			} else
+				SetSection(strref(), addr);
 			break;
 		}
 		case AD_LOAD: {		// load: address for target to load code at
@@ -2463,14 +2501,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			break;
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
-			while (strref exp = line.split_token_trim(',')) {
+			while (strref exp_w = line.split_token_trim(',')) {
 				int value = 0;
 				if (!CurrSection().IsDummySection()) {
-					error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
+					error = EvalExpression(exp_w, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 					if (error>STATUS_NOT_READY)
 						break;
 					else if (error==STATUS_NOT_READY)
-						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_ABS_REF);
+						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp_w, source_file, LateEval::LET_ABS_REF);
 					else if (error == STATUS_RELATIVE_SECTION) {
 						CurrSection().AddReloc(lastEvalValue, CurrSection().GetPC(), lastEvalSection, lastEvalPart);
 						value = 0;
@@ -2491,14 +2529,14 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				++line;
 				line.skip_whitespace();
 			}
-			while (strref exp = line.split_token_trim(',')) {
+			while (strref exp_dc = line.split_token_trim(',')) {
 				int value = 0;
 				if (!CurrSection().IsDummySection()) {
-					error = EvalExpression(exp, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
+					error = EvalExpression(exp_dc, CurrSection().GetPC(), scope_address[scope_depth], -1, -1, value);
 					if (error > STATUS_NOT_READY)
 						break;
 					else if (error == STATUS_NOT_READY)
-						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
+						AddLateEval(CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file, words ? LateEval::LET_ABS_REF : LateEval::LET_BYTE);
 					else if (error == STATUS_RELATIVE_SECTION) {
 						value = 0;
 						if (words)
@@ -3125,7 +3163,8 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 		bool force_label = charE==':' || charE=='$';
 		if (!force_label && syntax==SYNTAX_MERLIN && line) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
 			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
-		
+		else if (!force_label && syntax!=SYNTAX_MERLIN && line[0]==':')
+			force_label = true;
 		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
 				// scope open / close
