@@ -1775,7 +1775,6 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 							value -= i->address+1;
 							if (value<-128 || value>127)
 								return ERROR_BRANCH_OUT_OF_RANGE;
-							if (ret==STATUS_RELATIVE_SECTION)
 							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_BYTE:
