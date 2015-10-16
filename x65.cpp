@@ -117,6 +117,7 @@ enum StatusCode {
 	ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION,
 	ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
 	ERROR_UNABLE_TO_PROCESS,
+	ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE,
 
 	STATUSCODE_COUNT
 };
@@ -173,6 +174,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Link can only be used in a fixed address section",
 	"Link can not be used in dummy sections",
 	"Can not process this line",
+	"Unexpected target offset for reloc or late evaluation",
 };
 
 // Assembler directives
@@ -728,6 +730,7 @@ public:
 	void SetSection(strref name); // relative address section
 	StatusCode LinkSections(strref name); // link relative address sections with this name here
 	void LinkLabelsToAddress(int section_id, int section_address);
+	StatusCode LinkRelocs(int section_id, int section_address);
 	void DummySection(int address);
 	void DummySection();
 	void EndSection();
@@ -1005,6 +1008,54 @@ void Asm::LinkLabelsToAddress(int section_id, int section_address)
 	}
 }
 
+// go through relocs in all sections to see if any targets this section
+// relocate section to address!
+StatusCode Asm::LinkRelocs(int section_id, int section_address)
+{
+	for (std::vector<Section>::iterator j = allSections.begin(); j != allSections.end(); ++j) {
+		Section &s2 = *j;
+		if (s2.pRelocs) {
+			relocList *pList = s2.pRelocs;
+			relocList::iterator i = pList->end();
+			while (i != pList->begin()) {
+				--i;
+				if (i->target_section == section_id) {
+					Section *trg_sect = &s2;
+					size_t output_offs = 0;
+					while (trg_sect->merged_offset>=0) {
+						output_offs += trg_sect->merged_offset;
+						trg_sect = &allSections[trg_sect->merged_section];
+					}
+					unsigned char *trg = trg_sect->output + output_offs + i->section_offset;
+					int value = i->base_value + section_address;
+					if (i->value_type == Reloc::WORD) {
+						if ((trg+1) >= (trg_sect->output + trg_sect->size()))
+							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+						*trg++ = (unsigned char)value;
+						*trg = (unsigned char)(value >> 8);
+					} else if (i->value_type == Reloc::LO_BYTE) {
+						if (trg >= (trg_sect->output + trg_sect->size()))
+							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+						*trg = (unsigned char)value;
+					} else if (i->value_type == Reloc::HI_BYTE) {
+						if (trg >= (trg_sect->output + trg_sect->size()))
+							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+						*trg = (unsigned char)(value >> 8);
+					}
+					i = pList->erase(i);
+					if (i != pList->end())
+						++i;
+				}
+			}
+			if (pList->empty()) {
+				free(pList);
+				s2.pRelocs = nullptr;
+			}
+		}
+	}
+	return STATUS_OK;
+}
+
 StatusCode Asm::LinkSections(strref name) {
 	if (CurrSection().IsRelativeSection())
 		return ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION;
@@ -1040,34 +1091,9 @@ StatusCode Asm::LinkSections(strref name) {
 			// All labels in this section can now be assigned
 			LinkLabelsToAddress(section_id, section_address);
 
-			// go through relocs in all sections to see if any targets this section
-			// relocate section to address!
-			for (std::vector<Section>::iterator j = allSections.begin(); j != allSections.end(); ++j) {
-				Section &s2 = *j;
-				if (s2.pRelocs) {
-					relocList *pList = s2.pRelocs;
-					relocList::iterator i = pList->end();
-					while (i != pList->begin()) {
-						--i;
-						if (i->target_section == section_id) {
-							unsigned char *trg = s2.merged_offset < 0 ? s2.output :
-								(allSections[s2.merged_section].output + s2.merged_offset);
-							trg += i->section_offset;
-							int value = i->base_value + section_address;
-							if (i->value_type == Reloc::WORD) {
-								*trg++ = (unsigned char)value;
-								*trg = (unsigned char)(value >> 8);
-							} else if (i->value_type == Reloc::LO_BYTE)
-								*trg = (unsigned char)value;
-							else if (i->value_type == Reloc::HI_BYTE)
-								*trg = (unsigned char)(value >> 8);
-							i = pList->erase(i);
-							if (i != pList->end())
-								++i;
-						}
-					}
-				}
-			}
+			StatusCode status = LinkRelocs(section_id, section_address);
+			if (status != STATUS_OK)
+				return status;
 		}
 		++section_id;
 	}
@@ -1124,9 +1150,6 @@ void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
 		pRelocs = new relocList;
 	if (pRelocs->size() == pRelocs->capacity())
 		pRelocs->reserve(pRelocs->size() + 32);
-
-	printf("Add reloc base = $0x%04x offs=$0x%04x section=$0x%04x type = %d\n", base, offset, section, type);
-
 	pRelocs->push_back(Reloc(base, offset, section, type));
 }
 
@@ -1803,6 +1826,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 							value -= i->address+1;
 							if (value<-128 || value>127)
 								return ERROR_BRANCH_OUT_OF_RANGE;
+							if (trg >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_BYTE:
@@ -1815,6 +1840,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 									value = 0;
 								}
 							}
+							if (trg >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetByte(trg, value);
 							break;
 						case LateEval::LET_ABS_REF:
@@ -1826,6 +1853,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 									value = 0;
 								}
 							}
+							if ((trg+1) >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetWord(trg, value);
 							break;
 						case LateEval::LET_LABEL: {
@@ -3150,8 +3179,6 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
 				else if (error == STATUS_RELATIVE_SECTION) {
-					printf("Reloc two byte op: ");
-
 					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
 						target_section, target_section_type);
 					value = 0;
@@ -3675,7 +3702,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 					else
 						SetSection(aSect[si].name.offs >= 0 ? strref(str_pool + aSect[si].name.offs) : strref());
 					if (aSect[si].output_size) {
-						CurrSection().output = (unsigned char*)malloc(aSect[si].output_size+64);
+						CurrSection().output = (unsigned char*)malloc(aSect[si].output_size);
 						memcpy(CurrSection().output, bin_data, aSect[si].output_size);
 						CurrSection().curr = CurrSection().output + aSect[si].output_size;
 						CurrSection().output_capacity = aSect[si].output_size;
