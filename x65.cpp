@@ -425,7 +425,7 @@ public:
 		return true;
 	}
 	bool insert(unsigned int pos, H key) {
-		if (insert(pos)) {
+		if (insert(pos) && keys) {
 			keys[pos] = key;
 			return true;
 		}
@@ -843,8 +843,10 @@ public:
 
 // Clean up work allocations
 void Asm::Cleanup() {
-	for (std::vector<char*>::iterator i = loadedData.begin(); i!=loadedData.end(); ++i)
-		free(*i);
+	for (std::vector<char*>::iterator i = loadedData.begin(); i != loadedData.end(); ++i) {
+		if (char *data = *i)
+			free(data);
+	}
     map.clear();
 	labelPools.clear();
 	loadedData.clear();
@@ -1591,7 +1593,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
 	short section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
-	short section_val[MAX_EVAL_VALUES];		// each value can be assigned to one section, or -1 if fixed
+	short section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
 	short num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	values[0] = 0;					// Initialize RPN if no expression
 	{
@@ -1672,7 +1674,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		int valIdx = 0;
 		int ri = 0;		// RPN index (value)
 		int preByteVal = 0; // special case for relative reference to low byte / high byte
-		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES];
+		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
 			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && ri<2)
@@ -1728,11 +1730,15 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 						section_counts[i][ri-1] |= section_counts[i][ri];
 					values[ri-1] >>= values[ri]; break;
 				case EVOP_LOB:	// low byte
-					preByteVal = values[ri - 1];
-					values[ri-1] &= 0xff; break;
+					if (ri) {
+						preByteVal = values[ri - 1];
+						values[ri-1] &= 0xff;
+					} break;
 				case EVOP_HIB:
-					preByteVal = values[ri - 1];
-					values[ri - 1] = (values[ri - 1] >> 8) & 0xff; break;
+					if (ri) {
+						preByteVal = values[ri - 1];
+						values[ri - 1] = (values[ri - 1] >> 8) & 0xff;
+					} break;
 				default:
 					return ERROR_EXPRESSION_OPERATION;
 					break;
@@ -2212,8 +2218,8 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 {
 	line.trim_whitespace();
 	int val = 0;
-	StatusCode status = EvalExpression(line, struct EvalContext(
-		CurrSection().GetPC(), scope_address[scope_depth], -1, -1), val);
+	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	StatusCode status = EvalExpression(line, etx, val);
 	if (status != STATUS_NOT_READY && status != STATUS_OK)
 		return status;
 	
@@ -2574,7 +2580,6 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			strref file = line.between('"', '"');
 			if (!file)								// MERLIN: No quotes around PUT filenames
 				file = line.split_range(filename_end_char_range);
-			size_t size = 0;
 			error = ReadObjectFile(file);
 			break;
 		}
@@ -3101,9 +3106,9 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	Reloc::Type target_section_type = Reloc::NONE;
 	bool evalLater = false;
 	if (expression) {
-		error = EvalExpression(expression, struct EvalContext(CurrSection().GetPC(),
-							   scope_address[scope_depth], -1,
-							   group==OPG_BRANCH ? SectionId() : -1), value);
+		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
+							   group==OPG_BRANCH ? SectionId() : -1);
+		error = EvalExpression(expression, etx, value);
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
 			error = STATUS_OK;
@@ -3575,9 +3580,9 @@ struct ObjFileMapSymbol {
 };
 
 // Simple string pool, converts strref strings to zero terminated strings and returns the offset to the string in the pool.
-static int _AddStrPool(strref str, pairArray<unsigned int, int> *pLookup, char **strPool, unsigned int &strPoolSize, unsigned int &strPoolCap)
+static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, char **strPool, unsigned int &strPoolSize, unsigned int &strPoolCap)
 {
-	if (!str)
+	if (!str.get() || !str.get_len())
 		return -1;	// empty string
 	unsigned int hash = str.fnv1a();
 	unsigned int index = FindLabelIndex(hash, pLookup->getKeys(), pLookup->count());
@@ -3587,18 +3592,21 @@ static int _AddStrPool(strref str, pairArray<unsigned int, int> *pLookup, char *
 	if ((strPoolSize + str.get_len() + 1) > strPoolCap) {
 		strPoolCap += 4096;
 		char *strPoolGrow = (char*)malloc(strPoolCap);
-		if (*strPool) {
+		if (*strPool && strPoolGrow) {
 			memcpy(strPoolGrow, *strPool, strPoolSize);
 			free(*strPool);
 		}
 		*strPool = strPoolGrow;
 	}
 	int ret = strPoolSize;
-	memcpy(*strPool + strPoolSize, str.get(), str.get_len());
-	(*strPool + strPoolSize)[str.get_len()] = 0;
-	strPoolSize += str.get_len()+1;
-	pLookup->insert(index, hash);
-	pLookup->getValues()[index] = ret;
+	if (*strPool) {
+		char *dest = *strPool + strPoolSize;
+		memcpy(dest, str.get(), str.get_len());
+		dest[str.get_len()] = 0;
+		strPoolSize += str.get_len()+1;
+		pLookup->insert(index, hash);
+		pLookup->getValues()[index] = ret;
+	}
 	return ret;
 }
 
@@ -3606,7 +3614,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 {
 	if (FILE *f = fopen(strown<512>(filename).c_str(), "wb")) {
 		struct ObjFileHeader hdr = { 0 };
-		hdr.id = 'o6';
+		hdr.id = 0x6f36;
 		hdr.sections = (short)allSections.size();
 		hdr.relocs = 0;
 		hdr.bindata = 0;
@@ -3637,81 +3645,91 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		int sect = 0, reloc = 0, labs = 0, late = 0, map_sym = 0;
 
 		// write out sections and relocs
-		for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
-			struct ObjFileSection &s = aSects[sect++];
-			s.name.offs = _AddStrPool(si->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			s.output_size = (short)si->size();
-			s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
-			s.start_address = si->start_address;
-			s.flags = 
+		if (hdr.sections) {
+			for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
+				struct ObjFileSection &s = aSects[sect++];
+				s.name.offs = _AddStrPool(si->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				s.output_size = (short)si->size();
+				s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
+				s.start_address = si->start_address;
+				s.flags =
 				(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
 				(si->IsMergedSection() ? (1 << ObjFileSection::OFS_MERGED) : 0) |
 				(si->address_assigned ? (1 << ObjFileSection::OFS_FIXED) : 0);
-			if (si->pRelocs && si->pRelocs->size()) {
-				for (relocList::iterator ri = si->pRelocs->begin(); ri!=si->pRelocs->end(); ++ri) {
-					struct ObjFileReloc &r = aRelocs[reloc++];
-					r.base_value = ri->base_value;
-					r.section_offset = ri->section_offset;
-					r.target_section = ri->target_section;
-					r.value_type = ri->value_type;
+				if (si->pRelocs && si->pRelocs->size()) {
+					for (relocList::iterator ri = si->pRelocs->begin(); ri!=si->pRelocs->end(); ++ri) {
+						struct ObjFileReloc &r = aRelocs[reloc++];
+						r.base_value = ri->base_value;
+						r.section_offset = ri->section_offset;
+						r.target_section = ri->target_section;
+						r.value_type = ri->value_type;
+					}
 				}
 			}
 		}
 
 		// write out labels
-		for (unsigned int li = 0; li<labels.count(); li++) {
-			Label &lo = labels.getValue(li);
-			struct ObjFileLabel &l = aLabels[labs++];
-			l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			l.value = lo.value;
-			l.section = lo.section;
-			l.mapIndex = lo.mapIndex;
-			l.flags =
-				(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
-				(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
-				(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
-				(lo.external ? ObjFileLabel::OFL_XDEF : 0);
-		}
-
-		// protected labels included from other object files
-		int file_index = 1;
-		for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el) {
-			for (unsigned int li = 0; li < el->labels.count(); ++li) {
-				Label &lo = el->labels.getValue(li);
+		if (hdr.labels) {
+			for (unsigned int li = 0; li<labels.count(); li++) {
+				Label &lo = labels.getValue(li);
 				struct ObjFileLabel &l = aLabels[labs++];
 				l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				l.value = lo.value;
 				l.section = lo.section;
 				l.mapIndex = lo.mapIndex;
 				l.flags =
+				(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
+				(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
+				(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
+				(lo.external ? ObjFileLabel::OFL_XDEF : 0);
+			}
+		}
+		
+		// protected labels included from other object files
+		if (hdr.labels) {
+			int file_index = 1;
+			for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el) {
+				for (unsigned int li = 0; li < el->labels.count(); ++li) {
+					Label &lo = el->labels.getValue(li);
+					struct ObjFileLabel &l = aLabels[labs++];
+					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+					l.value = lo.value;
+					l.section = lo.section;
+					l.mapIndex = lo.mapIndex;
+					l.flags =
 					(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
 					(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
 					(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
 					file_index;
+				}
+				file_index++;
 			}
-			file_index++;
 		}
 
 		// write out late evals
-		for (std::vector<LateEval>::iterator lei = lateEval.begin(); lei != lateEval.end(); ++lei) {
-			struct ObjFileLateEval &le = aLateEvals[late++];
-			le.label.offs = _AddStrPool(lei->label, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			le.expression.offs = _AddStrPool(lei->expression, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			le.source_file.offs = _AddStrPool(lei->source_file, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			le.section = lei->section;
-			le.target = (short)lei->target;
-			le.address = lei->address;
-			le.scope = lei->scope;
-			le.type = lei->type;
+		if (aLateEvals) {
+			for (std::vector<LateEval>::iterator lei = lateEval.begin(); lei != lateEval.end(); ++lei) {
+				struct ObjFileLateEval &le = aLateEvals[late++];
+				le.label.offs = _AddStrPool(lei->label, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				le.expression.offs = _AddStrPool(lei->expression, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				le.source_file.offs = _AddStrPool(lei->source_file, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				le.section = lei->section;
+				le.target = (short)lei->target;
+				le.address = lei->address;
+				le.scope = lei->scope;
+				le.type = lei->type;
+			}
 		}
 
 		// write out map symbols
-		for (MapSymbolArray::iterator mi = map.begin(); mi != map.end(); ++mi) {
-			struct ObjFileMapSymbol &ms = aMapSyms[map_sym++];
-			ms.name.offs = _AddStrPool(mi->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-			ms.value = mi->value;
-			ms.local = mi->local;
-			ms.resolved = mi->resolved;
+		if (aMapSyms) {
+			for (MapSymbolArray::iterator mi = map.begin(); mi != map.end(); ++mi) {
+				struct ObjFileMapSymbol &ms = aMapSyms[map_sym++];
+				ms.name.offs = _AddStrPool(mi->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				ms.value = mi->value;
+				ms.local = mi->local;
+				ms.resolved = mi->resolved;
+			}
 		}
 
 		// write out the file
@@ -3758,7 +3776,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			hdr.relocs * sizeof(struct ObjFileReloc) + hdr.labels * sizeof(struct ObjFileLabel) +
 			hdr.late_evals * sizeof(struct ObjFileLateEval) +
 			hdr.map_symbols * sizeof(struct ObjFileMapSymbol) + hdr.stringdata + hdr.bindata;
-		if (hdr.id == 'o6' && sum == size) {
+		if (hdr.id == 0x6f36 && sum == size) {
 			struct ObjFileSection *aSect = (struct ObjFileSection*)(&hdr + 1);
 			struct ObjFileReloc *aReloc = (struct ObjFileReloc*)(aSect + hdr.sections);
 			struct ObjFileLabel *aLabels = (struct ObjFileLabel*)(aReloc + hdr.relocs);
@@ -3778,10 +3796,8 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			// for now just append to existing assembler data
 
 			// sections
-			int load_section = (int)allSections.size();
 			int reloc_idx = 0;
 			for (int si = 0; si < hdr.sections; si++) {
-				Section *s = nullptr;
 				short f = aSect[si].flags;
 				aSctRmp[si] = (short)allSections.size();
 				if (f & (1 << ObjFileSection::OFS_MERGED))
