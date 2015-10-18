@@ -79,7 +79,7 @@ enum StatusCode {
 	ERROR_EXPRESSION_OPERATION,
 	ERROR_EXPRESSION_MISSING_VALUES,
 	ERROR_INSTRUCTION_NOT_ZP,
-	ERROR_INVALID_ADDRESSING_MODE_FOR_BRANCH,
+	ERROR_INVALID_ADDRESSING_MODE,
 	ERROR_BRANCH_OUT_OF_RANGE,
 	ERROR_LABEL_MISPLACED_INTERNAL,
 	ERROR_BAD_ADDRESSING_MODE,
@@ -136,7 +136,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Expression operation",
 	"Expression missing values",
 	"Instruction can not be zero page",
-	"Invalid addressing mode for branch instruction",
+	"Invalid addressing mode for instruction",
 	"Branch out of range",
 	"Internal label organization mishap",
 	"Bad addressing mode",
@@ -248,34 +248,124 @@ enum EvalOperator {
 // Opcode encoding
 typedef struct {
 	unsigned int op_hash;
-	unsigned char group;	// group #
 	unsigned char index;	// ground index
 	unsigned char type;		// mnemonic or
 } OP_ID;
 
-//
-// 6502 instruction encoding according to this page
-// http://www.llx.com/~nparker/a2/opcodes.html
-// decoded instruction:
-// XXY10000 for branches
-// AAABBBCC for CC=00, 01, 10
-// and some custom ops
-//
+enum AddrMode {
+	AMB_ZP_REL_X,		// address mode bit index
+	AMB_ZP,
+	AMB_IMM,
+	AMB_ABS,
+	AMB_ZP_Y_REL,
+	AMB_ZP_X,
+	AMB_ABS_Y,
+	AMB_ABS_X,
+	AMB_REL,
+	AMB_ACC,
+	AMB_NON,
+	AMB_COUNT,
 
-enum AddressingMode {
-	AM_REL_ZP_X,		// 0 (zp,x)
-	AM_ZP,				// 1 zp
-	AM_IMMEDIATE,		// 2 #$hh
-	AM_ABSOLUTE,		// 3 $hhhh
-	AM_REL_ZP_Y,		// 4 (zp),y
-	AM_ZP_X,			// 5 zp,x
-	AM_ABSOLUTE_Y,		// 6 $hhhh,y
-	AM_ABSOLUTE_X,		// 7 $hhhh,x
-	AM_RELATIVE,		// 8 ($xxxx)
-	AM_ACCUMULATOR,		// 9 A
-	AM_NONE,			// 10 <empty>
-	AM_INVALID,			// 11
+	AMB_FLIPXY = AMB_COUNT,
+	AMB_BRANCH,
+						// address mode masks
+	AMM_NON = 1<<AMB_NON,
+	AMM_IMM = 1<<AMB_IMM,
+	AMM_ABS = 1<<AMB_ABS,
+	AMM_REL = 1<<AMB_REL,
+	AMM_ACC = 1<<AMB_ACC,
+	AMM_ZP = 1<<AMB_ZP,
+	AMM_ABS_X = 1<<AMB_ABS_X,
+	AMM_ABS_Y = 1<<AMB_ABS_Y,
+	AMM_ZP_X = 1<<AMB_ZP_X,
+	AMM_ZP_REL_X = 1<<AMB_ZP_REL_X,
+	AMM_ZP_Y_REL = 1<<AMB_ZP_Y_REL,
+	AMM_FLIPXY = 1<<AMB_FLIPXY,
+	AMM_BRANCH = 1<<AMB_BRANCH,
+
+						// instruction group specific masks
+	AMM_BRA = AMM_BRANCH | AMM_ABS,
+	AMM_ORA = AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_Y | AMM_ABS_X | AMM_ZP_REL_X | AMM_ZP_Y_REL,
+	AMM_STA = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_Y | AMM_ABS_X | AMM_ZP_REL_X | AMM_ZP_Y_REL,
+	AMM_ASL = AMM_ACC | AMM_NON | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
+	AMM_STX = AMM_FLIPXY | AMM_ZP | AMM_ZP_X | AMM_ABS, // note: for x ,x/,y flipped for this instr.
+	AMM_LDX = AMM_FLIPXY | AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X, // note: for x ,x/,y flipped for this instr.
+	AMM_STY = AMM_ZP | AMM_ZP_X | AMM_ABS, // note: for x ,x/,y flipped for this instr.
+	AMM_LDY = AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X, // note: for x ,x/,y flipped for this instr.
+	AMM_DEC = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
+	AMM_BIT = AMM_ZP | AMM_ABS,
+	AMM_JMP = AMM_ABS | AMM_REL,
+	AMM_CPY = AMM_IMM | AMM_ZP | AMM_ABS,
 };
+
+struct mnem {
+	const char *instr;
+	unsigned short modes;
+	unsigned char aCodes[AMB_COUNT];
+};
+
+struct mnem opcodes_6502[] = {
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty
+	{ "brk", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jsr", AMM_ABS, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rti", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40 } },
+	{ "rts", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60 } },
+	{ "ora", AMM_ORA, { 0x01, 0x05, 0x09, 0x0d, 0x11, 0x15, 0x19, 0x1d, 0x00, 0x00, 0x00 } },
+	{ "and", AMM_ORA, { 0x21, 0x25, 0x29, 0x2d, 0x31, 0x35, 0x39, 0x3d, 0x00, 0x00, 0x00 } },
+	{ "eor", AMM_ORA, { 0x41, 0x45, 0x49, 0x4d, 0x51, 0x55, 0x59, 0x5d, 0x00, 0x00, 0x00 } },
+	{ "adc", AMM_ORA, { 0x61, 0x65, 0x69, 0x6d, 0x71, 0x75, 0x79, 0x7d, 0x00, 0x00, 0x00 } },
+	{ "sta", AMM_STA, { 0x81, 0x85, 0x00, 0x8d, 0x91, 0x95, 0x99, 0x9d, 0x00, 0x00, 0x00 } },
+	{ "lda", AMM_ORA, { 0xa1, 0xa5, 0xa9, 0xad, 0xb1, 0xb5, 0xb9, 0xbd, 0x00, 0x00, 0x00 } },
+	{ "cmp", AMM_ORA, { 0xc1, 0xc5, 0xc9, 0xcd, 0xd1, 0xd5, 0xd9, 0xdd, 0x00, 0x00, 0x00 } },
+	{ "sbc", AMM_ORA, { 0xe1, 0xe5, 0xe9, 0xed, 0xf1, 0xf5, 0xf9, 0xfd, 0x00, 0x00, 0x00 } },
+	{ "asl", AMM_ASL, { 0x00, 0x06, 0x00, 0x0e, 0x00, 0x16, 0x00, 0x1e, 0x00, 0x0a, 0x0a } },
+	{ "rol", AMM_ASL, { 0x00, 0x26, 0x00, 0x2e, 0x00, 0x36, 0x00, 0x3e, 0x00, 0x2a, 0x2a } },
+	{ "lsr", AMM_ASL, { 0x00, 0x46, 0x00, 0x4e, 0x00, 0x56, 0x00, 0x5e, 0x00, 0x4a, 0x4a } },
+	{ "ror", AMM_ASL, { 0x00, 0x66, 0x00, 0x6e, 0x00, 0x76, 0x00, 0x7e, 0x00, 0x6a, 0x6a } },
+	{ "stx", AMM_STX, { 0x00, 0x86, 0x00, 0x8e, 0x00, 0x96, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldx", AMM_LDX, { 0x00, 0xa6, 0xa2, 0xae, 0x00, 0xb6, 0x00, 0xbe, 0x00, 0x00, 0x00 } },
+	{ "dec", AMM_DEC, { 0x00, 0xc6, 0x00, 0xce, 0x00, 0xd6, 0x00, 0xde, 0x00, 0x00, 0x00 } },
+	{ "inc", AMM_DEC, { 0x00, 0xe6, 0x00, 0xee, 0x00, 0xf6, 0x00, 0xfe, 0x00, 0x00, 0x00 } },
+	{ "php", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } },
+	{ "plp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28 } },
+	{ "pha", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48 } },
+	{ "pla", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68 } },
+	{ "dey", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88 } },
+	{ "tay", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa8 } },
+	{ "iny", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8 } },
+	{ "inx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe8 } },
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty
+	{ "bpl", AMM_BRA, { 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bmi", AMM_BRA, { 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvc", AMM_BRA, { 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvs", AMM_BRA, { 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcc", AMM_BRA, { 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcs", AMM_BRA, { 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bne", AMM_BRA, { 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "beq", AMM_BRA, { 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "clc", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18 } },
+	{ "sec", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38 } },
+	{ "cli", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58 } },
+	{ "sei", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78 } },
+	{ "tya", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x98 } },
+	{ "clv", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb8 } },
+	{ "cld", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd8 } },
+	{ "sed", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8 } },
+	{ "bit", AMM_BIT, { 0x00, 0x24, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jmp", AMM_JMP, { 0x00, 0x00, 0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00 } },
+	{ "sty", AMM_STY, { 0x00, 0x84, 0x00, 0x8c, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldy", AMM_LDY, { 0x00, 0xa4, 0xa0, 0xac, 0x00, 0xb4, 0x00, 0xbc, 0x00, 0x00, 0x00 } },
+	{ "cpy", AMM_CPY, { 0x00, 0xc4, 0xc0, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cpx", AMM_CPY, { 0x00, 0xe4, 0xe0, 0xec, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "txa", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a } },
+	{ "txs", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a } },
+	{ "tax", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa } },
+	{ "tsx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xba } },
+	{ "dex", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xca } },
+	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea } }
+};
+
+static const int num_opcodes_6502 = sizeof(opcodes_6502) / sizeof(opcodes_6502[0]);
 
 // How instruction argument is encoded
 enum CODE_ARG {
@@ -284,62 +374,6 @@ enum CODE_ARG {
 	CA_TWO_BYTES,		// instruction carries two bytes
 	CA_BRANCH			// instruction carries a relative address
 };
-
-// opcode groups
-enum OP_GROUP {
-	OPG_SUBROUT,
-	OPG_CC01,
-	OPG_CC10,
-	OPG_STACK,
-	OPG_BRANCH,
-	OPG_FLAG,
-	OPG_CC00,
-	OPG_TRANS
-};
-
-// opcode exception indices
-enum OP_INDICES {
-	OPI_JSR = 1,
-	OPI_LDX = 5,
-	OPI_STX = 4,
-	OPI_STA = 4,
-	OPI_JMP = 1,
-};
-
-#define RELATIVE_JMP_DELTA 0x20
-
-// opcode names in groups (prefix by group size)
-const char aInstr[] = {
-	"BRK,JSR,RTI,RTS\n"
-	"ORA,AND,EOR,ADC,STA,LDA,CMP,SBC\n"
-	"ASL,ROL,LSR,ROR,STX,LDX,DEC,INC\n"
-	"PHP,PLP,PHA,PLA,DEY,TAY,INY,INX\n"
-	"BPL,BMI,BVC,BVS,BCC,BCS,BNE,BEQ\n"
-	"CLC,SEC,CLI,SEI,TYA,CLV,CLD,SED\n"
-	"BIT,JMP,,STY,LDY,CPY,CPX\n"
-	"TXA,TXS,TAX,TSX,DEX,,NOP"
-};
-
-// group # + index => base opcode
-const unsigned char aMulAddGroup[][2] = {
-	{ 0x20,0x00 },
-	{ 0x20,0x01 },
-	{ 0x20,0x02 },
-	{ 0x20,0x08 },
-	{ 0x20,0x10 },
-	{ 0x20,0x18 },
-	{ 0x20,0x20 },
-	{ 0x10,0x8a }
-};
-
-char aCC00Modes[] = { AM_IMMEDIATE, AM_ZP, AM_INVALID, AM_ABSOLUTE, AM_INVALID, AM_ZP_X, AM_INVALID, AM_ABSOLUTE_X };
-char aCC01Modes[] = { AM_REL_ZP_X, AM_ZP, AM_IMMEDIATE, AM_ABSOLUTE, AM_REL_ZP_Y, AM_ZP_X, AM_ABSOLUTE_X, AM_ABSOLUTE_Y };
-char aCC10Modes[] = { AM_IMMEDIATE, AM_ZP, AM_NONE, AM_ABSOLUTE, AM_INVALID, AM_ZP_X, AM_INVALID, AM_ABSOLUTE_X };
-
-unsigned char CC00ModeAdd[] = { 0xff, 4, 0, 12, 0xff, 20, 0xff, 28 };
-unsigned char CC00Mask[] = { 0x0a, 0x08, 0x08, 0x2a, 0xae, 0x0e, 0x0e };
-unsigned char CC10ModeAdd[] = { 0xff, 4, 0, 12, 0xff, 20, 0xff, 28 };
-unsigned char CC10Mask[] = { 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0xae, 0xaa, 0xaa };
 
 // hardtexted strings
 static const strref c_comment("//");
@@ -352,6 +386,19 @@ static const strref str_label("label");
 static const strref str_const("const");
 static const strref struct_byte("byte");
 static const strref struct_word("word");
+static const char* aAddrModeFmt[] = {
+					"%s ($%02x,x)",
+					"%s $%02x",
+					"%s #$%02x",
+					"%s $%04x",
+					"%s ($%02x),y",
+					"%s $%02x,x",
+					"%s $%04x,y",
+					"%s $%04x,x",
+					"%s ($%04x)",
+					"%s A",
+					"%s " };
+
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
@@ -459,7 +506,7 @@ public:
 };
 
 // relocs are cheaper than full expressions and work with
-// local labels for relative sections which would otherwise
+// local labels for relative sections which could otherwise
 // be out of scope at link time.
 
 struct Reloc {
@@ -480,6 +527,16 @@ struct Reloc {
 };
 typedef std::vector<struct Reloc> relocList;
 
+// For assembly listing this remembers the location of each line
+struct ListLine {
+	int address;			// start address of this line
+	int size;				// number of bytes generated for this line
+	int line_offs;			// offset into code
+	strref source_name;		// source file index name
+	strref code;			// line of code this represents
+};
+typedef std::vector<struct ListLine> Listing;
+
 // start of data section support
 // Default is a fixed address section at $1000
 // Whenever org or dum with address is encountered => new section
@@ -492,7 +549,6 @@ typedef struct Section {
 	int load_address;		// if assigned a load address
 	int start_address;
 	int address;			// relative or absolute PC
-	bool address_assigned;	// address is absolute if assigned
 
 	// merged sections
 	int merged_offset;		// -1 if not merged
@@ -505,6 +561,9 @@ typedef struct Section {
 
 	// reloc data
 	relocList *pRelocs;		// link time resolve (not all sections need this)
+	Listing *pListing;		// if list output
+
+	bool address_assigned;	// address is absolute if assigned
 	bool dummySection;		// true if section does not generate data, only labels
 
 	void reset() {
@@ -512,7 +571,10 @@ typedef struct Section {
 		address_assigned = false; output = nullptr; curr = nullptr;
 		dummySection = false;  output_capacity = 0;
 		merged_offset = -1;
-		if (pRelocs) delete pRelocs; pRelocs = nullptr;
+		if (pRelocs) delete pRelocs;
+		pRelocs = nullptr;
+		if (pListing) delete pListing;
+		pListing = nullptr;
 	}
 
 	void Cleanup() { if (output) free(output); reset(); }
@@ -533,10 +595,11 @@ typedef struct Section {
 	bool IsMergedSection() const { return merged_offset >= 0;  }
 	void AddReloc(int base, int offset, int section, Reloc::Type type = Reloc::WORD);
 
-	Section() : pRelocs(nullptr) { reset(); }
-	Section(strref _name, int _address) : pRelocs(nullptr) { reset(); name = _name;
-		start_address = load_address = address = _address; address_assigned = true; }
-	Section(strref _name) : pRelocs(nullptr) { reset(); name = _name;
+	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
+	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr)
+		{ reset(); name = _name; start_address = load_address = address = _address;
+		  address_assigned = true; }
+	Section(strref _name) : pRelocs(nullptr), pListing(nullptr) { reset(); name = _name;
 		start_address = load_address = address = 0; address_assigned = false; }
 	~Section() { reset(); }
 
@@ -733,9 +796,16 @@ public:
 
 	bool symbol_export, last_label_local;
 	bool errorEncountered;
+	bool list_assembly;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
+
+	// Generate assembler listing if requested
+	bool List(strref filename);
+
+	// Generate source for all valid instructions
+	bool AllOpcodes(strref filename);
 
 	// Clean up memory allocations, reset assembler state
 	void Cleanup();
@@ -808,9 +878,9 @@ public:
 
 	// Assembler steps
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
-	AddressingMode GetAddressMode(strref line, bool flipXY,
+	AddrMode GetAddressMode(strref line, bool flipXY,
 								  StatusCode &error, strref &expression);
-	StatusCode AddOpcode(strref line, int group, int index, strref source_file);
+	StatusCode AddOpcode(strref line, int index, strref source_file);
 	StatusCode BuildLine(OP_ID *pInstr, int numInstructions, strref line);
 	StatusCode BuildSegment(OP_ID *pInstr, int numInstructions);
 	
@@ -866,6 +936,7 @@ void Asm::Cleanup() {
 	symbol_export = false;
 	last_label_local = false;
 	errorEncountered = false;
+	list_assembly = false;
 }
 
 // Read in text data (main source, include, etc.)
@@ -1078,6 +1149,7 @@ StatusCode Asm::LinkRelocs(int section_id, int section_address)
 	return STATUS_OK;
 }
 
+// Link sections with a specific name at this point
 StatusCode Asm::LinkSections(strref name) {
 	if (CurrSection().IsRelativeSection())
 		return ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION;
@@ -1092,8 +1164,9 @@ StatusCode Asm::LinkSections(strref name) {
 			// Get base addresses
 			CheckOutputCapacity((int)s.size());
 
-			int section_address = CurrSection().GetPC();
-			unsigned char *section_out = CurrSection().curr;
+			Section &curr = CurrSection();
+			int section_address = curr.GetPC();
+			unsigned char *section_out = curr.curr;
 			if (s.output)
 				memcpy(section_out, s.output, s.size());
 			CurrSection().address += (int)s.size();
@@ -1109,6 +1182,22 @@ StatusCode Asm::LinkSections(strref name) {
 			s.address_assigned = true;
 			s.merged_section = SectionId();
 			s.merged_offset = (int)(section_out - CurrSection().output);
+
+			// Merge in the listing at this point
+			if (s.pListing) {
+				if (!curr.pListing)
+					curr.pListing = new Listing;
+				if ((curr.pListing->size() + s.pListing->size()) > curr.pListing->capacity())
+					curr.pListing->reserve(curr.pListing->size() + s.pListing->size() + 256);
+				for (Listing::iterator si = s.pListing->begin(); si != s.pListing->end(); ++si) {
+					struct ListLine lst = *si;
+					lst.address += s.merged_offset;
+					curr.pListing->push_back(lst);
+				}
+				delete s.pListing;
+				s.pListing = nullptr;
+			}
+
 
 			// All labels in this section can now be assigned
 			LinkLabelsToAddress(section_id, section_address);
@@ -1140,6 +1229,7 @@ void Section::CheckOutputCapacity(unsigned int addSize) {
 	}
 }
 
+// Add one byte to a section
 void Section::AddByte(int b) {
 	if (!dummySection) {
 		CheckOutputCapacity(1);
@@ -1148,6 +1238,7 @@ void Section::AddByte(int b) {
 	address++;
 }
 
+// Add a 16 bit word to a section
 void Section::AddWord(int w) {
 	if (!dummySection) {
 		CheckOutputCapacity(2);
@@ -1157,6 +1248,7 @@ void Section::AddWord(int w) {
 	address += 2;
 }
 
+// Add arbitrary length data to a section
 void Section::AddBin(unsigned const char *p, int size) {
 	if (!dummySection) {
 		CheckOutputCapacity(size);
@@ -1166,6 +1258,7 @@ void Section::AddBin(unsigned const char *p, int size) {
 	address += size;
 }
 
+// Add a relocation marker to a section
 void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
 {
 	if (!pRelocs)
@@ -2987,32 +3080,22 @@ int sortHashLookup(const void *A, const void *B) {
 	return _A->op_hash > _B->op_hash ? 1 : -1;
 }
 
-int BuildInstructionTable(OP_ID *pInstr, strref instr_text, int maxInstructions)
+int BuildInstructionTable(OP_ID *pInstr, int maxInstructions)
 {
 	// create an instruction table (mnemonic hash lookup)
 	int numInstructions = 0;
-	char group_num = 0;
-	while (strref line = instr_text.next_line()) {
-		int index_num = 0;
-		while (line) {
-			strref mnemonic = line.split_token_trim(',');
-			if (mnemonic) {
-				OP_ID &op_hash = pInstr[numInstructions++];
-				op_hash.op_hash = mnemonic.fnv1a_lower();
-				op_hash.group = group_num;
-				op_hash.index = index_num;
-				op_hash.type = OT_MNEMONIC;
-			}
-			index_num++;
-		}
-		group_num++;
+	for (int i = 0; i < num_opcodes_6502; i++) {
+		OP_ID &op = pInstr[numInstructions++];
+		op.op_hash = strref(opcodes_6502[i].instr).fnv1a_lower();
+		op.index = i;
+		op.type = OT_MNEMONIC;
 	}
-	
+
 	// add assembler directives
 	for (int d=0; d<nDirectiveNames; d++) {
 		OP_ID &op_hash = pInstr[numInstructions++];
 		op_hash.op_hash = strref(aDirectiveNames[d].name).fnv1a_lower();
-		op_hash.group = 0xff;
+//		op_hash.group = 0xff;
 		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
 		op_hash.type = OT_DIRECTIVE;
 	}
@@ -3022,38 +3105,38 @@ int BuildInstructionTable(OP_ID *pInstr, strref instr_text, int maxInstructions)
 	return numInstructions;
 }
 
-AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, strref &expression)
+AddrMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, strref &expression)
 {
 	bool force_zp = false;
 	bool need_more = true;
 	strref arg, deco;
-	AddressingMode addrMode = AM_INVALID;
+	AddrMode addrMode = AMB_COUNT;
     
 	while (need_more) {
 		need_more = false;
 		switch (line.get_first()) {
 			case 0:		// empty line, empty addressing mode
-				addrMode = AM_NONE;
+				addrMode = AMB_NON;
 				break;
 			case '(':	// relative (jmp (addr), (zp,x), (zp),y)
 				deco = line.scoped_block_skip();
 				line.skip_whitespace();
 				expression = deco.split_token_trim(',');
-				addrMode = AM_RELATIVE;
+				addrMode = AMB_REL;
 				if (deco[0]=='x' || deco[0]=='X')
-					addrMode = AM_REL_ZP_X;
+					addrMode = AMB_ZP_REL_X;
 				else if (line[0]==',') {
 					++line;
 					line.skip_whitespace();
 					if (line[0]=='y' || line[0]=='Y') {
-						addrMode = AM_REL_ZP_Y;
+						addrMode = AMB_ZP_Y_REL;
 						++line;
 					}
 				}
 				break;
 			case '#':	// immediate, determine if value is ok
 				++line;
-				addrMode = AM_IMMEDIATE;
+				addrMode = AMB_IMM;
 				expression = line;
 				break;
 			default: {	// accumulator or absolute
@@ -3063,20 +3146,20 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
                         line += 3;
                         need_more = true;
                     } else if (strref("A").is_prefix_word(line)) {
-						addrMode = AM_ACCUMULATOR;
+						addrMode = AMB_ACC;
 					} else {	// absolute (zp, offs x, offs y)
-						addrMode = force_zp ? AM_ZP : AM_ABSOLUTE;
+						addrMode = force_zp ? AMB_ZP : AMB_ABS;
 						expression = line.split_token_trim(',');
 						bool relX = line && (line[0]=='x' || line[0]=='X');
 						bool relY = line && (line[0]=='y' || line[0]=='Y');
 						if ((flipXY && relY) || (!flipXY && relX))
-							addrMode = addrMode==AM_ZP ? AM_ZP_X : AM_ABSOLUTE_X;
+							addrMode = addrMode==AMB_ZP ? AMB_ZP_X : AMB_ABS_X;
 						else if ((flipXY && relX) || (!flipXY && relY)) {
 							if (force_zp) {
 								error = ERROR_INSTRUCTION_NOT_ZP;
 								break;
 							}
-							addrMode = AM_ABSOLUTE_Y;
+							addrMode = AMB_ABS_Y;
 						}
 					}
 				}
@@ -3090,15 +3173,14 @@ AddressingMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, 
 
 
 // Push an opcode to the output buffer
-StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
+StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 {
 	StatusCode error = STATUS_OK;
-	int base_opcode = aMulAddGroup[group][1] + index * aMulAddGroup[group][0];
 	strref expression;
 	
 	// Get the addressing mode and the expression it refers to
-	AddressingMode addrMode = GetAddressMode(line,
-		group==OPG_CC10&&index>=OPI_STX&&index<=OPI_LDX, error, expression);
+	AddrMode addrMode = GetAddressMode(line,
+		!!(opcodes_6502[index].modes & AMM_FLIPXY), error, expression);
 	
 	int value = 0;
 	int target_section = -1;
@@ -3107,7 +3189,7 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	bool evalLater = false;
 	if (expression) {
 		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
-							   group==OPG_BRANCH ? SectionId() : -1);
+			!!(opcodes_6502[index].modes & AMM_BRA) ? SectionId() : -1);
 		error = EvalExpression(expression, etx, value);
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
@@ -3121,13 +3203,15 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	}
 	
 	// check if address is in zero page range and should use a ZP mode instead of absolute
-	if (!evalLater && value>=0 && value<0x100 && group!=OPG_BRANCH && error != STATUS_RELATIVE_SECTION) {
+	if (!evalLater && value>=0 && value<0x100 && error != STATUS_RELATIVE_SECTION) {
 		switch (addrMode) {
-			case AM_ABSOLUTE:
-				addrMode = AM_ZP;
+			case AMB_ABS:
+				if (opcodes_6502[index].modes & AMM_ZP)
+					addrMode = AMB_ZP;
 				break;
-			case AM_ABSOLUTE_X:
-				addrMode = AM_ZP_X;
+			case AMB_ABS_X:
+				if (opcodes_6502[index].modes & AMM_ZP_X)
+					addrMode = AMB_ZP_X;
 				break;
 			default:
 				break;
@@ -3135,97 +3219,17 @@ StatusCode Asm::AddOpcode(strref line, int group, int index, strref source_file)
 	}
 	
 	CODE_ARG codeArg = CA_NONE;
-	unsigned char opcode = base_opcode;
-	
-	// analyze addressing mode per mnemonic group
-	switch (group) {
-		case OPG_BRANCH:
-			if (addrMode != AM_ABSOLUTE) {
-				error = ERROR_INVALID_ADDRESSING_MODE_FOR_BRANCH;
-				break;
-			}
+	unsigned char opcode = opcodes_6502[index].aCodes[addrMode];
+
+	if (!(opcodes_6502[index].modes & (1 << addrMode)))
+		error = ERROR_INVALID_ADDRESSING_MODE;
+	else {
+		if (opcodes_6502[index].modes & AMM_BRANCH)
 			codeArg = CA_BRANCH;
-			break;
-			
-		case OPG_SUBROUT:
-			if (index==OPI_JSR) {	// jsr
-				if (addrMode != AM_ABSOLUTE)
-					error = ERROR_INVALID_ADDRESSING_MODE_FOR_BRANCH;
-				else
-					codeArg = CA_TWO_BYTES;
-			}
-			break;
-		case OPG_STACK:
-		case OPG_FLAG:
-		case OPG_TRANS:
-			codeArg = CA_NONE;
-			break;
-		case OPG_CC00:
-			// jump relative exception
-			if (addrMode==AM_RELATIVE && index==OPI_JMP) {
-				base_opcode += RELATIVE_JMP_DELTA;
-				addrMode = AM_ABSOLUTE; // the relative address is in an absolute location ;)
-			}
-			if (addrMode>7 || (CC00Mask[index]&(1<<addrMode))==0)
-				error = ERROR_BAD_ADDRESSING_MODE;
-			else {
-				opcode = base_opcode + CC00ModeAdd[addrMode];
-				switch (addrMode) {
-					case AM_ABSOLUTE:
-					case AM_ABSOLUTE_Y:
-					case AM_ABSOLUTE_X:
-						codeArg = CA_TWO_BYTES;
-						break;
-					default:
-						codeArg = CA_ONE_BYTE;
-						break;
-				}
-			}
-			break;
-		case OPG_CC01:
-			if (addrMode>7 || (addrMode==AM_IMMEDIATE && index==OPI_STA))
-				error = ERROR_BAD_ADDRESSING_MODE;
-			else {
-				opcode = base_opcode + addrMode*4;
-				switch (addrMode) {
-					case AM_ABSOLUTE:
-					case AM_ABSOLUTE_Y:
-					case AM_ABSOLUTE_X:
-						codeArg = CA_TWO_BYTES;
-						break;
-					default:
-						codeArg = CA_ONE_BYTE;
-						break;
-				}
-			}
-			break;
-		case OPG_CC10: {
-			if (addrMode == AM_NONE || addrMode == AM_ACCUMULATOR) {
-				if (index>=4)
-					error = ERROR_BAD_ADDRESSING_MODE;
-				else {
-					opcode = base_opcode + 8;
-					codeArg = CA_NONE;
-				}
-			} else {
-				if (addrMode>7 || (CC10Mask[index]&(1<<addrMode))==0)
-					error = ERROR_BAD_ADDRESSING_MODE;
-				else {
-					opcode = base_opcode + CC10ModeAdd[addrMode];
-					switch (addrMode) {
-						case AM_IMMEDIATE:
-						case AM_ZP:
-						case AM_ZP_X:
-							codeArg = CA_ONE_BYTE;
-							break;
-						default:
-							codeArg = CA_TWO_BYTES;
-							break;
-					}
-				}
-			}
-			break;
-		}
+		else if (addrMode == AMB_ABS || addrMode == AMB_REL || addrMode == AMB_ABS_X || addrMode == AMB_ABS_Y)
+			codeArg = CA_TWO_BYTES;
+		else if (addrMode != AMB_NON && addrMode != AMB_ACC)
+			codeArg = CA_ONE_BYTE;
 	}
 	// Add the instruction and argument to the code
 	if (error == STATUS_OK || error == STATUS_RELATIVE_SECTION) {
@@ -3296,6 +3300,10 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 	if (syntax==SYNTAX_MERLIN && line[0]=='*')
 		return STATUS_OK;
 
+	// remember for listing
+	int start_section = SectionId();
+	int start_address = CurrSection().address;
+	strref code_line = line;
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
 		char char0 = line[0]; // first char including white space
@@ -3364,12 +3372,8 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						line.skip_whitespace();
 					}
 					error = ApplyDirective((AssemblerDirective)pInstr[op_idx].index, line, contextStack.curr().source_file);
-				} else if (ConditionalAsm() && pInstr[op_idx].type==OT_MNEMONIC) {
-					OP_ID &id = pInstr[op_idx];
-					int group = id.group;
-					int index = id.index;
-					error = AddOpcode(line, group, index, contextStack.curr().source_file);
-				}
+				} else if (ConditionalAsm() && pInstr[op_idx].type==OT_MNEMONIC)
+					error = AddOpcode(line, pInstr[op_idx].index, contextStack.curr().source_file);
 				line.clear();
 			} else if (!ConditionalAsm()) {
 				line.clear(); // do nothing if conditional nesting so clear the current line
@@ -3440,6 +3444,33 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 		if (error < ERROR_STOP_PROCESSING_ON_HIGHER)
 			error = STATUS_OK;
 	}
+	// update listing
+	if (error == STATUS_OK && list_assembly) {
+		Section &curr = CurrSection();
+		if (!curr.pListing)
+			curr.pListing = new Listing;
+		if (curr.pListing && curr.pListing->size() == curr.pListing->capacity())
+			curr.pListing->reserve(curr.pListing->size() + 256);
+		if (SectionId() == start_section) {
+			struct ListLine lst;
+			lst.address = start_address - curr.start_address;
+			lst.size = curr.address - start_address;
+			lst.code = contextStack.curr().source_file;
+			lst.source_name = contextStack.curr().source_name;
+			lst.line_offs = int(code_line.get() - lst.code.get());
+			if (lst.size)
+				curr.pListing->push_back(lst);
+		} else {
+			struct ListLine lst;
+			lst.address = 0;
+			lst.size = curr.address - curr.start_address;
+			lst.code = contextStack.curr().source_file;
+			lst.source_name = contextStack.curr().source_name;
+			lst.line_offs = int(code_line.get() - lst.code.get());
+			if (lst.size)
+				curr.pListing->push_back(lst);
+		}
+	}
 	return error;
 }
 
@@ -3460,11 +3491,156 @@ StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
 	return error;
 }
 
+// Produce the assembler listing
+bool Asm::List(strref filename)
+{
+	FILE *f = stdout;
+	bool opened = false;
+	if (filename) {
+		f = fopen(strown<512>(filename).c_str(), "w");
+		if (!f)
+			return false;
+		opened = true;
+	}
+
+	// Build a disassembly lookup table
+	unsigned char mnemonic[256];
+	unsigned char addrmode[256];
+	memset(mnemonic, 255, sizeof(mnemonic));
+	memset(addrmode, 255, sizeof(addrmode));
+	for (int i = 0; i < num_opcodes_6502; i++) {
+		for (int j = 0; j < AMB_COUNT; j++) {
+			if (opcodes_6502[i].modes & (1 << j)) {
+				unsigned char op = opcodes_6502[i].aCodes[j];
+				mnemonic[op] = i;
+				addrmode[op] = j;
+			}
+		}
+	}
+
+	strref prev_src;
+	int prev_offs = 0;
+	for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
+		if (!si->pListing)
+			continue;
+		for (Listing::iterator li = si->pListing->begin(); li != si->pListing->end(); ++li) {
+			strown<256> out;
+			const struct ListLine &lst = *li;
+			if (prev_src.fnv1a() != lst.source_name.fnv1a() || lst.line_offs < prev_offs) {
+				fprintf(f, STRREF_FMT "(%d):\n", STRREF_ARG(lst.source_name), lst.code.count_lines(lst.line_offs));
+				prev_src = lst.source_name;
+			}
+			else {
+				strref prvline = lst.code.get_substr(prev_offs, lst.line_offs - prev_offs);
+				prvline.next_line();
+				if (prvline.count_lines() < 5) {
+					while (strref space_line = prvline.line()) {
+						space_line.clip_trailing_whitespace();
+						strown<128> line_fix(space_line);
+						for (strl_t pos = 0; pos < line_fix.len(); ++pos) {
+							if (line_fix[pos] == '\t')
+								line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
+						}
+						out.append_to(' ', 30);
+						out.append(line_fix.get_strref());
+						fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
+						out.clear();
+					}
+				}
+				else {
+					fprintf(f, STRREF_FMT "(%d):\n", STRREF_ARG(lst.source_name), lst.code.count_lines(lst.line_offs));
+				}
+			}
+
+			out.sprintf_append("$%04x ", lst.address + si->start_address);
+			int s = lst.size < 4 ? lst.size : 4;
+			if (si->output && si->output_capacity >= (lst.address + s)) {
+				for (int b = 0; b < s; ++b)
+					out.sprintf_append("%02x ", si->output[lst.address + b]);
+			}
+			else
+				s = 0;
+			out.append_to(' ', 18);
+			if (lst.size) {
+				unsigned char *buf = si->output + lst.address;
+				unsigned char op = mnemonic[*buf];
+				unsigned char am = addrmode[*buf];
+				if (op != 255 && am != 255) {
+					const char *fmt = aAddrModeFmt[am];
+					if (opcodes_6502[op].modes & AMM_FLIPXY) {
+						if (am == AMB_ZP_X)	fmt = "%s $%02x,y";
+						else if (am == AMB_ABS_X) fmt = "%s $%04x,y";
+					}
+					if (opcodes_6502[op].modes & AMM_BRANCH)
+						out.sprintf_append(fmt, opcodes_6502[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
+					else if (am == AMB_NON || am == AMB_ACC)
+						out.sprintf_append(fmt, opcodes_6502[op].instr);
+					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL)
+						out.sprintf_append(fmt, opcodes_6502[op].instr, buf[1] | (buf[2] << 8));
+					else
+						out.sprintf_append(fmt, opcodes_6502[op].instr, buf[1]);
+				}
+			}
+			out.append_to(' ', 30);
+			strref line = lst.code.get_skipped(lst.line_offs).get_line();
+			line.clip_trailing_whitespace();
+			strown<128> line_fix(line);
+			for (strl_t pos = 0; pos < line_fix.len(); ++pos) {
+				if (line_fix[pos] == '\t')
+					line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
+			}
+			out.append(line_fix.get_strref());
+
+			fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
+			prev_offs = lst.line_offs;
+		}
+	}
+	if (opened)
+		fclose(f);
+	return true;
+}
+
+// Create a listing of all valid instructions and addressing modes
+bool Asm::AllOpcodes(strref filename)
+{
+	FILE *f = stdout;
+	bool opened = false;
+	if (filename) {
+		f = fopen(strown<512>(filename).c_str(), "w");
+		if (!f)
+			return false;
+		opened = true;
+	}
+	for (int i = 0; i < num_opcodes_6502; i++) {
+		for (int a = 0; a < AMB_COUNT; a++) {
+			if (opcodes_6502[i].modes & (1 << a)) {
+				const char *fmt = aAddrModeFmt[a];
+				if (opcodes_6502[i].modes & AMM_BRANCH)
+					fprintf(f, "%s *+%d", opcodes_6502[i].instr, 5);
+				else {
+					if (opcodes_6502[i].modes & AMM_FLIPXY) {
+						if (a == AMB_ZP_X)	fmt = "%s $%02x,y";
+						else if (a == AMB_ABS_X) fmt = "%s $%04x,y";
+					}
+					if (a==AMB_ABS || a==AMB_ABS_X || a==AMB_ABS_Y || a==AMB_REL)
+						fprintf(f, fmt, opcodes_6502[i].instr, 0x2120);
+					else
+						fprintf(f, fmt, opcodes_6502[i].instr, 0x21, 0x20, 0x1f);
+				}
+				fputs("\n", f);
+			}
+		}
+	}
+	if (opened)
+		fclose(f);
+	return true;
+}
+
 // create an instruction table (mnemonic hash lookup + directives)
 void Asm::Assemble(strref source, strref filename, bool obj_target)
 {
 	OP_ID *pInstr = new OP_ID[256];
-	int numInstructions = BuildInstructionTable(pInstr, strref(aInstr, strl_t(sizeof(aInstr)-1)), 256);
+	int numInstructions = BuildInstructionTable(pInstr, 256);
 
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
@@ -3501,6 +3677,10 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 				fwrite(errorText.get(), errorText.get_len(), 1, stderr);
 			}
 		}
+	}
+	// dump the listing from each section
+	if (list_assembly) {
+		List(nullptr);
 	}
 }
 
@@ -3678,10 +3858,10 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				l.section = lo.section;
 				l.mapIndex = lo.mapIndex;
 				l.flags =
-				(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
-				(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
-				(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
-				(lo.external ? ObjFileLabel::OFL_XDEF : 0);
+					(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
+					(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
+					(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
+					(lo.external ? ObjFileLabel::OFL_XDEF : 0);
 			}
 		}
 		
@@ -3697,10 +3877,10 @@ StatusCode Asm::WriteObjectFile(strref filename)
 					l.section = lo.section;
 					l.mapIndex = lo.mapIndex;
 					l.flags =
-					(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
-					(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
-					(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
-					file_index;
+						(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
+						(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
+						(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
+						file_index;
 				}
 				file_index++;
 			}
@@ -3910,15 +4090,19 @@ StatusCode Asm::ReadObjectFile(strref filename)
 
 int main(int argc, char **argv)
 {
+	const strref listing("lst");
+	const strref allinstr("opcodes");
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
 	bool info = false;
+	bool gen_allinstr = false;
 	Asm assembler;
 
 	const char *source_filename = nullptr, *obj_out_file = nullptr;
 	const char *binary_out_name = nullptr;
-	const char *sym_file=nullptr, *vs_file=nullptr;
+	const char *sym_file = nullptr, *vs_file = nullptr;
+	strref list_file, allinstr_file;
 	for (int a=1; a<argc; a++) {
 		strref arg(argv[a]);
 		if (arg.get_first()=='-') {
@@ -3944,28 +4128,43 @@ int main(int argc, char **argv)
 				size_header = false;
 			} else if (arg.same_str("info"))
 				info = true;
-			else if (arg.same_str("sym") && (a + 1) < argc)
-				sym_file = argv[++a];
-			else if (arg.same_str("obj") && (a + 1) < argc)
-				obj_out_file = argv[++a];
-			else if (arg.same_str("vice") && (a + 1) < argc)
-				vs_file = argv[++a];
-		}
-		else if (!source_filename)
-			source_filename = arg.get();
-		else if (!binary_out_name)
-			binary_out_name = arg.get();
+			else if (arg.has_prefix(listing) && (arg.get_len() == listing.get_len() || arg[listing.get_len()] == '=')) {
+				assembler.list_assembly = true;
+				list_file = arg.after('=');
+			} else if (arg.has_prefix(allinstr) && (arg.get_len() == allinstr.get_len() || arg[allinstr.get_len()] == '=')) {
+				gen_allinstr = true;
+				allinstr_file = arg.after('=');
+			} else if (arg.same_str("sym") && (a + 1) < argc)
+					sym_file = argv[++a];
+				else if (arg.same_str("obj") && (a + 1) < argc)
+					obj_out_file = argv[++a];
+				else if (arg.same_str("vice") && (a + 1) < argc)
+					vs_file = argv[++a];
+			} else if (!source_filename)
+				source_filename = arg.get();
+			else if (!binary_out_name)
+				binary_out_name = arg.get();
 	}
 
-	if (!source_filename) {
-		puts("Usage:\nx65 [options] filename.s code.prg\n"
-			 " * -i<path>: Add include path\n * -D<label>[=<value>]: Define a label with an optional value (otherwise 1)\n"
-			 " * -bin: Raw binary\n * -c64: Include load address (default)\n * -a2b: Apple II Dos 3.3 Binary\n"
-			 " * -sym <file.sym>: vice/kick asm symbol file\n"
-			 " * -vice <file.vs>: export a vice symbol file\nhttps://github.com/sakrac/x65\n");
+	if (gen_allinstr) {
+		assembler.AllOpcodes(allinstr_file);
+	} else if (!source_filename) {
+		puts(	"Usage:\n"				" x65 filename.s code.prg [options]\n"
+				"  * -i(path) : Add include path\n"
+				"  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
+				"  * -obj(file.o65) : generate object file for later linking\n"
+				"  * -bin : Raw binary\n"
+				"  * -c64 : Include load address(default)\n"
+				"  * -a2b : Apple II Dos 3.3 Binary\n"
+				"  * -sym(file.sym) : symbol file\n"
+				"  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
+				"  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
+				"  * -vice(file.vs) : export a vice symbol file\n");
 		return 0;
 	}
 	
+
+
 	// Load source
 	if (source_filename) {
 		size_t size = 0;
@@ -3977,6 +4176,9 @@ int main(int argc, char **argv)
 			assembler.symbol_export = true;// sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]), obj_out_file != nullptr);
 			
+			if (assembler.list_assembly)
+				assembler.List(list_file);
+
 			if (assembler.errorEncountered)
 				return_value = 1;
 			else {
@@ -3985,7 +4187,7 @@ int main(int argc, char **argv)
 				if (obj_out_file)
 					assembler.WriteObjectFile(obj_out_file);
 
-				Section exportSec = assembler.ExportSection();
+				Section &exportSec = assembler.ExportSection();
 
 				if (info) {
 					printf("SECTIONS SUMMARY\n================\n");
