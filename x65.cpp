@@ -57,6 +57,9 @@
 #define MAX_POOL_RANGES 4
 #define MAX_POOL_BYTES 128
 
+// Max number of exported binary files from a single source
+#define MAX_EXPORT_FILES 64
+
 // To simplify some syntax disambiguation the preferred
 // ruleset can be specified on the command line.
 enum AsmSyntax {
@@ -118,6 +121,8 @@ enum StatusCode {
 	ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
 	ERROR_UNABLE_TO_PROCESS,
 	ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE,
+	ERROR_CPU_NOT_SUPPORTED,
+	ERROR_CANT_APPEND_SECTION_TO_TARGET,
 
 	STATUSCODE_COUNT
 };
@@ -175,11 +180,15 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Link can not be used in dummy sections",
 	"Can not process this line",
 	"Unexpected target offset for reloc or late evaluation",
+	"CPU is not supported",
+	"Can't append sections",
 };
 
 // Assembler directives
 enum AssemblerDirective {
+	AD_CPU,			// CPU: Assemble for this target,
 	AD_ORG,			// ORG: Assemble as if loaded at this address
+	AD_EXPORT,		// EXPORT: export this section or disable export
 	AD_LOAD,		// LOAD: If applicable, instruct to load at this address
 	AD_SECTION,		// SECTION: Enable code that will be assigned a start address during a link step
 	AD_LINK,		// LINK: Put sections with this name at this address (must be ORG / fixed address section)
@@ -544,11 +553,13 @@ typedef std::vector<struct ListLine> Listing;
 typedef struct Section {
 	// section name, same named section => append
 	strref name;			// name of section for comparison
+	strref export_append;	// append this name to export of file
 
 	// generated address status
 	int load_address;		// if assigned a load address
 	int start_address;
 	int address;			// relative or absolute PC
+	int align_address;		// for relative sections that needs alignment
 
 	// merged sections
 	int merged_offset;		// -1 if not merged
@@ -567,11 +578,11 @@ typedef struct Section {
 	bool dummySection;		// true if section does not generate data, only labels
 
 	void reset() {
-		name.clear(); start_address = address = load_address = 0x0;
+		name.clear(); export_append.clear();
+		start_address = address = load_address = 0x0;
 		address_assigned = false; output = nullptr; curr = nullptr;
-		dummySection = false;  output_capacity = 0;
-		merged_offset = -1;
-		if (pRelocs) delete pRelocs;
+		dummySection = false; output_capacity = 0; merged_offset = -1;
+		align_address = 1; if (pRelocs) delete pRelocs;
 		pRelocs = nullptr;
 		if (pListing) delete pListing;
 		pListing = nullptr;
@@ -794,7 +805,7 @@ public:
 	int lastEvalValue;
 	Reloc::Type lastEvalPart;
 
-	bool symbol_export, last_label_local;
+	bool last_label_local;
 	bool errorEncountered;
 	bool list_assembly;
 
@@ -816,6 +827,7 @@ public:
 	// Operations on current section
 	void SetSection(strref name, int address);	// fixed address section
 	void SetSection(strref name); // relative address section
+	StatusCode AppendSection(Section &relSection, Section &trgSection);
 	StatusCode LinkSections(strref name); // link relative address sections with this name here
 	void LinkLabelsToAddress(int section_id, int section_address);
 	StatusCode LinkRelocs(int section_id, int section_address);
@@ -823,7 +835,8 @@ public:
 	void DummySection();
 	void EndSection();
 	Section& CurrSection() { return *current_section; }
-	Section& ExportSection();
+	unsigned char* BuildExport(strref append, int &file_size, int &addr);
+	int GetExportNames(strref *aNames, int maxNames);
 	int SectionId() { return int(current_section - &allSections[0]); }
 	void AddByte(int b) { CurrSection().AddByte(b); }
 	void AddWord(int w) { CurrSection().AddWord(w); }
@@ -933,7 +946,6 @@ void Asm::Cleanup() {
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
-	symbol_export = false;
 	last_label_local = false;
 	errorEncountered = false;
 	list_assembly = false;
@@ -1032,7 +1044,16 @@ void Asm::SetSection(strref name)
 	}*/
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
-	Section newSection(name);
+	int align = 1;
+	strref align_str = name.after(',');
+	align_str.trim_whitespace();
+	if (align_str.get_first()=='$') {
+		++align_str;
+		align = align_str.ahextoui();
+	} else
+		align = align_str.atoi();
+	Section newSection(name.before_or_full(','));
+	newSection.align_address = align;
 	allSections.push_back(newSection);
 	current_section = &allSections[allSections.size()-1];
 }
@@ -1063,22 +1084,103 @@ void Asm::EndSection() {
 		current_section = &allSections[section-1];
 }
 
-// Return an appropriate section for exporting a binary
-Section& Asm::ExportSection() {
-	std::vector<Section>::iterator i = allSections.end();
-	bool hasRelativeSection = false;
-	while (i != allSections.begin()) {
-		--i;
-		hasRelativeSection = hasRelativeSection || i->IsRelativeSection();
-		if (!i->IsDummySection() && !i->IsMergedSection() && !i->IsRelativeSection())
-			return *i;
+// list all export append names
+// for each valid export append name build a binary fixed address code
+//	- find lowest and highest address
+//	- alloc & 0 memory
+//	- any matching relative sections gets linked in after
+//	- go through all section that matches export_append in order and copy over memory
+unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
+{
+	int start_address = 0x7fffffff;
+	int end_address = 0;
+
+	bool has_relative_section = false;
+	bool has_fixed_section = false;
+	int first_relative_section = -1;
+	int last_fixed_section = -1;
+
+	// find address range
+	while (!has_relative_section && !has_fixed_section) {
+		int section_id = 0;
+		for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+			if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+				if (!i->IsMergedSection()) {
+					if (i->IsRelativeSection())
+						has_relative_section = true;
+					else if (i->start_address >= 0x200 && i->size() > 0) {
+						has_fixed_section = true;
+						if (i->start_address < start_address)
+							start_address = i->start_address;
+						if ((i->start_address + (int)i->size()) > end_address) {
+							end_address = i->start_address + (int)i->size();
+							last_fixed_section = section_id;
+						}
+					}
+				}
+			}
+			section_id++;
+		}
+		if (has_relative_section) {
+			if (!has_fixed_section) {
+				SetSection(strref(), 0x1000);
+				CurrSection().export_append = append;
+				last_fixed_section = SectionId();
+			}
+			for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+				if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+					if (i->IsRelativeSection()) {
+						StatusCode status = AppendSection(*i, allSections[last_fixed_section]);
+						if (status != STATUS_OK)
+							return nullptr;
+						end_address = allSections[last_fixed_section].start_address +
+							(int)allSections[last_fixed_section].size();
+					}
+				}
+			}
+		}
 	}
-	if (hasRelativeSection) {
-		// no fixed sections, make a new fixed section and return that for exporting.
-		SetSection(strref(), 0x1000);
-		LinkSections(strref());
+
+	// check if valid
+	if (end_address <= start_address)
+		return nullptr;
+
+	// get memory for output buffer
+	unsigned char *output = (unsigned char*)calloc(1, end_address - start_address);
+
+	// copy over in order
+	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+		if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+			if (i->merged_offset == -1 && i->start_address >= 0x200 && i->size() > 0)
+				memcpy(output + i->start_address - start_address, i->output, i->size());
+		}
 	}
-	return CurrSection();
+	
+	// return the result
+	file_size = end_address - start_address;
+	addr = start_address;
+	return output;
+}
+
+// Collect all the export names
+int Asm::GetExportNames(strref *aNames, int maxNames)
+{
+	int count = 0;
+	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+		if (!i->IsMergedSection()) {
+			bool found = false;
+			unsigned int hash = i->export_append.fnv1a_lower();
+			for (int n = 0; n < count; n++) {
+				if (aNames[n].fnv1a_lower() == hash) {
+					found = true;
+					break;
+				}
+			}
+			if (!found && count < maxNames)
+				aNames[count++] = i->export_append;
+		}
+	}
+	return count;
 }
 
 // Apply labels assigned to addresses in a relative section a fixed address
@@ -1149,6 +1251,69 @@ StatusCode Asm::LinkRelocs(int section_id, int section_address)
 	return STATUS_OK;
 }
 
+// Append one section to the end of another
+StatusCode Asm::AppendSection(Section &s, Section &curr)
+{
+	int section_id = int(&s - &allSections[0]);
+	if (s.IsRelativeSection() && !s.IsMergedSection()) {
+		int section_size = (int)s.size();
+
+		int section_address = curr.GetPC();
+		curr.CheckOutputCapacity((int)s.size());
+		unsigned char *section_out = curr.curr;
+		if (s.output)
+			memcpy(section_out, s.output, s.size());
+		curr.address += (int)s.size();
+		curr.curr += s.size();
+		free(s.output);
+		s.output = 0;
+		s.curr = 0;
+		s.output_capacity = 0;
+
+		// calculate space for alignment
+		int align_size = s.align_address <= 1 ? 0 :
+			((section_address + s.align_address - 1) % s.align_address);
+
+		// Get base addresses
+		curr.CheckOutputCapacity(section_size + align_size);
+
+		// add 0's
+		for (int a = 0; a<align_size; a++)
+			curr.AddByte(0);
+
+		section_address += align_size;
+
+		// Update address range and mark section as merged
+		s.start_address = section_address;
+		s.address += section_address;
+		s.address_assigned = true;
+		s.merged_section = SectionId();
+		s.merged_offset = (int)(section_out - CurrSection().output);
+
+		// Merge in the listing at this point
+		if (s.pListing) {
+			if (!curr.pListing)
+				curr.pListing = new Listing;
+			if ((curr.pListing->size() + s.pListing->size()) > curr.pListing->capacity())
+				curr.pListing->reserve(curr.pListing->size() + s.pListing->size() + 256);
+			for (Listing::iterator si = s.pListing->begin(); si != s.pListing->end(); ++si) {
+				struct ListLine lst = *si;
+				lst.address += s.merged_offset;
+				curr.pListing->push_back(lst);
+			}
+			delete s.pListing;
+			s.pListing = nullptr;
+		}
+
+
+		// All labels in this section can now be assigned
+		LinkLabelsToAddress(section_id, section_address);
+
+		return LinkRelocs(section_id, section_address);
+	}
+	return ERROR_CANT_APPEND_SECTION_TO_TARGET;
+}
+
 // Link sections with a specific name at this point
 StatusCode Asm::LinkSections(strref name) {
 	if (CurrSection().IsRelativeSection())
@@ -1156,57 +1321,12 @@ StatusCode Asm::LinkSections(strref name) {
 	if (CurrSection().IsDummySection())
 		return ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION;
 
-	int section_id = 0;
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if ((!name || i->name.same_str_case(name)) && i->IsRelativeSection() && !i->IsMergedSection()) {
-			// found a section to link!
-			Section &s = *i;
-			// Get base addresses
-			CheckOutputCapacity((int)s.size());
-
-			Section &curr = CurrSection();
-			int section_address = curr.GetPC();
-			unsigned char *section_out = curr.curr;
-			if (s.output)
-				memcpy(section_out, s.output, s.size());
-			CurrSection().address += (int)s.size();
-			CurrSection().curr += s.size();
-			free(s.output);
-			s.output = 0;
-			s.curr = 0;
-			s.output_capacity = 0;
-
-			// Update address range and mark section as merged
-			s.start_address = section_address;
-			s.address += section_address;
-			s.address_assigned = true;
-			s.merged_section = SectionId();
-			s.merged_offset = (int)(section_out - CurrSection().output);
-
-			// Merge in the listing at this point
-			if (s.pListing) {
-				if (!curr.pListing)
-					curr.pListing = new Listing;
-				if ((curr.pListing->size() + s.pListing->size()) > curr.pListing->capacity())
-					curr.pListing->reserve(curr.pListing->size() + s.pListing->size() + 256);
-				for (Listing::iterator si = s.pListing->begin(); si != s.pListing->end(); ++si) {
-					struct ListLine lst = *si;
-					lst.address += s.merged_offset;
-					curr.pListing->push_back(lst);
-				}
-				delete s.pListing;
-				s.pListing = nullptr;
-			}
-
-
-			// All labels in this section can now be assigned
-			LinkLabelsToAddress(section_id, section_address);
-
-			StatusCode status = LinkRelocs(section_id, section_address);
+			StatusCode status = AppendSection(*i, CurrSection());
 			if (status != STATUS_OK)
 				return status;
 		}
-		++section_id;
 	}
 	return STATUS_OK;
 }
@@ -2053,7 +2173,7 @@ Label *Asm::GetLabel(strref label, int file_ref)
 // If exporting labels, append this label to the list
 void Asm::LabelAdded(Label *pLabel, bool local)
 {
-	if (pLabel && pLabel->evaluated && symbol_export) {
+	if (pLabel && pLabel->evaluated) {
         if (map.size() == map.capacity())
             map.reserve(map.size() + 256);
         MapSymbol sym;
@@ -2553,9 +2673,12 @@ typedef struct {
 } DirectiveName;
 
 DirectiveName aDirectiveNames[] {
+	{ "CPU", AD_CPU },
+	{ "PROCESSOR", AD_CPU },
 	{ "PC", AD_ORG },
 	{ "ORG", AD_ORG },
 	{ "LOAD", AD_LOAD },
+	{ "EXPORT", AD_EXPORT },
 	{ "SECTION", AD_SECTION },
 	{ "SEG", AD_SECTION },		// DASM version of SECTION
 	{ "LINK", AD_LINK },
@@ -2625,6 +2748,16 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	}
 	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
 	switch (dir) {
+		case AD_CPU:
+			if (!line.same_str("6502"))
+				return ERROR_CPU_NOT_SUPPORTED;
+			break;
+			
+		case AD_EXPORT:
+			line.trim_whitespace();
+			CurrSection().export_append = line.split_label();
+			break;
+			
 		case AD_ORG: {		// org / pc: current address of code
 			int addr;
 			if (line[0]=='=')
@@ -2708,9 +2841,12 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				if (status == STATUS_NOT_READY)
 					error = ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY;
 				else if (status == STATUS_OK && value>0) {
-					int add = (CurrSection().GetPC() + value-1) % value;
-					for (int a = 0; a < add; a++)
-						AddByte(0);
+					if (CurrSection().address_assigned) {
+						int add = (CurrSection().GetPC() + value-1) % value;
+						for (int a = 0; a < add; a++)
+							AddByte(0);
+					} else
+						CurrSection().align_address = value;
 				}
 			}
 			break;
@@ -3458,7 +3594,7 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 			lst.code = contextStack.curr().source_file;
 			lst.source_name = contextStack.curr().source_name;
 			lst.line_offs = int(code_line.get() - lst.code.get());
-			if (lst.size)
+			if (lst.size && curr.size())
 				curr.pListing->push_back(lst);
 		} else {
 			struct ListLine lst;
@@ -3467,7 +3603,7 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 			lst.code = contextStack.curr().source_file;
 			lst.source_name = contextStack.curr().source_name;
 			lst.line_offs = int(code_line.get() - lst.code.get());
-			if (lst.size)
+			if (lst.size && curr.size())
 				curr.pListing->push_back(lst);
 		}
 	}
@@ -3558,8 +3694,6 @@ bool Asm::List(strref filename)
 				for (int b = 0; b < s; ++b)
 					out.sprintf_append("%02x ", si->output[lst.address + b]);
 			}
-			else
-				s = 0;
 			out.append_to(' ', 18);
 			if (lst.size) {
 				unsigned char *buf = si->output + lst.address;
@@ -3678,10 +3812,6 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 			}
 		}
 	}
-	// dump the listing from each section
-	if (list_assembly) {
-		List(nullptr);
-	}
 }
 
 
@@ -3714,8 +3844,10 @@ struct ObjFileSection {
 		OFS_MERGED,
 	};
 	struct ObjFileStr name;
+	struct ObjFileStr exp_app;
 	int start_address;
 	int output_size;		// assembled binary size
+	int align_address;
 	short relocs;
 	short flags;
 };
@@ -3829,13 +3961,15 @@ StatusCode Asm::WriteObjectFile(strref filename)
 			for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
 				struct ObjFileSection &s = aSects[sect++];
 				s.name.offs = _AddStrPool(si->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+				s.exp_app.offs = _AddStrPool(si->export_append, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				s.output_size = (short)si->size();
+				s.align_address = si->align_address;
 				s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
 				s.start_address = si->start_address;
 				s.flags =
-				(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
-				(si->IsMergedSection() ? (1 << ObjFileSection::OFS_MERGED) : 0) |
-				(si->address_assigned ? (1 << ObjFileSection::OFS_FIXED) : 0);
+					(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
+					(si->IsMergedSection() ? (1 << ObjFileSection::OFS_MERGED) : 0) |
+					(si->address_assigned ? (1 << ObjFileSection::OFS_FIXED) : 0);
 				if (si->pRelocs && si->pRelocs->size()) {
 					for (relocList::iterator ri = si->pRelocs->begin(); ri!=si->pRelocs->end(); ++ri) {
 						struct ObjFileReloc &r = aRelocs[reloc++];
@@ -3992,6 +4126,9 @@ StatusCode Asm::ReadObjectFile(strref filename)
 						SetSection(aSect[si].name.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref(), aSect[si].start_address);
 					else
 						SetSection(aSect[si].name.offs >= 0 ? strref(str_pool + aSect[si].name.offs) : strref());
+					CurrSection().export_append = aSect[si].exp_app.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref();
+					CurrSection().align_address = aSect[si].align_address;
+					CurrSection().address = CurrSection().start_address + aSect[si].output_size;
 					if (aSect[si].output_size) {
 						CurrSection().output = (unsigned char*)malloc(aSect[si].output_size);
 						memcpy(CurrSection().output, bin_data, aSect[si].output_size);
@@ -4126,7 +4263,7 @@ int main(int argc, char **argv)
 			} else if (arg.same_str("bin")) {
 				load_header = false;
 				size_header = false;
-			} else if (arg.same_str("info"))
+			} else if (arg.same_str("sect"))
 				info = true;
 			else if (arg.has_prefix(listing) && (arg.get_len() == listing.get_len() || arg[listing.get_len()] == '=')) {
 				assembler.list_assembly = true;
@@ -4149,21 +4286,21 @@ int main(int argc, char **argv)
 	if (gen_allinstr) {
 		assembler.AllOpcodes(allinstr_file);
 	} else if (!source_filename) {
-		puts(	"Usage:\n"				" x65 filename.s code.prg [options]\n"
+		puts(	"Usage:\n"
+				" x65 filename.s code.prg [options]\n"
 				"  * -i(path) : Add include path\n"
 				"  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
-				"  * -obj(file.o65) : generate object file for later linking\n"
+				"  * -obj(file.x65) : generate object file for later linking\n"
 				"  * -bin : Raw binary\n"
 				"  * -c64 : Include load address(default)\n"
 				"  * -a2b : Apple II Dos 3.3 Binary\n"
 				"  * -sym(file.sym) : symbol file\n"
 				"  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
 				"  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
+				"  * -sect: display sections loaded and built\n"
 				"  * -vice(file.vs) : export a vice symbol file\n");
 		return 0;
 	}
-	
-
 
 	// Load source
 	if (source_filename) {
@@ -4173,54 +4310,69 @@ int main(int argc, char **argv)
 			// if source_filename contains a path add that as a search path for include files
 			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));
 
-			assembler.symbol_export = true;// sym_file!=nullptr;
 			assembler.Assemble(strref(buffer, strl_t(size)), strref(argv[1]), obj_out_file != nullptr);
 			
-			if (assembler.list_assembly)
-				assembler.List(list_file);
-
 			if (assembler.errorEncountered)
 				return_value = 1;
 			else {
-
 				// export object file
 				if (obj_out_file)
 					assembler.WriteObjectFile(obj_out_file);
 
-				Section &exportSec = assembler.ExportSection();
+				// if exporting binary, complete the build
+				if (binary_out_name && !srcname.same_str(binary_out_name)) {
+					strref binout(binary_out_name);
+					strref ext = binout.after_last('.');
+					if (ext)
+						binout.clip(ext.get_len() + 1);
+					strref aAppendNames[MAX_EXPORT_FILES];
+					int numExportFiles = assembler.GetExportNames(aAppendNames, MAX_EXPORT_FILES);
+					for (int e = 0; e < numExportFiles; e++) {
+						strown<512> file(binout);
+						file.append(aAppendNames[e]);
+						file.append('.');
+						file.append(ext);
+						int size;
+						int addr;
+						if (unsigned char *buf = assembler.BuildExport(aAppendNames[e], size, addr)) {
+							if (FILE *f = fopen(file.c_str(), "wb")) {
+								if (load_header) {
+									char load_addr[2] = { (char)addr, (char)(addr >> 8) };
+									fwrite(load_addr, 2, 1, f);
+								}
+								if (size_header) {
+									char byte_size[2] = { (char)size, (char)(size >> 8) };
+									fwrite(byte_size, 2, 1, f);
+								}
+								fwrite(buf, size, 1, f);
+								fclose(f);
+							}
+							free(buf);
+						}
+					}
+				}
 
+				// print encountered sections info
 				if (info) {
 					printf("SECTIONS SUMMARY\n================\n");
 					for (size_t i = 0; i < assembler.allSections.size(); ++i) {
 						Section &s = assembler.allSections[i];
-						printf("Section %d%s: \"" STRREF_FMT "\" Dummy: %s Relative: %s Start: 0x%04x End: 0x%04x\n",
-							(int)i, (&exportSec == &s) ? " (export)" : "", STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
-							s.IsRelativeSection() ? "yes" : "no", s.start_address, s.address);
-						if (s.pRelocs) {
-							for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
-								printf("\tReloc value $%x at offs $%x section %d\n", i->base_value, i->section_offset, i->target_section);
+						if (s.address > s.start_address) {
+							printf("Section %d: \"" STRREF_FMT "\" Dummy: %s Relative: %s Merged: %s Start: 0x%04x End: 0x%04x\n",
+								(int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
+								s.IsRelativeSection() ? "yes" : "no", s.IsMergedSection() ? "yes" : "no", s.start_address, s.address);
+							if (s.pRelocs) {
+								for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
+									printf("\tReloc value $%x at offs $%x section %d\n", i->base_value, i->section_offset, i->target_section);
+							}
 						}
 					}
 				}
 
-				// export binary file
-				if (binary_out_name && !srcname.same_str(binary_out_name) && !exportSec.empty()) {
-					if (FILE *f = fopen(binary_out_name, "wb")) {
-						if (load_header) {
-							char addr[2] = {
-								(char)exportSec.GetLoadAddress(),
-								(char)(exportSec.GetLoadAddress() >> 8) };
-							fwrite(addr, 2, 1, f);
-						}
-						if (size_header) {
-							size_t int_size = exportSec.size();
-							char byte_size[2] = { (char)int_size, (char)(int_size >> 8) };
-							fwrite(byte_size, 2, 1, f);
-						}
-						fwrite(exportSec.get(), exportSec.size(), 1, f);
-						fclose(f);
-					}
-				}
+				// listing after export since addresses are now resolved
+				if (assembler.list_assembly)
+					assembler.List(list_file);
+
 				// export .sym file
 				if (sym_file && !srcname.same_str(sym_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(sym_file, "w")) {
@@ -4238,6 +4390,7 @@ int main(int argc, char **argv)
 						fclose(f);
 					}
 				}
+
 				// export vice label file
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
