@@ -598,12 +598,13 @@ FindFirstSpace
 Currently the assembler is in an early revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
 
 **TODO**
-* Export full memory of fixed sections instead of a single section
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
 * irp (indefinite repeat)
+* boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* Export full memory of fixed sections instead of a single section
 * Option to source disasm output and option to dump all opcodes as a source file for tests
 * Object file format so sections can be saved for later linking
 * Added relative sections and relocatable references
@@ -625,6 +626,7 @@ Currently the assembler is in an early revision and while features are tested in
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 2015-10-18 Fixed exporting binary files
 * 2015-10-18 Added list file output which is disassembly with inline source that generated the code.
 * 2015-10-16 XDEF and file protected symbols added for better recursive object file assembling
 * 2015-10-15 Object file reading, additional bugs debugged.
