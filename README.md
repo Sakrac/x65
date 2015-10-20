@@ -598,12 +598,15 @@ FindFirstSpace
 Currently the assembler is in an early revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
 
 **TODO**
+* 65c02
+* 65816
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
 * irp (indefinite repeat)
 * boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
 * Export full memory of fixed sections instead of a single section
 * Option to source disasm output and option to dump all opcodes as a source file for tests
 * Object file format so sections can be saved for later linking
