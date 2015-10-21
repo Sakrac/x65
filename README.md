@@ -41,22 +41,24 @@ Typical command line ([*] = optional):
 
 ```
 x65 [-DLabel] [-iIncDir] (source.s) (dest.prg) [-lst[=file.lst]] [-opcodes[=file.s]]
-    [-sym dest.sym] [-vice dest.vs] [-obj]/[-c64]/[-bin]/[-a2b] [-merlin]
+    [-sym dest.sym] [-vice dest.vs] [-obj]/[-c64]/[-bin]/[-a2b] [-merlin] [-endm]
 ```
 
 **Usage**
 x65 filename.s code.prg [options]
 * -i(path): Add include path
-* -D(label)[=<value>]: Define a label with an optional value (otherwise defined as 1)
+* -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
 * -a2b: Apple II Dos 3.3 Binary
 * -sym (file.sym): symbol file
+* -nerlin: use Merlin syntax
 * -lst / -lst=(file.lst): generate disassembly text from result (file or stdout)
 * -opcodes / -opcodes=(file.s): dump all available opcodes (file or stdout)
 * -sect: display sections loaded and built
 * -vice (file.vs): export a vice symbol file
+* -endm: macros end with endm or endmacro instead of scoped ('{' - '}')
 
 ## Features
 
@@ -239,9 +241,9 @@ align $100
 
 Add bytes of 0 up to the next address divisible by the alignment. If the section is a fixed address (using an ORG directive) align will be applied at the location it was specified, but if the section is relative (using the SECTION directive) the alignment will apply to the start of the section.
 
-<a name="macro">**MACRO**
+**MACRO**
 
-See the 'Macro' section below
+See the '[Macro](#macro)' section below
 
 <a name="eval">**EVAL**
 
@@ -486,6 +488,14 @@ Merlin labels are not allowed to include '.' as period means logical or in merli
 
 Merlin may not process expressions (probably left to right, parenthesis not allowed) the same as x65 but given that it wouldn't be intuitive to read the code that way, there are probably very few cases where this would be an issue.
 
+**LUP**
+
+LUP is Merlingo for loop. The lines following the LUP directive to the keyword --^ are repeated the number of times that follows LUP.
+
+**MAC**
+
+MAC is short for Macro. Merlin macros are defined on line inbetween MAC and <<< or EOM. Macro arguments are listed on the same line as MAC and the macro identifier is the label preceeding the MAC directive on the same line.
+
 **EJECT**
 
 An old assembler directive that does not affect the assembler but if printed would insert a page break at that point.
@@ -525,7 +535,7 @@ lda #(((>SCREEN_MATRIX)&$3c)*4)+8
 sta $d018
 ```
 
-## Macros
+## <a name="macro">Macros
 
 A macro can be defined by the using the directive macro and includes the line within the following scope:
 
@@ -552,6 +562,34 @@ The parameter field is optional for both the macro declaration and instantiation
     jsr GetByte
 }
 ```
+
+Alternative syntax for macros:
+
+To support the syntax of other assemblers macro parameters can also be defined through space separated arguments:
+
+```
+macro loop_end op lbl {
+	op
+	bne lbl
+}
+
+	ldx #4
+	{
+	    sta buf,x
+	    loop_end dex !
+	} 
+```
+
+Other assemblers use a directive to end macros rather than a scope (inbetween { and }). This is supported by adding '-endm' to the command line:
+
+```
+macro ShiftLeftA source
+	rol source
+	asl
+endm
+```
+
+As long as the macro end directive starts with endm it will be accepted, so endmacro will work as well.
 
 Currently macros with parameters use search and replace without checking if the parameter is a whole word, the plan is to fix this. 
 
@@ -606,6 +644,7 @@ Currently the assembler is in an early revision and while features are tested in
 * boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* Now accepts negative numbers, Merlin LUP and MAC keyword support
 * Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
 * Export full memory of fixed sections instead of a single section
 * Option to source disasm output and option to dump all opcodes as a source file for tests
@@ -629,6 +668,7 @@ Currently the assembler is in an early revision and while features are tested in
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 2015-10-20 Fixed negative numbers, Merlin macros and 'endmacro' alternative, merlin LUP directive
 * 2015-10-18 Fixed exporting binary files
 * 2015-10-18 Added list file output which is disassembly with inline source that generated the code.
 * 2015-10-16 XDEF and file protected symbols added for better recursive object file assembling

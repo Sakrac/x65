@@ -101,6 +101,7 @@ enum StatusCode {
 	ERROR_HEX_WITH_ODD_NIBBLE_COUNT,
 	ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_NOT_AN_X65_OBJECT_FILE,
+	ERROR_COULD_NOT_INCLUDE_FILE,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 	
@@ -160,6 +161,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"hex must be followed by an even number of hex numbers",
 	"DS directive failed to evaluate immediately",
 	"File is not a valid x65 object file",
+	"Failed to read include file",
 
 	"Errors after this point will stop execution",
 
@@ -684,6 +686,7 @@ typedef struct {
 	strref macro;
 	strref source_name;		// source file name (error output)
 	strref source_file;		// entire source file (req. for line #)
+	bool params_first_line;	// the first line of this macro are parameters
 } Macro;
 
 // All local labels are removed when a global label is defined but some when a scope ends
@@ -795,10 +798,8 @@ public:
 	// context for macros / include files
 	ContextStack contextStack;
 	
-	// Current section (temp private so I don't access this directly and forget about it)
-private:
+	// Current section
 	Section *current_section;
-public:
 
 	// Special syntax rules
 	AsmSyntax syntax;
@@ -818,9 +819,10 @@ public:
 	int lastEvalValue;
 	Reloc::Type lastEvalPart;
 
-	bool last_label_local;
+	strref last_label;
 	bool errorEncountered;
 	bool list_assembly;
+	bool end_macro_directive;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -902,8 +904,12 @@ public:
 					 strref expression, LateEval::Type type);
 	StatusCode CheckLateEval(strref added_label=strref(), int scope_end = -1);
 
-	// Assembler steps
+	// Assembler Directives
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
+	StatusCode Directive_Rept(strref line, strref source_file);
+	StatusCode Directive_Macro(strref line, strref source_file);
+
+	// Assembler steps
 	AddrMode GetAddressMode(strref line, bool flipXY,
 								  StatusCode &error, strref &expression);
 	StatusCode AddOpcode(strref line, int index, strref source_file);
@@ -959,9 +965,9 @@ void Asm::Cleanup() {
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
-	last_label_local = false;
 	errorEncountered = false;
 	list_assembly = false;
+	end_macro_directive = false;
 }
 
 // Read in text data (main source, include, etc.)
@@ -1420,12 +1426,36 @@ void Asm::CheckOutputCapacity(unsigned int addSize) {
 
 // add a custom macro
 StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, strref &left)
-{
-	// name(optional params) { actual macro }
-	strref name = macro.split_label();
-	macro.skip_whitespace();
-	if (macro[0]!='(' && macro[0]!='{')
-		return ERROR_BAD_MACRO_FORMAT;
+{	//
+	// Non-merlin macro types:
+	// macro name(optional params) { actual macro }
+	// macro name arg\nactual macro\nendmacro
+	//
+	// Merlin macro:
+	// name mac arg1 arg2\nactual macro\n[<<<]/[EOM]
+	//
+	strref name;
+	bool params_first_line = false;
+	if (syntax == SYNTAX_MERLIN) {
+		if (Label *pLastLabel = GetLabel(last_label)) {
+			labels.remove((unsigned int)(pLastLabel - labels.getValues()));
+			name = last_label;
+			last_label.clear();
+			macro.skip_whitespace();
+			if (macro.get_first()==';' || macro.has_prefix(c_comment))
+				macro.line();
+			else
+				params_first_line = true;
+		} else
+			return ERROR_BAD_MACRO_FORMAT;
+	} else {
+		name = macro.split_label();
+		strref left_line = macro.get_line();
+		left_line.skip_whitespace();
+		left_line = left_line.before_or_full(';').before_or_full(c_comment);
+		if (left_line && left_line[0] != '(' && left_line[0] != '{')
+			params_first_line = true;
+	}
 	unsigned int hash = name.fnv1a();
 	unsigned int ins = FindLabelIndex(hash, macros.getKeys(), macros.count());
 	Macro *pMacro = nullptr;
@@ -1441,18 +1471,53 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		pMacro = macros.getValues() + ins;
 	}
 	pMacro->name = name;
-	int pos_bracket = macro.find('{');
-	if (pos_bracket < 0) {
-		pMacro->macro = strref();
-		return ERROR_BAD_MACRO_FORMAT;
+	if (syntax == SYNTAX_MERLIN) {
+		strref source = macro;
+		while (strref next_line = macro.line()) {
+			next_line = next_line.before_or_full(';');
+			next_line = next_line.before_or_full(c_comment);
+			int term = next_line.find("<<<");
+			if (term < 0)
+				term = next_line.find("EOM");
+			if (term >= 0) {
+				strl_t macro_len = strl_t(next_line.get() + term - source.get());
+				source = source.get_substr(0, macro_len);
+				break;
+			}
+		}
+		left = macro;
+		pMacro->macro = source;
+		source.skip_whitespace();
+		left = source;
+	} else if (end_macro_directive) {
+		int f = -1;
+		const strref endm("endm");
+		for (;;) {
+			f = macro.find(endm, f+1);
+			if (f<0)
+				return ERROR_BAD_MACRO_FORMAT;
+			if (f == 0 || strref::is_ws(macro[f - 1]))
+				break;
+		}
+		pMacro->macro = macro.get_substr(0, f);
+		macro += f;
+		macro.line();
+		left = macro;
+	} else {
+		int pos_bracket = macro.find('{');
+		if (pos_bracket < 0) {
+			pMacro->macro = strref();
+			return ERROR_BAD_MACRO_FORMAT;
+		}
+		strref source = macro + pos_bracket;
+		strref macro_body = source.scoped_block_skip();
+		pMacro->macro = strref(macro.get(), pos_bracket + macro_body.get_len() + 2);
+		source.skip_whitespace();
+		left = source;
 	}
-	strref source = macro + pos_bracket;
-	strref macro_body = source.scoped_block_skip();
-	pMacro->macro = strref(macro.get(), pos_bracket + macro_body.get_len() + 2);
 	pMacro->source_name = source_name;
 	pMacro->source_file = source_file;
-	source.skip_whitespace();
-	left = source;
+	pMacro->params_first_line = params_first_line;
 	return STATUS_OK;
 }
 
@@ -1460,17 +1525,20 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 {
 	strref macro_src = m.macro;
-	strref params = macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref();
+	strref params = m.params_first_line ? macro_src.line() :
+		(macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
-	macro_src.skip_whitespace();
 	if (params) {
-		arg_list = arg_list.scoped_block_skip();
+		if (arg_list[0]=='(')
+			arg_list = arg_list.scoped_block_skip();
 		strref pchk = params;
 		strref arg = arg_list;
 		int dSize = 0;
-		while (strref param = pchk.split_token_trim(',')) {
-			strref a = arg.split_token_trim(',');
+		char token = arg_list.find(',')>=0 ? ',' : ' ';
+		char token_macro = m.params_first_line && params.find(',') < 0 ? ' ' : ',';
+		while (strref param = pchk.split_token_trim(token_macro)) {
+			strref a = arg.split_token_trim(token);
 			if (param.get_len() < a.get_len()) {
 				int count = macro_src.substr_case_count(param);
 				dSize += count * ((int)a.get_len() - (int)param.get_len());
@@ -1481,8 +1549,8 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
 			macexp.copy(macro_src);
-			while (strref param = params.split_token_trim(',')) {
-				strref a = arg_list.split_token_trim(',');
+			while (strref param = params.split_token_trim(token_macro)) {
+				strref a = arg_list.split_token_trim(token);
 				macexp.replace(param, a);
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
@@ -1902,7 +1970,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && ri<2)
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_SUB && ri<2)
 				break; // ignore suffix operations that are lacking values
 			switch (op) {
 				case EVOP_VAL:	// value
@@ -1915,10 +1983,14 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 						section_counts[i][ri-1] += section_counts[i][ri];
 					values[ri-1] += values[ri]; break;
 				case EVOP_SUB:	// -
-					ri--;
-					for (int i = 0; i<num_sections; i++)
-						section_counts[i][ri-1] -= section_counts[i][ri];
-					values[ri-1] -= values[ri]; break;
+					if (ri==1)
+						values[ri-1] = -values[ri-1];
+					else {
+						ri--;
+						for (int i = 0; i<num_sections; i++)
+							section_counts[i][ri-1] -= section_counts[i][ri];
+						values[ri-1] -= values[ri];
+					} break;
 				case EVOP_MUL:	// *
 					ri--;
 					for (int i = 0; i<num_sections; i++)
@@ -2494,6 +2566,7 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->pc_relative = true;
 	pLabel->external = MatchXDEF(label);
 	pLabel->constant = constLabel;
+	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	LabelAdded(pLabel, local);
 	if (local)
@@ -2747,9 +2820,68 @@ DirectiveName aDirectiveNames[] {
 	{ "LST", AD_LST },			// MERLIN
 	{ "LSTDO", AD_LST },		// MERLIN
 	{ "DS", AD_DS },			// MERLIN
+	{ "LUP", AD_REPT },			// MERLIN
+	{ "MAC", AD_MACRO },		// MERLIN
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
+
+StatusCode Asm::Directive_Rept(strref line, strref source_file)
+{
+	SourceContext &ctx = contextStack.curr();
+	strref read_source = ctx.read_source;
+	if (read_source.is_substr(line.get())) {
+		read_source.skip(strl_t(line.get() - read_source.get()));
+		strref expression;
+		if (syntax == SYNTAX_MERLIN) {
+			expression = line;			// Merlin repeat body begins next line
+			read_source.line();
+		} else {
+			int block = read_source.find('{');
+			if (block<0)
+				return ERROR_REPT_MISSING_SCOPE;
+			expression = read_source.get_substr(0, block);
+			read_source += block;
+			read_source.skip_whitespace();
+		}
+		expression.trim_whitespace();
+		int count;
+		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+		if (STATUS_OK != EvalExpression(expression, etx, count))
+			return ERROR_REPT_COUNT_EXPRESSION;
+		strref recur;
+		if (syntax == SYNTAX_MERLIN) {
+			recur = read_source;		// Merlin repeat body ends at "--^"
+			while (strref next_line = read_source.line()) {
+				next_line = next_line.before_or_full(';');
+				next_line = next_line.before_or_full(c_comment);
+				int term = next_line.find("--^");
+				if (term >= 0) {
+					recur = recur.get_substr(0, strl_t(next_line.get() + term - recur.get()));
+					break;
+				}
+			}
+		} else
+			recur = read_source.scoped_block_skip();
+		ctx.next_source = read_source;
+		contextStack.push(ctx.source_name, ctx.source_file, recur, count);
+	}
+	return STATUS_OK;
+}
+
+// macro: create an assembler macro
+StatusCode Asm::Directive_Macro(strref line, strref source_file)
+{
+	strref read_source = contextStack.curr().read_source;
+	if (read_source.is_substr(line.get())) {
+		read_source.skip(strl_t(line.get()-read_source.get()));
+		StatusCode error = AddMacro(read_source, contextStack.curr().source_name,
+							contextStack.curr().source_file, read_source);
+		contextStack.curr().next_source = read_source;
+		return error;
+	}
+	return STATUS_OK;
+}
 
 // Action based on assembler directive
 StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref source_file)
@@ -3018,16 +3150,10 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			break;
 		}
-		case AD_MACRO: {	// macro: create an assembler macro
-			strref read_source = contextStack.curr().read_source;
-			if (read_source.is_substr(line.get())) {
-				read_source.skip(strl_t(line.get()-read_source.get()));
-				error = AddMacro(read_source, contextStack.curr().source_name,
-								 contextStack.curr().source_file, read_source);
-				contextStack.curr().next_source = read_source;
-			}
+		case AD_MACRO:
+			error = Directive_Macro(line, source_file);
 			break;
-		}
+
 		case AD_INCLUDE: {	// include: assemble another file in place
 			strref file = line.between('"', '"');
 			if (!file)								// MERLIN: No quotes around PUT filenames
@@ -3059,6 +3185,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					}
 				}
 			}
+			if (!size)
+				error = ERROR_COULD_NOT_INCLUDE_FILE;
 			break;
 		}
 		case AD_INCBIN: {	// incbin: import binary data in place
@@ -3168,31 +3296,10 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
 			break;
 		}
-		case AD_REPT: {
-			SourceContext &ctx = contextStack.curr();
-			strref read_source = ctx.read_source;
-			if (read_source.is_substr(line.get())) {
-				read_source.skip(strl_t(line.get() - read_source.get()));
-				int block = read_source.find('{');
-				if (block<0) {
-					error = ERROR_REPT_MISSING_SCOPE;
-					break;
-				}
-				strref expression = read_source.get_substr(0, block);
-				read_source += block;
-				read_source.skip_whitespace();
-				expression.trim_whitespace();
-				int count;
-				if (STATUS_OK != EvalExpression(expression, etx, count)) {
-					error = ERROR_REPT_COUNT_EXPRESSION;
-					break;
-				}
-				strref recur = read_source.scoped_block_skip();
-				ctx.next_source = read_source;
-				contextStack.push(ctx.source_name, ctx.source_file, recur, count);
-			}
+		case AD_REPT: 
+			error = Directive_Rept(line, source_file);
 			break;
-		}
+
 		case AD_INCDIR:
 			AddIncludeFolder(line.between('"', '"'));
 			break;
@@ -3219,15 +3326,17 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 		case AD_DS: {
 			int value;
-			if (STATUS_OK != EvalExpression(line, etx, value))
-				error = ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
-			else {
-				if (value > 0) {
-					for (int n = 0; n < value; n++)
-						AddByte(0);
-				} else
-					CurrSection().AddAddress(value);
-			}
+			strref size = line.split_token_trim(',');
+			if (STATUS_OK != EvalExpression(size, etx, value))
+				return ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
+			int fill = 0;
+			if (line && STATUS_OK != EvalExpression(line, etx, fill))
+				return ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
+			if (value > 0) {
+				for (int n = 0; n < value; n++)
+					AddByte(fill);
+			} else if (value)
+				CurrSection().AddAddress(value);
 			break;
 		}
 	}
@@ -3716,13 +3825,13 @@ bool Asm::List(strref filename)
 			}
 
 			out.sprintf_append("$%04x ", lst.address + si->start_address);
-			int s = lst.size < 4 ? lst.size : 4;
+			int s = lst.was_mnemonic ? (lst.size < 4 ? lst.size : 4) : (lst.size < 8 ? lst.size : 8);
 			if (si->output && si->output_capacity >= (lst.address + s)) {
 				for (int b = 0; b < s; ++b)
 					out.sprintf_append("%02x ", si->output[lst.address + b]);
 			}
-			out.append_to(' ', 18);
 			if (lst.size && lst.was_mnemonic) {
+				out.append_to(' ', 18);
 				unsigned char *buf = si->output + lst.address;
 				unsigned char op = mnemonic[*buf];
 				unsigned char am = addrmode[*buf];
@@ -4251,11 +4360,11 @@ StatusCode Asm::ReadObjectFile(strref filename)
 	return STATUS_OK;
 }
 
-
 int main(int argc, char **argv)
 {
 	const strref listing("lst");
 	const strref allinstr("opcodes");
+	const strref endmacro("endm");
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -4292,6 +4401,8 @@ int main(int argc, char **argv)
 				size_header = false;
 			} else if (arg.same_str("sect"))
 				info = true;
+			else if (arg.same_str(endmacro))
+				assembler.end_macro_directive = true;
 			else if (arg.has_prefix(listing) && (arg.get_len() == listing.get_len() || arg[listing.get_len()] == '=')) {
 				assembler.list_assembly = true;
 				list_file = arg.after('=');
@@ -4325,7 +4436,9 @@ int main(int argc, char **argv)
 				"  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
 				"  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
 				"  * -sect: display sections loaded and built\n"
-				"  * -vice(file.vs) : export a vice symbol file\n");
+				"  * -vice(file.vs) : export a vice symbol file\n"
+				"  * -nerlin: use Merlin syntax\n"
+				"  * -endm : macros end with endm or endmacro instead of scoped('{' - '}')\n");
 		return 0;
 	}
 
