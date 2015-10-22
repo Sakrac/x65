@@ -225,6 +225,7 @@ enum AssemblerDirective {
 	AD_DUMMY_END,	// DEND: End a dummy section
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
+	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
 };
 
 // Operators are either instructions or directives
@@ -264,7 +265,8 @@ typedef struct {
 } OP_ID;
 
 enum AddrMode {
-	AMB_ZP_REL_X,		// 0 ($12,x) address mode bit index
+	// address mode bit index
+	AMB_ZP_REL_X,		// 0 ($12,x)
 	AMB_ZP,				// 1 $12
 	AMB_IMM,			// 2 #$12
 	AMB_ABS,			// 3 $1234
@@ -282,7 +284,7 @@ enum AddrMode {
 
 	AMB_FLIPXY = AMB_COUNT,	// e
 	AMB_BRANCH,				// f
-						// address mode masks
+	// address mode masks
 	AMM_NON = 1<<AMB_NON,
 	AMM_IMM = 1<<AMB_IMM,
 	AMM_ABS = 1<<AMB_ABS,
@@ -294,22 +296,36 @@ enum AddrMode {
 	AMM_ZP_X = 1<<AMB_ZP_X,
 	AMM_ZP_REL_X = 1<<AMB_ZP_REL_X,
 	AMM_ZP_Y_REL = 1<<AMB_ZP_Y_REL,
+	AMM_ZP_REL = 1<<AMB_ZP_REL,			// b ($12)
+	AMM_REL_X = 1<<AMB_REL_X,			// c ($1234,x)
+	AMM_ZP_ABS = 1<<AMB_ZP_ABS,			// d $12, *+$12
 	AMM_FLIPXY = 1<<AMB_FLIPXY,
 	AMM_BRANCH = 1<<AMB_BRANCH,
 
-						// instruction group specific masks
+	// instruction group specific masks
 	AMM_BRA = AMM_BRANCH | AMM_ABS,
 	AMM_ORA = AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_Y | AMM_ABS_X | AMM_ZP_REL_X | AMM_ZP_Y_REL,
 	AMM_STA = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_Y | AMM_ABS_X | AMM_ZP_REL_X | AMM_ZP_Y_REL,
 	AMM_ASL = AMM_ACC | AMM_NON | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
 	AMM_STX = AMM_FLIPXY | AMM_ZP | AMM_ZP_X | AMM_ABS, // note: for x ,x/,y flipped for this instr.
 	AMM_LDX = AMM_FLIPXY | AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X, // note: for x ,x/,y flipped for this instr.
-	AMM_STY = AMM_ZP | AMM_ZP_X | AMM_ABS, // note: for x ,x/,y flipped for this instr.
-	AMM_LDY = AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X, // note: for x ,x/,y flipped for this instr.
+	AMM_STY = AMM_ZP | AMM_ZP_X | AMM_ABS,
+	AMM_LDY = AMM_IMM | AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
 	AMM_DEC = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
 	AMM_BIT = AMM_ZP | AMM_ABS,
 	AMM_JMP = AMM_ABS | AMM_REL,
 	AMM_CPY = AMM_IMM | AMM_ZP | AMM_ABS,
+
+
+	// 65C02 groups
+	AMC_ORA = AMM_ORA | AMM_ZP_REL,
+	AMC_STA = AMM_STA | AMM_ZP_REL,
+	AMC_BIT = AMM_BIT | AMM_IMM | AMM_ZP_X | AMM_ABS_X,
+	AMC_DEC = AMM_DEC | AMM_NON | AMM_ACC,
+	AMC_JMP = AMM_JMP | AMM_REL_X,
+	AMC_STZ = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
+	AMC_TRB = AMM_ZP | AMM_ABS,
+	AMC_BBR = AMM_ZP_ABS,
 };
 
 struct mnem {
@@ -381,6 +397,100 @@ struct mnem opcodes_6502[] = {
 
 static const int num_opcodes_6502 = sizeof(opcodes_6502) / sizeof(opcodes_6502[0]);
 
+struct mnem opcodes_65C02[] = {
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs
+	{ "brk", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jsr", AMM_ABS, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rti", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00 } },
+	{ "rts", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00 } },
+	{ "ora", AMC_ORA, { 0x01, 0x05, 0x09, 0x0d, 0x11, 0x15, 0x19, 0x1d, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00 } },
+	{ "and", AMC_ORA, { 0x21, 0x25, 0x29, 0x2d, 0x31, 0x35, 0x39, 0x3d, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00 } },
+	{ "eor", AMC_ORA, { 0x41, 0x45, 0x49, 0x4d, 0x51, 0x55, 0x59, 0x5d, 0x00, 0x00, 0x00, 0x52, 0x00, 0x00 } },
+	{ "adc", AMC_ORA, { 0x61, 0x65, 0x69, 0x6d, 0x71, 0x75, 0x79, 0x7d, 0x00, 0x00, 0x00, 0x72, 0x00, 0x00 } },
+	{ "sta", AMC_STA, { 0x81, 0x85, 0x00, 0x8d, 0x91, 0x95, 0x99, 0x9d, 0x00, 0x00, 0x00, 0x92, 0x00, 0x00 } },
+	{ "lda", AMC_ORA, { 0xa1, 0xa5, 0xa9, 0xad, 0xb1, 0xb5, 0xb9, 0xbd, 0x00, 0x00, 0x00, 0xb2, 0x00, 0x00 } },
+	{ "cmp", AMC_ORA, { 0xc1, 0xc5, 0xc9, 0xcd, 0xd1, 0xd5, 0xd9, 0xdd, 0x00, 0x00, 0x00, 0xd2, 0x00, 0x00 } },
+	{ "sbc", AMC_ORA, { 0xe1, 0xe5, 0xe9, 0xed, 0xf1, 0xf5, 0xf9, 0xfd, 0x00, 0x00, 0x00, 0xf2, 0x00, 0x00 } },
+	{ "asl", AMM_ASL, { 0x00, 0x06, 0x00, 0x0e, 0x00, 0x16, 0x00, 0x1e, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00 } },
+	{ "rol", AMM_ASL, { 0x00, 0x26, 0x00, 0x2e, 0x00, 0x36, 0x00, 0x3e, 0x00, 0x2a, 0x2a, 0x00, 0x00, 0x00 } },
+	{ "lsr", AMM_ASL, { 0x00, 0x46, 0x00, 0x4e, 0x00, 0x56, 0x00, 0x5e, 0x00, 0x4a, 0x4a, 0x00, 0x00, 0x00 } },
+	{ "ror", AMM_ASL, { 0x00, 0x66, 0x00, 0x6e, 0x00, 0x76, 0x00, 0x7e, 0x00, 0x6a, 0x6a, 0x00, 0x00, 0x00 } },
+	{ "stx", AMM_STX, { 0x00, 0x86, 0x00, 0x8e, 0x00, 0x96, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldx", AMM_LDX, { 0x00, 0xa6, 0xa2, 0xae, 0x00, 0xb6, 0x00, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "dec", AMC_DEC, { 0x00, 0xc6, 0x00, 0xce, 0x00, 0xd6, 0x00, 0xde, 0x00, 0x3a, 0x3a, 0x00, 0x00, 0x00 } },
+	{ "inc", AMC_DEC, { 0x00, 0xe6, 0x00, 0xee, 0x00, 0xf6, 0x00, 0xfe, 0x00, 0x1a, 0x1a, 0x00, 0x00, 0x00 } },
+	{ "php", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 } },
+	{ "plp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00 } },
+	{ "pha", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00 } },
+	{ "pla", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00 } },
+	{ "phy", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5a, 0x00, 0x00, 0x00 } },
+	{ "ply", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x00, 0x00, 0x00 } },
+	{ "phx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xda, 0x00, 0x00, 0x00 } },
+	{ "plx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00 } },
+	{ "dey", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00 } },
+	{ "tay", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00 } },
+	{ "iny", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x00 } },
+	{ "inx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00 } },
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs
+	{ "bpl", AMM_BRA, { 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bmi", AMM_BRA, { 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvc", AMM_BRA, { 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvs", AMM_BRA, { 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bra", AMM_BRA, { 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcc", AMM_BRA, { 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcs", AMM_BRA, { 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bne", AMM_BRA, { 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "beq", AMM_BRA, { 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "clc", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00 } },
+	{ "sec", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00 } },
+	{ "cli", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00 } },
+	{ "sei", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00 } },
+	{ "tya", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00 } },
+	{ "clv", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00 } },
+	{ "cld", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd8, 0x00, 0x00, 0x00 } },
+	{ "sed", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00 } },
+	{ "bit", AMC_BIT, { 0x00, 0x24, 0x89, 0x2c, 0x00, 0x34, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "stz", AMC_STZ, { 0x00, 0x64, 0x00, 0x9c, 0x00, 0x74, 0x00, 0x9e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "trb", AMC_TRB, { 0x00, 0x14, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tsb", AMC_TRB, { 0x00, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jmp", AMC_JMP, { 0x00, 0x00, 0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x7c, 0x00 } },
+	{ "sty", AMM_STY, { 0x00, 0x84, 0x00, 0x8c, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldy", AMM_LDY, { 0x00, 0xa4, 0xa0, 0xac, 0x00, 0xb4, 0x00, 0xbc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cpy", AMM_CPY, { 0x00, 0xc4, 0xc0, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cpx", AMM_CPY, { 0x00, 0xe4, 0xe0, 0xec, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "txa", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00 } },
+	{ "txs", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0x00, 0x00, 0x00 } },
+	{ "tax", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00 } },
+	{ "tsx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00 } },
+	{ "dex", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00 } },
+	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0x00 } },
+
+	// WDC specific
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs
+
+	{"bbr0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f } },
+	{"bbr1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f } },
+	{"bbr2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f } },
+	{"bbr3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f } },
+	{"bbr4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f } },
+	{"bbr5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5f } },
+	{"bbr6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f } },
+	{"bbr7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f } },
+	{"bbs0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8f } },
+	{"bbs1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9f } },
+	{"bbs2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaf } },
+	{"bbs3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xbf } },
+	{"bbs4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcf } },
+	{"bbs5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf } },
+	{"bbs6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef } },
+	{"bbs7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0xff } },
+	{ "stp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdb, 0x00, 0x00, 0x00 } },
+	{ "wai", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x00, 0x00, 0x00 } },
+};
+
+static const int num_opcodes_65C02 = sizeof(opcodes_65C02) / sizeof(opcodes_65C02[0]);
+
+
 // 65C02
 // http://6502.org/tutorials/65c02opcodes.html
 // http://www.oxyron.de/html/opcodesc02.html
@@ -394,7 +504,8 @@ enum CODE_ARG {
 	CA_NONE,			// single byte instruction
 	CA_ONE_BYTE,		// instruction carries one byte
 	CA_TWO_BYTES,		// instruction carries two bytes
-	CA_BRANCH			// instruction carries a relative address
+	CA_BRANCH,			// instruction carries a relative address
+	CA_BYTE_BRANCH		// instruction carries one byte and one branch
 };
 
 // hardtexted strings
@@ -409,17 +520,21 @@ static const strref str_const("const");
 static const strref struct_byte("byte");
 static const strref struct_word("word");
 static const char* aAddrModeFmt[] = {
-					"%s ($%02x,x)",
-					"%s $%02x",
-					"%s #$%02x",
-					"%s $%04x",
-					"%s ($%02x),y",
-					"%s $%02x,x",
-					"%s $%04x,y",
-					"%s $%04x,x",
-					"%s ($%04x)",
-					"%s A",
-					"%s " };
+	"%s ($%02x,x)",
+	"%s $%02x",
+	"%s #$%02x",
+	"%s $%04x",
+	"%s ($%02x),y",
+	"%s $%02x,x",
+	"%s $%04x,y",
+	"%s $%04x,x",
+	"%s ($%04x)",
+	"%s A",
+	"%s ",
+	"%s ($%02x)",
+	"%s ($%04x,x)",
+	"%s $%02x, $%04x",
+};
 
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
@@ -794,6 +909,10 @@ public:
 	std::vector<Section> allSections;
 	std::vector<ExtLabels> externals; // external labels organized by object file
     MapSymbolArray map;
+
+	// CPU target
+	struct mnem *opcode_table;
+	int opcode_count;
 	
 	// context for macros / include files
 	ContextStack contextStack;
@@ -819,6 +938,7 @@ public:
 	int lastEvalValue;
 	Reloc::Type lastEvalPart;
 
+	strref export_base_name;
 	strref last_label;
 	bool errorEncountered;
 	bool list_assembly;
@@ -889,7 +1009,7 @@ public:
 
 	// Manage locals
 	void MarkLabelLocal(strref label, bool scope_label = false);
-	void FlushLocalLabels(int scope_exit = -1);
+	StatusCode FlushLocalLabels(int scope_exit = -1);
 	
 	// Label pools
 	LabelPool* GetLabelPool(strref pool_name);
@@ -940,7 +1060,8 @@ public:
 	char* LoadBinary(strref filename, size_t &size);
 
 	// constructor
-	Asm() { Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
+	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502) {
+		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
 
 // Clean up work allocations
@@ -1554,14 +1675,12 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				macexp.replace(param, a);
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
-			FlushLocalLabels();
-			return STATUS_OK;
+			return FlushLocalLabels();
 		} else
 			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
 	}
 	contextStack.push(m.source_name, m.source_file, macro_src);
-	FlushLocalLabels();
-	return STATUS_OK;
+	return FlushLocalLabels();
 }
 
 
@@ -2153,9 +2272,10 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 					switch (i->type) {
 						case LateEval::LET_BRANCH:
 							value -= i->address+1;
-							if (value<-128 || value>127)
+							if (value<-128 || value>127) {
+								i = lateEval.erase(i);
 								return ERROR_BRANCH_OUT_OF_RANGE;
-							if (trg >= allSections[sec].size())
+							} if (trg >= allSections[sec].size())
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetByte(trg, value);
 							break;
@@ -2288,8 +2408,9 @@ void Asm::MarkLabelLocal(strref label, bool scope_reserve)
 }
 
 // find all local labels or up to given scope level and remove them
-void Asm::FlushLocalLabels(int scope_exit)
+StatusCode Asm::FlushLocalLabels(int scope_exit)
 {
+	StatusCode status = STATUS_OK;
 	// iterate from end of local label records and early out if the label scope is lower than the current.
 	std::vector<LocalLabelRecord>::iterator i = localLabels.end();
 	while (i!=localLabels.begin()) {
@@ -2297,6 +2418,9 @@ void Asm::FlushLocalLabels(int scope_exit)
 		if (i->scope_depth < scope_depth)
 			break;
 		strref label = i->label;
+		StatusCode this_status = CheckLateEval(label);
+		if (this_status>FIRST_ERROR)
+			status = this_status;
 		if (!i->scope_reserve || i->scope_depth<=scope_exit) {
 			unsigned int index = FindLabelIndex(label.fnv1a(), labels.getKeys(), labels.count());
 			while (index<labels.count()) {
@@ -2315,6 +2439,7 @@ void Asm::FlushLocalLabels(int scope_exit)
 			i = localLabels.erase(i);
 		}
 	}
+	return status;
 }
 
 // Get a label pool by name
@@ -2549,6 +2674,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 // Adding a fixed address label
 StatusCode Asm::AddressLabel(strref label)
 {
+	StatusCode status = STATUS_OK;
 	Label *pLabel = GetLabel(label);
 	bool constLabel = false;
 	if (!pLabel)
@@ -2571,9 +2697,13 @@ StatusCode Asm::AddressLabel(strref label)
 	LabelAdded(pLabel, local);
 	if (local)
 		MarkLabelLocal(label);
-	else if (label[0]!=']')	// MERLIN: Variable label does not invalidate local labels
-		FlushLocalLabels();
-	return CheckLateEval(label);
+	status = CheckLateEval(label);
+	if (!local && label[0]!=']') { // MERLIN: Variable label does not invalidate local labels
+		StatusCode this_status = FlushLocalLabels();
+		if (status<FIRST_ERROR && this_status>=FIRST_ERROR)
+			status = this_status;
+	}
+	return status;
 }
 
 // include symbols listed from a .sym file or all if no listing
@@ -2822,6 +2952,7 @@ DirectiveName aDirectiveNames[] {
 	{ "DS", AD_DS },			// MERLIN
 	{ "LUP", AD_REPT },			// MERLIN
 	{ "MAC", AD_MACRO },		// MERLIN
+	{ "SAV", AD_SAV },			// MERLIN
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -3121,6 +3252,13 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_USR:
 			line.clear();
 			break;
+		case AD_SAV:
+			line.trim_whitespace();
+			if (line.has_prefix(export_base_name))
+				line.skip(export_base_name.get_len());
+			if (line)
+				CurrSection().export_append = line.split_label();
+			break;
 		case AD_TEXT: {		// text: add text within quotes
 			// for now just copy the windows ascii. TODO: Convert to petscii.
 			// https://en.wikipedia.org/wiki/PETSCII
@@ -3349,13 +3487,13 @@ int sortHashLookup(const void *A, const void *B) {
 	return _A->op_hash > _B->op_hash ? 1 : -1;
 }
 
-int BuildInstructionTable(OP_ID *pInstr, int maxInstructions)
+int BuildInstructionTable(OP_ID *pInstr, int maxInstructions, struct mnem *opcodes, int count)
 {
 	// create an instruction table (mnemonic hash lookup)
 	int numInstructions = 0;
-	for (int i = 0; i < num_opcodes_6502; i++) {
+	for (int i = 0; i < count; i++) {
 		OP_ID &op = pInstr[numInstructions++];
-		op.op_hash = strref(opcodes_6502[i].instr).fnv1a_lower();
+		op.op_hash = strref(opcodes[i].instr).fnv1a_lower();
 		op.index = i;
 		op.type = OT_MNEMONIC;
 	}
@@ -3364,7 +3502,6 @@ int BuildInstructionTable(OP_ID *pInstr, int maxInstructions)
 	for (int d=0; d<nDirectiveNames; d++) {
 		OP_ID &op_hash = pInstr[numInstructions++];
 		op_hash.op_hash = strref(aDirectiveNames[d].name).fnv1a_lower();
-//		op_hash.group = 0xff;
 		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
 		op_hash.type = OT_DIRECTIVE;
 	}
@@ -3446,10 +3583,30 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 {
 	StatusCode error = STATUS_OK;
 	strref expression;
-	
+
+	// allowed modes
+	unsigned int validModes = opcode_table[index].modes;
+
 	// Get the addressing mode and the expression it refers to
-	AddrMode addrMode = GetAddressMode(line,
-		!!(opcodes_6502[index].modes & AMM_FLIPXY), error, expression);
+	AddrMode addrMode;
+	switch (validModes) {
+		case AMC_BBR:
+			addrMode = AMB_ZP_ABS;
+			expression = line.split_token_trim(',');
+			if (!expression || !line)
+				return ERROR_INVALID_ADDRESSING_MODE;
+			break;
+		case AMM_BRA:
+			addrMode = AMB_ABS;
+			expression = line;
+			break;
+		case AMM_NON:
+			addrMode = AMB_NON;
+			break;
+		default:
+			addrMode = GetAddressMode(line, !!(validModes & AMM_FLIPXY), error, expression);
+			break;
+	}
 	
 	int value = 0;
 	int target_section = -1;
@@ -3458,7 +3615,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	bool evalLater = false;
 	if (expression) {
 		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
-			!!(opcodes_6502[index].modes & AMM_BRA) ? SectionId() : -1);
+			!!(validModes & AMM_BRANCH) ? SectionId() : -1);
 		error = EvalExpression(expression, etx, value);
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
@@ -3475,11 +3632,11 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	if (!evalLater && value>=0 && value<0x100 && error != STATUS_RELATIVE_SECTION) {
 		switch (addrMode) {
 			case AMB_ABS:
-				if (opcodes_6502[index].modes & AMM_ZP)
+				if (validModes & AMM_ZP)
 					addrMode = AMB_ZP;
 				break;
 			case AMB_ABS_X:
-				if (opcodes_6502[index].modes & AMM_ZP_X)
+				if (validModes & AMM_ZP_X)
 					addrMode = AMB_ZP_X;
 				break;
 			default:
@@ -3487,35 +3644,61 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 		}
 	}
 	
-	CODE_ARG codeArg = CA_NONE;
-	unsigned char opcode = opcodes_6502[index].aCodes[addrMode];
+	bool valid_addressing_mode = !!(validModes & (1 << addrMode));
 
-	if (!(opcodes_6502[index].modes & (1 << addrMode)))
-		error = ERROR_INVALID_ADDRESSING_MODE;
-	else {
-		if (opcodes_6502[index].modes & AMM_BRANCH)
+	if (!valid_addressing_mode) {
+		if (addrMode==AMB_ZP_REL_X && (validModes & AMM_REL_X)) {
+			addrMode = AMB_REL_X;
+			valid_addressing_mode = true;
+		} else if (addrMode==AMB_REL && (validModes & AMM_ZP_REL)) {
+			addrMode = AMB_ZP_REL;
+			valid_addressing_mode = true;
+		} else
+			error = ERROR_INVALID_ADDRESSING_MODE;
+	}
+
+	// Add the instruction and argument to the code
+	if (error == STATUS_OK || error == STATUS_RELATIVE_SECTION) {
+		unsigned char opcode = opcode_table[index].aCodes[addrMode];
+		CheckOutputCapacity(4);
+		AddByte(opcode);
+
+		CODE_ARG codeArg = CA_NONE;
+		if (validModes & AMM_BRANCH)
 			codeArg = CA_BRANCH;
 		else if (addrMode == AMB_ABS || addrMode == AMB_REL || addrMode == AMB_ABS_X || addrMode == AMB_ABS_Y)
 			codeArg = CA_TWO_BYTES;
+		else if (addrMode == AMB_ZP_ABS)
+			codeArg = CA_BYTE_BRANCH;
 		else if (addrMode != AMB_NON && addrMode != AMB_ACC)
 			codeArg = CA_ONE_BYTE;
-	}
-	// Add the instruction and argument to the code
-	if (error == STATUS_OK || error == STATUS_RELATIVE_SECTION) {
-		CheckOutputCapacity(4);
+
 		switch (codeArg) {
+			case CA_BYTE_BRANCH: {
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
+						target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+				}
+				AddByte(value);
+				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, SectionId());
+				error = EvalExpression(line, etx, value);
+				if (error==STATUS_NOT_READY)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BRANCH);
+				else if (((int)value - (int)CurrSection().GetPC() - 1) < -128 || ((int)value - (int)CurrSection().GetPC() - 1) > 127)
+					error = ERROR_BRANCH_OUT_OF_RANGE;
+				AddByte(error == STATUS_NOT_READY ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
+				break;
+			}
 			case CA_BRANCH:
-				AddByte(opcode);
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
-				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127) {
+				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127)
 					error = ERROR_BRANCH_OUT_OF_RANGE;
-					break;
-				}
 				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 			case CA_ONE_BYTE:
-				AddByte(opcode);
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
@@ -3524,7 +3707,6 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				AddByte(value);
 				break;
 			case CA_TWO_BYTES:
-				AddByte(opcode);
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
 				else if (error == STATUS_RELATIVE_SECTION) {
@@ -3535,7 +3717,6 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				AddWord(value);
 				break;
 			case CA_NONE:
-				AddByte(opcode);
 				break;
 		}
 	}
@@ -3780,10 +3961,10 @@ bool Asm::List(strref filename)
 	unsigned char addrmode[256];
 	memset(mnemonic, 255, sizeof(mnemonic));
 	memset(addrmode, 255, sizeof(addrmode));
-	for (int i = 0; i < num_opcodes_6502; i++) {
+	for (int i = 0; i < opcode_count; i++) {
 		for (int j = 0; j < AMB_COUNT; j++) {
-			if (opcodes_6502[i].modes & (1 << j)) {
-				unsigned char op = opcodes_6502[i].aCodes[j];
+			if (opcode_table[i].modes & (1 << j)) {
+				unsigned char op = opcode_table[i].aCodes[j];
 				mnemonic[op] = i;
 				addrmode[op] = j;
 			}
@@ -3835,23 +4016,25 @@ bool Asm::List(strref filename)
 				unsigned char *buf = si->output + lst.address;
 				unsigned char op = mnemonic[*buf];
 				unsigned char am = addrmode[*buf];
-				if (op != 255 && am != 255) {
+				if (op != 255 && am != 255 && am<(sizeof(aAddrModeFmt)/sizeof(aAddrModeFmt[0]))) {
 					const char *fmt = aAddrModeFmt[am];
-					if (opcodes_6502[op].modes & AMM_FLIPXY) {
+					if (opcode_table[op].modes & AMM_FLIPXY) {
 						if (am == AMB_ZP_X)	fmt = "%s $%02x,y";
 						else if (am == AMB_ABS_X) fmt = "%s $%04x,y";
 					}
-					if (opcodes_6502[op].modes & AMM_BRANCH)
-						out.sprintf_append(fmt, opcodes_6502[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
+					if (opcode_table[op].modes & AMM_ZP_ABS)
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], (char)buf[2] + lst.address + si->start_address + 3);
+					else if (opcode_table[op].modes & AMM_BRANCH)
+						out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
 					else if (am == AMB_NON || am == AMB_ACC)
-						out.sprintf_append(fmt, opcodes_6502[op].instr);
-					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL)
-						out.sprintf_append(fmt, opcodes_6502[op].instr, buf[1] | (buf[2] << 8));
+						out.sprintf_append(fmt, opcode_table[op].instr);
+					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL || am == AMB_REL_X)
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1] | (buf[2] << 8));
 					else
-						out.sprintf_append(fmt, opcodes_6502[op].instr, buf[1]);
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
 				}
 			}
-			out.append_to(' ', 30);
+			out.append_to(' ', 33);
 			strref line = lst.code.get_skipped(lst.line_offs).get_line();
 			line.clip_trailing_whitespace();
 			strown<128> line_fix(line);
@@ -3881,21 +4064,24 @@ bool Asm::AllOpcodes(strref filename)
 			return false;
 		opened = true;
 	}
-	for (int i = 0; i < num_opcodes_6502; i++) {
+	for (int i = 0; i < opcode_count; i++) {
 		for (int a = 0; a < AMB_COUNT; a++) {
-			if (opcodes_6502[i].modes & (1 << a)) {
+			if (opcode_table[i].modes & (1 << a)) {
 				const char *fmt = aAddrModeFmt[a];
-				if (opcodes_6502[i].modes & AMM_BRANCH)
-					fprintf(f, "%s *+%d", opcodes_6502[i].instr, 5);
+				fputs("\t", f);
+				if (opcode_table[i].modes & AMM_BRANCH)
+					fprintf(f, "%s *+%d", opcode_table[i].instr, 5);
+				else if (a==AMB_ZP_ABS)
+					fprintf(f, "%s $%02x,*+%d", opcode_table[i].instr, 0x23, 13);
 				else {
-					if (opcodes_6502[i].modes & AMM_FLIPXY) {
+					if (opcode_table[i].modes & AMM_FLIPXY) {
 						if (a == AMB_ZP_X)	fmt = "%s $%02x,y";
 						else if (a == AMB_ABS_X) fmt = "%s $%04x,y";
 					}
-					if (a==AMB_ABS || a==AMB_ABS_X || a==AMB_ABS_Y || a==AMB_REL)
-						fprintf(f, fmt, opcodes_6502[i].instr, 0x2120);
+					if (a == AMB_ABS || a == AMB_ABS_X || a == AMB_ABS_Y || a == AMB_REL || a == AMB_REL_X)
+						fprintf(f, fmt, opcode_table[i].instr, 0x2120);
 					else
-						fprintf(f, fmt, opcodes_6502[i].instr, 0x21, 0x20, 0x1f);
+						fprintf(f, fmt, opcode_table[i].instr, 0x21, 0x20, 0x1f);
 				}
 				fputs("\n", f);
 			}
@@ -3910,7 +4096,7 @@ bool Asm::AllOpcodes(strref filename)
 void Asm::Assemble(strref source, strref filename, bool obj_target)
 {
 	OP_ID *pInstr = new OP_ID[256];
-	int numInstructions = BuildInstructionTable(pInstr, 256);
+	int numInstructions = BuildInstructionTable(pInstr, 256, opcode_table, opcode_count);
 
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
@@ -4365,6 +4551,7 @@ int main(int argc, char **argv)
 	const strref listing("lst");
 	const strref allinstr("opcodes");
 	const strref endmacro("endm");
+	const strref cpu("cpu");
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -4409,6 +4596,15 @@ int main(int argc, char **argv)
 			} else if (arg.has_prefix(allinstr) && (arg.get_len() == allinstr.get_len() || arg[allinstr.get_len()] == '=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
+			} else if (arg.has_prefix(cpu) && (arg.get_len() == cpu.get_len() || arg[cpu.get_len()] == '=')) {
+				arg.split_token_trim('=');
+				if (arg.same_str("6502")) {
+					assembler.opcode_table = opcodes_6502;
+					assembler.opcode_count = num_opcodes_6502;
+				} else if (arg.same_str("65c02")) {
+					assembler.opcode_table = opcodes_65C02;
+					assembler.opcode_count = num_opcodes_65C02;
+				}
 			} else if (arg.same_str("sym") && (a + 1) < argc)
 					sym_file = argv[++a];
 				else if (arg.same_str("obj") && (a + 1) < argc)
@@ -4428,6 +4624,7 @@ int main(int argc, char **argv)
 				" x65 filename.s code.prg [options]\n"
 				"  * -i(path) : Add include path\n"
 				"  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
+				"  * -cpu=6502/65c02: assemble with opcodes for a different cpu\n"
 				"  * -obj(file.x65) : generate object file for later linking\n"
 				"  * -bin : Raw binary\n"
 				"  * -c64 : Include load address(default)\n"
@@ -4446,6 +4643,9 @@ int main(int argc, char **argv)
 	if (source_filename) {
 		size_t size = 0;
 		strref srcname(source_filename);
+
+		assembler.export_base_name = strref(binary_out_name).after_last_or_full('/', '\\').before_or_full('.');
+
 		if (char *buffer = assembler.LoadText(srcname, size)) {
 			// if source_filename contains a path add that as a search path for include files
 			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));

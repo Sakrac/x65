@@ -48,6 +48,7 @@ x65 [-DLabel] [-iIncDir] (source.s) (dest.prg) [-lst[=file.lst]] [-opcodes[=file
 x65 filename.s code.prg [options]
 * -i(path): Add include path
 * -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
+* -cpu=6502/65c02: assemble with opcodes for a different cpu
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
@@ -516,6 +517,10 @@ A variation of **INCLUDE** that applies an oddball set of filename rules. These 
 
 In Merlin USR calls a function at a fixed address in memory, x65 safely avoids this. If there is a requirement for a user defined macro you've got the source code to do it in.
 
+**SAV**
+
+SAV causes Merlin to save the result it has generated so far, which is somewhat similar to the [EXPORT](#export) directive. If the SAV name is different than the source name the section will have a different EXPORT name appended and exported to a separate binary file.
+
 ## <a name="expressions">Expression syntax
 
 Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overrided. In addition there are some special characters supported:
@@ -636,7 +641,7 @@ FindFirstSpace
 Currently the assembler is in an early revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
 
 **TODO**
-* 65c02
+* 65C02 enabled through directives (PROCESSOR/CPU/XC)
 * 65816
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
@@ -644,6 +649,7 @@ Currently the assembler is in an early revision and while features are tested in
 * boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* 65c02 (currently only through command line, not as a directive)
 * Now accepts negative numbers, Merlin LUP and MAC keyword support
 * Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
 * Export full memory of fixed sections instead of a single section
@@ -668,18 +674,9 @@ Currently the assembler is in an early revision and while features are tested in
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
-* 2015-10-20 Fixed negative numbers, Merlin macros and 'endmacro' alternative, merlin LUP directive
-* 2015-10-18 Fixed exporting binary files
-* 2015-10-18 Added list file output which is disassembly with inline source that generated the code.
-* 2015-10-16 XDEF and file protected symbols added for better recursive object file assembling
-* 2015-10-15 Object file reading, additional bugs debugged.
-* 2015-10-10 Relative Sections and Link support, adding -merlin command line to clean up code
-* 2015-10-06 Added ENUM and MERLIN / LISA assembler directives (EJECT, DUM, DEND, DS, DB, DFB, DDB, IF, ENDIF, etc.)
-* 2015-10-05 Added INCDIR, some command line options (-D, -i, -vice)
-* 2015-10-04 Added [REPT](#rept) directive
-* 2015-10-04 Added [STRUCT](#struct) directive, sorted functions by grouping a bit more, bug fixes
-* 2015-10-02 Cleanup hid an error (#else without #if), exit with nonzero if error was encountered
-* 2015-10-02 General cleanup, wrapping [conditional assembly](#conditional) in functions
-* 2015-10-01 Added [Label Pools](#pool) and conditional assembly
-* 2015-09-29 Moved Asm6502 out of Struse Samples.
-* 2015-09-28 First commit
+* 6 - 65C02 support
+* 5 - Merlin syntax
+* 4 - Object files, relative sections and linking
+* 3 - 6502 full support
+* 2 - Moved file out of struse samples
+* 1 - Built a sample of a simple assembler within struse
