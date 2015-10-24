@@ -48,13 +48,13 @@ x65 [-DLabel] [-iIncDir] (source.s) (dest.prg) [-lst[=file.lst]] [-opcodes[=file
 x65 filename.s code.prg [options]
 * -i(path): Add include path
 * -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
-* -cpu=6502/65c02: assemble with opcodes for a different cpu
+* -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
 * -a2b: Apple II Dos 3.3 Binary
 * -sym (file.sym): symbol file
-* -nerlin: use Merlin syntax
+* -merlin: use Merlin syntax
 * -lst / -lst=(file.lst): generate disassembly text from result (file or stdout)
 * -opcodes / -opcodes=(file.s): dump all available opcodes (file or stdout)
 * -sect: display sections loaded and built
@@ -125,6 +125,7 @@ Next_Function:		; next global label, the local label above is now erased.
 
 Directives are assembler commands that control the code generation but that does not generate code by itself. Some assemblers prefix directives with a period (.org instead of org) so a leading period is accepted but not required for directives.
 
+* [**CPU**](#cpu) Set the CPU to assemble for.
 * [**ORG**](#org) (same as **PC**): Set the current compiling address.
 * [**LOAD**](#load) Set the load address for binary formats that support it.
 * [**SECTION**](#section) Start a relative section
@@ -148,7 +149,16 @@ Directives are assembler commands that control the code generation but that does
 * [**STRUCT**](#struct) Hierarchical data structures (dot separated sub structures)
 * [**REPT**](#rept) Repeat a scoped block of code a number of times.
 * [**INCDIR**](#incdir) Add a directory to look for binary and text include files in.
+* [**65816**](#65816) A16/A8/I16/I8 Directives to control the immediate mode size
 * [**MERLIN**](#merlin) A variety of directives and label rules to support Merlin assembler sources
+
+<a name="cpu">**CPU**
+
+Set the CPU to assemble for. This can be updated throughout the source file as needed. **PROCESSOR** is also accepted as an alias.
+
+```
+    CPU 65812
+```
 
 <a name="org">**ORG**
 
@@ -466,6 +476,47 @@ rept columns {
 
 Adds a folder to search for INCLUDE, INCBIN, etc. files in
 
+###<a name="65816">**65816**
+
+* **A16** Set immediate mode for accumulator to be 16 bits
+* **A8** Set immediate mode for accumulator to be 8 bits
+* **I16** Set immediate mode for index registers to be 16 bits. **XY16** is also accepted.
+* **I8** Set immediate mode for index registers to be 8 bits. **XY8** is also accepted.
+
+The accumulator and index register mode will be reset to 8 bits if the CPU is switched to something other than 65816.
+
+An alternative method is to add .b/.w to immediat mode instructions that support 16 bit modes such as:
+
+```
+	ora.b #$21
+	ora.w #$2322
+```
+This alleviates some confusion about which mode a certain line might be assembled for when looking at source code.
+
+Similarly for instructions that accept 3 byte addresses (bank + address) adding .l instructs the assembler to choose a bank address:
+
+```
+	and.l $222120
+	and.l $222120,x
+	jsr.l $203212
+```
+Although if six hexadecimal digits are specified the bank + address instruction will be assembled without decoration.
+
+Alternatively Merlin simply adds an 'l' to the instruction:
+
+```
+	andl $222120
+	andl $222120,x
+	jsrl $203212
+```
+
+x65 Labels are not restricted to 16 bits, the bank byte can be extracted from a label with the '^' operator:
+
+```
+	lda #^label
+```
+
+
 ###<a name="merlin">**MERLIN**
 
 A variety of directives and label rules to support Merlin assembler sources. Merlin syntax is supported in x65 since there is historic relevance and readily available publicly release source.
@@ -488,6 +539,18 @@ Merlin labels are not allowed to include '.' as period means logical or in merli
 *Expressions*
 
 Merlin may not process expressions (probably left to right, parenthesis not allowed) the same as x65 but given that it wouldn't be intuitive to read the code that way, there are probably very few cases where this would be an issue.
+
+**XC**
+
+Change processor. The first instance of XC will switch from 6502 to 65C02, the second switches from 65C02 to 65816. To return to 6502 use **XC OFF**. To go directly to 65816 **XC XC** is supported.
+
+**MX**
+
+MX sets the immediate mode accumulator instruction size, it takes a number and uses the lowest two bits. Bit 0 applies to index registers (x, y) where 0 means 8 bits and 1 means 16 bits, bit 1 applies to the accumulator. Normally it is specified in binary using the '%' prefix.
+
+```
+    MX %11
+``` 
 
 **LUP**
 
@@ -528,6 +591,7 @@ Expressions contain values, such as labels or raw numbers and operators includin
 * \*: Current address (PC). This conflicts with the use of \* as multiply so multiply will be interpreted only after a value or right parenthesis
 * <: If less than is not follwed by another '<' in an expression this evaluates to the low byte of a value (and $ff)
 * >: If greater than is not followed by another '>' in an expression this evaluates to the high byte of a value (>>8)
+* ^: Inbetween two values '^' is an eor operation, as a prefix to values it extracts the bank byte (v>>24).
 * !: Start of scope (use like an address label in expression)
 * %: First address after scope (use like an address label in expression)
 * $: Preceeds hexadecimal value
@@ -641,14 +705,14 @@ FindFirstSpace
 Currently the assembler is in an early revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
 
 **TODO**
-* 65C02 enabled through directives (PROCESSOR/CPU/XC)
-* 65816
 * Macro parameters should replace only whole words instead of any substring
 * Add 'import' directive as a catch-all include/incbin/etc. alternative
 * irp (indefinite repeat)
 * boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* 65816
+* 65C02 enabled through directives (PROCESSOR/CPU/XC)
 * 65c02 (currently only through command line, not as a directive)
 * Now accepts negative numbers, Merlin LUP and MAC keyword support
 * Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
