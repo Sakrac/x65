@@ -168,7 +168,7 @@ org $2000
 (or pc $2000)
 
 ```
-Sets the current assembler address to this address
+Start a section with a fixed addresss. Note that source files with fixed address sections can be exported to object files and will be placed at their location in the final binary output when loaded with **INCOBJ**.
 
 <a name="section">**SECTION**
 
@@ -203,9 +203,20 @@ Sections can be names and assigned a fixed address by immediately following with
 
 If there is any code or data between the SECTION and ORG directives the ORG directive will begin a new section.
 
+The primary purpose of relative sections (sections that are not assembled at a fixed address) is to generate object files (.x65) that can be referenced from a linking sourcce file by using **INCOBJ** and assigned an address at that point using the **LINK** directive. Object files can mix and match relative and fixed address sections and only the relative sections need to be linked using the **LINK** directive.
+
 <a name="xdef">**XDEF**
 
-Used in files assembled to object files to share a label globally. All labels that are not xdef'd are still processed but protected so that other objects can use the same label name without colliding. **XDEF <labelname>** must be specified before the label is defined, such as at the top of the file. Non-xdef'd labels are kept private to the object file for the purpose of late evaluations that may refer to them, and those labels should also show up in .sym and vice files.
+Used in files assembled to object files to share a label globally. All labels that are not xdef'd are still processed but protected so that other objects can use the same label name without colliding. **XDEF <labelname>** must be specified before the label is defined, such as at the top of the file.
+
+Non-xdef'd labels are kept private to the object file for the purpose of late evaluations that may refer to them, and those labels should also show up in .sym and vice files.
+
+```
+	XDEF InitBobs
+
+InitBobs:
+	rts
+```
 
 <a name="incobj">**INCOBJ**
 
