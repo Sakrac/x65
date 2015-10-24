@@ -157,7 +157,7 @@ Directives are assembler commands that control the code generation but that does
 Set the CPU to assemble for. This can be updated throughout the source file as needed. **PROCESSOR** is also accepted as an alias.
 
 ```
-    CPU 65812
+    CPU 65816
 ```
 
 <a name="org">**ORG**
@@ -203,7 +203,7 @@ Sections can be names and assigned a fixed address by immediately following with
 
 If there is any code or data between the SECTION and ORG directives the ORG directive will begin a new section.
 
-The primary purpose of relative sections (sections that are not assembled at a fixed address) is to generate object files (.x65) that can be referenced from a linking sourcce file by using **INCOBJ** and assigned an address at that point using the **LINK** directive. Object files can mix and match relative and fixed address sections and only the relative sections need to be linked using the **LINK** directive.
+The primary purpose of relative sections (sections that are not assembled at a fixed address) is to generate object files (.x65) that can be referenced from a linking source file by using **INCOBJ** and assigned an address at that point using the **LINK** directive. Object files can mix and match relative and fixed address sections and only the relative sections need to be linked using the **LINK** directive.
 
 <a name="xdef">**XDEF**
 
