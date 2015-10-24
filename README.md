@@ -205,11 +205,11 @@ If there is any code or data between the SECTION and ORG directives the ORG dire
 
 <a name="xdef">**XDEF**
 
-Used in files assembled to object files to share a label globally. All labels that are not xdef'd are still processed but protected so that other objects can use the same label name without colliding. **XDEF <labelname>** must be specified before the label is defined, such as at the top of the file.
+Used in files assembled to object files to share a label globally. All labels that are not xdef'd are still processed but protected so that other objects can use the same label name without colliding. **XDEF <labelname>** must be specified before the label is defined, such as at the top of the file. Non-xdef'd labels are kept private to the object file for the purpose of late evaluations that may refer to them, and those labels should also show up in .sym and vice files.
 
-<a name="xdef">**INCOBJ**
+<a name="incobj">**INCOBJ**
 
-Include an object file for linking into this file.
+Include an object file for linking into this file. In order to include the object code into a binary the sections from the object file must be referenced using the *LINK* directive.
 
 <a name="link">**LINK**
 
@@ -223,7 +223,7 @@ The following lines will place all sections named Code sequentially at location 
 	link BSS
 ```
 
-There is currently object file support (use -obj <filename> argument to generate), currently doing a lot of testing to make sure it works as expected. At this time all labels from object files are globally visible causing potential confusion if two files share the same name labels and XDEF is intended to mark labels as global to protect file scope labels.
+There is currently object file support (use -obj <filename> argument to generate), the recommended file extension for object files is .x65. In order to access symbols from object file code use XDEF <labelname> prior to declaring a label within the object.
 
 <a name="load">**LOAD**
 
