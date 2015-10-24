@@ -458,9 +458,9 @@ struct mnem opcodes_6502[] = {
 	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea } }
 };
 
-char* aliases_6502[] = {
+const char* aliases_6502[] = {
 	"bcc", "blt",
-	"bvs", "bge",
+	"bcs", "bge",
 	nullptr, nullptr
 };
 
@@ -559,9 +559,9 @@ struct mnem opcodes_65C02[] = {
 	{ "bbs7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0xff } },
 };
 
-char* aliases_65C02[] = {
+const char* aliases_65C02[] = {
 	"bcc", "blt",
-	"bvs", "bge",
+	"bcs", "bge",
 	nullptr, nullptr
 };
 
@@ -674,9 +674,9 @@ struct mnem opcodes_65816[] = {
 	{ "xce", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 };
 
-char* aliases_65816[] = {
+const char* aliases_65816[] = {
 	"bcc", "blt",
-	"bvs", "bge",
+	"bcs", "bge",
 	"tcs", "tas",
 	"tsc", "tsa",
 	"xba", "swa",
@@ -684,7 +684,6 @@ char* aliases_65816[] = {
 	"tdc", "tda",
 	nullptr, nullptr
 };
-
 
 static const int num_opcodes_65816 = sizeof(opcodes_65816) / sizeof(opcodes_65816[0]);
 
@@ -721,8 +720,8 @@ enum CPUIndex {
 struct CPUDetails {
 	mnem *opcodes;
 	int num_opcodes;
-	char* name;
-	char** aliases;
+	const char* name;
+	const char** aliases;
 } aCPUs[] = {
 	{ opcodes_6502, num_opcodes_6502, "6502", aliases_6502 },
 	{ opcodes_65C02, num_opcodes_65C02-18, "65C02", aliases_65C02 },
@@ -959,7 +958,7 @@ public:
 };
 
 // relocs are cheaper than full expressions and work with
-// local labels for relative sections which could otherwise
+// local labels for relative sections which would otherwise
 // be out of scope at link time.
 
 struct Reloc {
@@ -992,7 +991,7 @@ struct ListLine {
 typedef std::vector<struct ListLine> Listing;
 
 // start of data section support
-// Default is a fixed address section at $1000
+// Default is a relative section
 // Whenever org or dum with address is encountered => new section
 // If org is fixed and < $200 then it is a dummy section Otherwise clear dummy section
 typedef struct Section {
@@ -1052,8 +1051,7 @@ typedef struct Section {
 	void AddReloc(int base, int offset, int section, Reloc::Type type = Reloc::WORD);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
-	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr)
-	{
+	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr) {
 		reset(); name = _name; start_address = load_address = address = _address;
 		address_assigned = true;
 	}
@@ -1063,7 +1061,7 @@ typedef struct Section {
 	}
 	~Section() { }
 
-	// Appending data to a section
+	// Append data to a section
 	void CheckOutputCapacity(unsigned int addSize);
 	void AddByte(int b);
 	void AddWord(int w);
@@ -1222,16 +1220,15 @@ public:
 	pairArray<unsigned int, Macro> macros;
 	pairArray<unsigned int, LabelPool> labelPools;
 	pairArray<unsigned int, LabelStruct> labelStructs;
-	// labels matching xdef names will be marked as external
-	pairArray<unsigned int, strref> xdefs;
+	pairArray<unsigned int, strref> xdefs;	// labels matching xdef names will be marked as external
 
 	std::vector<LateEval> lateEval;
 	std::vector<LocalLabelRecord> localLabels;
-	std::vector<char*> loadedData;	// free when assembler is completed
+	std::vector<char*> loadedData;			// free when assembler is completed
 	std::vector<MemberOffset> structMembers; // labelStructs refer to sets of structMembers
 	std::vector<strref> includePaths;
 	std::vector<Section> allSections;
-	std::vector<ExtLabels> externals; // external labels organized by object file
+	std::vector<ExtLabels> externals;		// external labels organized by object file
 	MapSymbolArray map;
 
 	// CPU target
@@ -1279,7 +1276,7 @@ public:
 	// Generate assembler listing if requested
 	bool List(strref filename);
 
-	// Generate source for all valid instructions
+	// Generate source for all valid instructions and addressing modes for current CPU
 	bool AllOpcodes(strref filename);
 
 	// Clean up memory allocations, reset assembler state
@@ -1413,7 +1410,8 @@ void Asm::Cleanup() {
 	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti !=externals.end(); ++exti)
 		exti->labels.clear();
 	externals.clear();
-	SetSection(strref("default"));		// this section is relocatable but is assigned address $1000 if exporting without directives
+	// this section is relocatable but is assigned address $1000 if exporting without directives
+	SetSection(strref("default"));
 	current_section = &allSections[0];
 	syntax = SYNTAX_SANE;
 	scope_depth = 0;
@@ -1434,7 +1432,7 @@ int sortHashLookup(const void *A, const void *B) {
 	return _A->op_hash > _B->op_hash ? 1 : -1;
 }
 
-int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes, int count)
+int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes, int count, const char **aliases)
 {
 	// create an instruction table (mnemonic hash lookup)
 	int numInstructions = 0;
@@ -1445,6 +1443,23 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 		op.type = OT_MNEMONIC;
 	}
 
+	// add instruction aliases
+	if (aliases) {
+		while (*aliases) {
+			strref orig(*aliases++);
+			strref alias(*aliases++);
+			for (int o=0; o<count; o++) {
+				if (orig.same_str_case(opcodes[o].instr)) {
+					OPLookup &op = pInstr[numInstructions++];
+					op.op_hash = alias.fnv1a_lower();
+					op.index = o;
+					op.type = OT_MNEMONIC;
+					break;
+				}
+			}
+		}
+	}
+	
 	// add assembler directives
 	for (int d = 0; d<nDirectiveNames; d++) {
 		OPLookup &op_hash = pInstr[numInstructions++];
@@ -1452,7 +1467,7 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
 		op_hash.type = OT_DIRECTIVE;
 	}
-
+	
 	// sort table by hash for binary search lookup
 	qsort(pInstr, numInstructions, sizeof(OPLookup), sortHashLookup);
 	return numInstructions;
@@ -1465,7 +1480,7 @@ void Asm::SetCPU(CPUIndex CPU) {
 		list_cpu = cpu;
 	opcode_table = aCPUs[CPU].opcodes;
 	opcode_count = aCPUs[CPU].num_opcodes;
-	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count);
+	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count, aCPUs[CPU].aliases);
 	if (CPU != CPU_65816) {
 		accumulator_16bit = false;
 		index_reg_16bit = false;
@@ -1477,8 +1492,8 @@ char* Asm::LoadText(strref filename, size_t &size) {
 	strown<512> file(filename);
 	std::vector<strref>::iterator i = includePaths.begin();
 	for (;;) {
-		if (FILE *f = fopen(file.c_str(), "rb")) {
-			fseek(f, 0, SEEK_END);
+		if (FILE *f = fopen(file.c_str(), "rb")) {	// rb is intended here since OS
+			fseek(f, 0, SEEK_END);					// eol conversion can do ugly things
 			size_t _size = ftell(f);
 			fseek(f, 0, SEEK_SET);
 			if (char *buf = (char*)calloc(_size, 1)) {
@@ -1533,6 +1548,7 @@ char* Asm::LoadBinary(strref filename, size_t &size) {
 	return nullptr;
 }
 
+// Create a new section with a fixed address
 void Asm::SetSection(strref name, int address)
 {
 	if (name) {
@@ -1645,7 +1661,8 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 			return nullptr;
 		if (has_relative_section) {
 			if (!has_fixed_section) {
-				SetSection(strref(), 0x1000);
+				start_address = 0x1000;
+				SetSection(strref(), start_address);
 				CurrSection().export_append = append;
 				last_fixed_section = SectionId();
 			}
@@ -1941,11 +1958,13 @@ void Asm::CheckOutputCapacity(unsigned int addSize) {
 // add a custom macro
 StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, strref &left)
 {	//
-	// Non-merlin macro types:
+	// Recommended macro syntax:
 	// macro name(optional params) { actual macro }
+	//
+	// -endm option macro syntax:
 	// macro name arg\nactual macro\nendmacro
 	//
-	// Merlin macro:
+	// Merlin macro syntax: (TODO: ignore arguments and use ]1, ]2, etc.)
 	// name mac arg1 arg2\nactual macro\n[<<<]/[EOM]
 	//
 	strref name;
@@ -2499,7 +2518,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				case EVOP_SUB:	// -
 					if (ri==1)
 						values[ri-1] = -values[ri-1];
-					else {
+					else if (ri>1) {
 						ri--;
 						for (int i = 0; i<num_sections; i++)
 							section_counts[i][ri-1] -= section_counts[i][ri];
@@ -2669,21 +2688,6 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 					}
 					bool resolved = true;
 					switch (i->type) {
-						case LateEval::LET_BRANCH:
-							value -= i->address+1;
-							if (value<-128 || value>127) {
-								i = lateEval.erase(i);
-								return ERROR_BRANCH_OUT_OF_RANGE;
-							} if (trg >= allSections[sec].size())
-								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
-							allSections[sec].SetByte(trg, value);
-							break;
-						case LateEval::LET_BRANCH_16:
-							value -= i->address+2;
-							if (trg >= allSections[sec].size())
-								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
-							allSections[sec].SetWord(trg, value);
-							break;
 						case LateEval::LET_BYTE:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0)
@@ -2698,6 +2702,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetByte(trg, value);
 							break;
+
 						case LateEval::LET_ABS_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0)
@@ -2711,6 +2716,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetWord(trg, value);
 							break;
+
 						case LateEval::LET_ABS_L_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0)
@@ -2724,6 +2730,24 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetTriple(trg, value);
 							break;
+
+						case LateEval::LET_BRANCH:
+							value -= i->address+1;
+							if (value<-128 || value>127) {
+								i = lateEval.erase(i);
+								return ERROR_BRANCH_OUT_OF_RANGE;
+							} if (trg >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							allSections[sec].SetByte(trg, value);
+							break;
+
+						case LateEval::LET_BRANCH_16:
+							value -= i->address+2;
+							if (trg >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							allSections[sec].SetWord(trg, value);
+							break;
+
 						case LateEval::LET_LABEL: {
 							Label *label = GetLabel(i->label, i->file_ref);
 							if (!label)
@@ -3300,6 +3324,7 @@ int LookupOpCodeIndex(unsigned int hash, OPLookup *lookup, int count)
 	return -1;	// index not found
 }
 
+// Encountered a REPT or LUP
 StatusCode Asm::Directive_Rept(strref line, strref source_file)
 {
 	SourceContext &ctx = contextStack.curr();
@@ -3370,8 +3395,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_CPU:
 			for (int c = 0; c < nCPUs; c++) {
 				if (line.same_str(aCPUs[c].name)) {
-					SetCPU((CPUIndex)c);
-					break;
+					if (c != cpu)
+						SetCPU((CPUIndex)c);
+					return STATUS_OK;
 				}
 			}
 			return ERROR_CPU_NOT_SUPPORTED;
@@ -3616,7 +3642,6 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				SetCPU(CPU_65C02);
 			break;
 		case AD_TEXT: {		// text: add text within quotes
-			// for now just copy the windows ascii. TODO: Convert to petscii.
 			// https://en.wikipedia.org/wiki/PETSCII
 			// ascii: no change
 			// shifted: a-z => $41.. A-Z => $61..
@@ -3857,6 +3882,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	return error;
 }
 
+// Make an educated guess at the intended address mode from an opcode argument
 StatusCode Asm::GetAddressMode(strref line, bool flipXY, AddrMode &addrMode, int &len, strref &expression)
 {
 	bool force_zp = false;
@@ -3937,7 +3963,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, AddrMode &addrMode, int
 	return STATUS_OK;
 }
 
-// Push an opcode to the output buffer
+// Push an opcode to the output buffer in the current section
 StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 {
 	StatusCode error = STATUS_OK;
@@ -4024,26 +4050,19 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			addrMode = AMB_ABS_L_X;
 	}
 
-	bool valid_addressing_mode = !!(validModes & (1 << addrMode));
-
-	if (!valid_addressing_mode) {
-		if (addrMode==AMB_ZP_REL_X && (validModes & AMM_REL_X)) {
+	if (!(validModes & (1 << addrMode))) {
+		if (addrMode==AMB_ZP_REL_X && (validModes & AMM_REL_X))
 			addrMode = AMB_REL_X;
-			valid_addressing_mode = true;
-		} else if (addrMode==AMB_REL && (validModes & AMM_ZP_REL)) {
+		else if (addrMode==AMB_REL && (validModes & AMM_ZP_REL))
 			addrMode = AMB_ZP_REL;
-			valid_addressing_mode = true;
-		} else if (addrMode==AMB_ABS && (validModes & AMM_ABS_L)) {
+		else if (addrMode==AMB_ABS && (validModes & AMM_ABS_L))
 			addrMode = AMB_ABS_L;
-			valid_addressing_mode = true;
-		} else if (addrMode==AMB_ABS_X && (validModes & AMM_ABS_L_X)) {
+		else if (addrMode==AMB_ABS_X && (validModes & AMM_ABS_L_X))
 			addrMode = AMB_ABS_L_X;
-			valid_addressing_mode = true;
-		} else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L)) {
+		else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L))
 			addrMode = AMB_ZP_REL_L;
-			valid_addressing_mode = true;
-		} else
-			error = ERROR_INVALID_ADDRESSING_MODE;
+		else
+			return ERROR_INVALID_ADDRESSING_MODE;
 	}
 
 	// Add the instruction and argument to the code
@@ -4085,10 +4104,6 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 					codeArg = CA_THREE_BYTES;
 					break;
 
-				case AMB_ACC:			// 9 A
-				case AMB_NON:			// a
-					break;
-
 				case AMB_ZP_ABS:			// d $12, label
 					codeArg = CA_BYTE_BRANCH;
 					break;
@@ -4106,10 +4121,77 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 					else
 						codeArg = CA_ONE_BYTE;
 					break;
+					
+				case AMB_ACC:			// 9 A
+				case AMB_NON:			// a
+				default:
+					break;
+					
 			}
 		}
 			
 		switch (codeArg) {
+			case CA_ONE_BYTE:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				else if (error == STATUS_RELATIVE_SECTION)
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
+					target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+				AddByte(value);
+				break;
+
+			case CA_TWO_BYTES:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
+										   target_section, target_section_type);
+					value = 0;
+				}
+				AddWord(value);
+				break;
+
+			case CA_THREE_BYTES:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_L_REF);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
+										   target_section, target_section_type);
+					value = 0;
+				}
+				AddTriple(value);
+				break;
+
+			case  CA_TWO_ARG_BYTES: {
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
+										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+				}
+				AddByte(value);
+				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, -1);
+				line.split_token_trim(',');
+				error = EvalExpression(line, etx, value);
+				if (error==STATUS_NOT_READY)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
+				AddByte(value);
+				break;
+			}
+			case CA_BRANCH:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
+				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127)
+					error = ERROR_BRANCH_OUT_OF_RANGE;
+				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
+				break;
+
+			case CA_BRANCH_16:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH_16);
+				AddWord(evalLater ? 0 : (value-(CurrSection().GetPC()+2)));
+				break;
+
 			case CA_BYTE_BRANCH: {
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
@@ -4127,62 +4209,6 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				AddByte(error == STATUS_NOT_READY ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 			}
-			case CA_BRANCH:
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
-				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127)
-					error = ERROR_BRANCH_OUT_OF_RANGE;
-				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
-				break;
-			case CA_BRANCH_16:
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH_16);
-				AddWord(evalLater ? 0 : (value-(CurrSection().GetPC()+2)));
-				break;
-			case CA_ONE_BYTE:
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
-				else if (error == STATUS_RELATIVE_SECTION)
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-					target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
-				AddByte(value);
-				break;
-			case  CA_TWO_ARG_BYTES: {
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
-				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
-				}
-				AddByte(value);
-				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, -1);
-				line.split_token_trim(',');
-				error = EvalExpression(line, etx, value);
-				if (error==STATUS_NOT_READY)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
-				AddByte(value);
-				break;
-			}
-			case CA_TWO_BYTES:
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
-				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
-										   target_section, target_section_type);
-					value = 0;
-				}
-				AddWord(value);
-				break;
-			case CA_THREE_BYTES:
-				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_L_REF);
-				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
-										   target_section, target_section_type);
-					value = 0;
-				}
-				AddTriple(value);
-				break;
 			case CA_NONE:
 				break;
 		}
@@ -4583,7 +4609,7 @@ bool Asm::AllOpcodes(strref filename)
 // create an instruction table (mnemonic hash lookup + directives)
 void Asm::Assemble(strref source, strref filename, bool obj_target)
 {
-	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count);
+	SetCPU(cpu);
 
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
@@ -4710,25 +4736,29 @@ static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, 
 	if (index<pLookup->count() && str.same_str_case(*strPool + pLookup->getValue(index)))
 		return pLookup->getValue(index);
 
-	if ((strPoolSize + str.get_len() + 1) > strPoolCap) {
+	int strOffs = strPoolSize;
+	if ((strOffs + str.get_len() + 1) > strPoolCap) {
 		strPoolCap += 4096;
 		char *strPoolGrow = (char*)malloc(strPoolCap);
-		if (*strPool && strPoolGrow) {
-			memcpy(strPoolGrow, *strPool, strPoolSize);
-			free(*strPool);
-		}
-		*strPool = strPoolGrow;
+		if (strPoolGrow) {
+			if (*strPool) {
+				memcpy(strPoolGrow, *strPool, strPoolSize);
+				free(*strPool);
+			}
+			*strPool = strPoolGrow;
+		} else
+			return -1;
 	}
-	int ret = strPoolSize;
+
 	if (*strPool) {
 		char *dest = *strPool + strPoolSize;
 		memcpy(dest, str.get(), str.get_len());
 		dest[str.get_len()] = 0;
 		strPoolSize += str.get_len()+1;
 		pLookup->insert(index, hash);
-		pLookup->getValues()[index] = ret;
+		pLookup->getValues()[index] = strOffs;
 	}
-	return ret;
+	return strOffs;
 }
 
 StatusCode Asm::WriteObjectFile(strref filename)
@@ -5115,7 +5145,7 @@ int main(int argc, char **argv)
 			 " x65 filename.s code.prg [options]\n"
 			 "  * -i(path) : Add include path\n"
 			 "  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
-			 "  * -cpu=6502/65c02: assemble with opcodes for a different cpu\n"
+			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
 			 "  * -obj(file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
@@ -5125,7 +5155,7 @@ int main(int argc, char **argv)
 			 "  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
 			 "  * -sect: display sections loaded and built\n"
 			 "  * -vice(file.vs) : export a vice symbol file\n"
-			 "  * -nerlin: use Merlin syntax\n"
+			 "  * -merlin: use Merlin syntax\n"
 			 "  * -endm : macros end with endm or endmacro instead of scoped('{' - '}')\n");
 		return 0;
 	}

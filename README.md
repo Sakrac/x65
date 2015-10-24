@@ -105,7 +105,7 @@ Would yield 3 bytes where the address of a label can be calculated by taking the
 
 ### <a name="labels">Labels
 
-Labels come in two flavors: **Addresses** (PC based) or **Values** (Evaluated from an expression).  An address label is simply placed somewhere in code and a value label is follwed by '**=**' and an expression. All labels are rewritable so it is fine to do things like NumInstance = NumInstance+1. Value assignments can be prefixed with '.const' or '.label' but is not required to be prefixed by anything.
+Labels come in two flavors: **Addresses** (PC based) or **Values** (Evaluated from an expression).  An address label is simply placed somewhere in code and a value label is followed by '**=**' and an expression. All labels are rewritable so it is fine to do things like NumInstance = NumInstance+1. Value assignments can be prefixed with '.const' or '.label' but is not required to be prefixed by anything, the CONST keyword should cause an error if the label is modified in the same source file.
 
 *Local labels* exist inbetween *global labels* and gets discarded whenever a new global label is added. The syntax for local labels are one of: prefix with period, at-sign, exclamation mark or suffix with $, as in: **.local** or **!local** or **@local** or **local$**. Both value labels and address labels can be local labels.
 
@@ -485,7 +485,7 @@ Adds a folder to search for INCLUDE, INCBIN, etc. files in
 
 The accumulator and index register mode will be reset to 8 bits if the CPU is switched to something other than 65816.
 
-An alternative method is to add .b/.w to immediat mode instructions that support 16 bit modes such as:
+An alternative method is to add .b/.w to immediate mode instructions that support 16 bit modes such as:
 
 ```
 	ora.b #$21
@@ -586,15 +586,15 @@ SAV causes Merlin to save the result it has generated so far, which is somewhat 
 
 ## <a name="expressions">Expression syntax
 
-Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overrided. In addition there are some special characters supported:
+Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overridden. In addition there are some special characters supported:
 
 * \*: Current address (PC). This conflicts with the use of \* as multiply so multiply will be interpreted only after a value or right parenthesis
-* <: If less than is not follwed by another '<' in an expression this evaluates to the low byte of a value (and $ff)
+* <: If less than is not followed by another '<' in an expression this evaluates to the low byte of a value (and $ff)
 * >: If greater than is not followed by another '>' in an expression this evaluates to the high byte of a value (>>8)
 * ^: Inbetween two values '^' is an eor operation, as a prefix to values it extracts the bank byte (v>>24).
 * !: Start of scope (use like an address label in expression)
 * %: First address after scope (use like an address label in expression)
-* $: Preceeds hexadecimal value
+* $: Precedes hexadecimal value
 * %: If immediately followed by '0' or '1' this is a binary value and not scope closure address
 
 Example:
@@ -637,10 +637,10 @@ Alternative syntax for macros:
 To support the syntax of other assemblers macro parameters can also be defined through space separated arguments:
 
 ```
-macro loop_end op lbl {
-	op
-	bne lbl
-}
+	macro loop_end op lbl {
+		op
+		bne lbl
+	}
 
 	ldx #4
 	{
