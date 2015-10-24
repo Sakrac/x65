@@ -60,6 +60,8 @@
 // Max number of exported binary files from a single source
 #define MAX_EXPORT_FILES 64
 
+#define MAX_OPCODES_DIRECTIVES 320
+
 // To simplify some syntax disambiguation the preferred
 // ruleset can be specified on the command line.
 enum AsmSyntax {
@@ -104,7 +106,7 @@ enum StatusCode {
 	ERROR_COULD_NOT_INCLUDE_FILE,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
-	
+
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -218,6 +220,10 @@ enum AssemblerDirective {
 	AD_ENUM,		// ENUM: Declare a set of incremental labels
 	AD_REPT,		// REPT: Repeat the assembly of the bracketed code a number of times
 	AD_INCDIR,		// INCDIR: Add a folder to search for include files
+	AD_A16,			// A16: Set 16 bit accumulator mode
+	AD_A8,			// A8: Set 8 bit accumulator mode
+	AD_XY16,		// A16: Set 16 bit index register mode
+	AD_XY8,			// A8: Set 8 bit index register mode
 	AD_HEX,			// HEX: LISA assembler data block
 	AD_EJECT,		// EJECT: Page break for printing assembler code, ignore
 	AD_LST,			// LST: Controls symbol listing
@@ -226,6 +232,8 @@ enum AssemblerDirective {
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
 	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
+	AD_XC,			// XC: MERLIN version of setting CPU
+	AD_MX,			// MX: MERLIN control accumulator 16 bit mode
 };
 
 // Operators are either instructions or directives
@@ -238,7 +246,7 @@ enum OperationType {
 // These are expression tokens in order of precedence (last is highest precedence)
 enum EvalOperator {
 	EVOP_NONE,
-	EVOP_VAL='a',	// a, value => read from value queue
+	EVOP_VAL = 'a',	// a, value => read from value queue
 	EVOP_LPR,		// b, left parenthesis
 	EVOP_RPR,		// c, right parenthesis
 	EVOP_ADD,		// d, +
@@ -252,9 +260,10 @@ enum EvalOperator {
 	EVOP_SHR,		// l, >>
 	EVOP_LOB,		// m, low byte of 16 bit value
 	EVOP_HIB,		// n, high byte of 16 bit value
-	EVOP_STP,		// o, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// p, Not ready yet
-	EVOP_ERR,		// q, Error
+	EVOP_BAB,		// o, bank byte of 24 bit value
+	EVOP_STP,		// p, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// q, Not ready yet
+	EVOP_ERR,		// r, Error
 };
 
 // Opcode encoding
@@ -262,10 +271,13 @@ typedef struct {
 	unsigned int op_hash;
 	unsigned char index;	// ground index
 	unsigned char type;		// mnemonic or
-} OP_ID;
+} OPLookup;
 
 enum AddrMode {
 	// address mode bit index
+
+	// 6502
+
 	AMB_ZP_REL_X,		// 0 ($12,x)
 	AMB_ZP,				// 1 $12
 	AMB_IMM,			// 2 #$12
@@ -277,13 +289,33 @@ enum AddrMode {
 	AMB_REL,			// 8 ($1234)
 	AMB_ACC,			// 9 A
 	AMB_NON,			// a
+
+	// 65C02
+
 	AMB_ZP_REL,			// b ($12)
 	AMB_REL_X,			// c ($1234,x)
 	AMB_ZP_ABS,			// d $12, *+$12
+
+	// 65816
+
+	AMB_ZP_REL_L,		// e [$02]
+	AMB_ZP_REL_Y_L,		// f [$00],y
+	AMB_ABS_L,			// 10 $bahilo
+	AMB_ABS_L_X,		// 11 $123456,x
+	AMB_STK,			// 12 $12,s
+	AMB_STK_REL_Y,		// 13 ($12,s),y
+	AMB_REL_L,			// 14 [$1234]
+	AMB_BLK_MOV,		// 15 $12,$34
 	AMB_COUNT,
 
-	AMB_FLIPXY = AMB_COUNT,	// e
-	AMB_BRANCH,				// f
+	AMB_FLIPXY = AMB_COUNT,	// 16 (indexing index using y treat as x address mode)
+	AMB_BRANCH,				// 17 (relative address 8 bit)
+	AMB_BRANCH_L,			// 18 (relative address 16 bit)
+	AMB_IMM_DBL_A,			// 19 (immediate mode can be doubled in 16 bit mode)
+	AMB_IMM_DBL_XY,			// 1a (immediate mode can be doubled in 16 bit mode)
+
+	AMB_ILL,			// 1b illegal address mode
+
 	// address mode masks
 	AMM_NON = 1<<AMB_NON,
 	AMM_IMM = 1<<AMB_IMM,
@@ -299,8 +331,22 @@ enum AddrMode {
 	AMM_ZP_REL = 1<<AMB_ZP_REL,			// b ($12)
 	AMM_REL_X = 1<<AMB_REL_X,			// c ($1234,x)
 	AMM_ZP_ABS = 1<<AMB_ZP_ABS,			// d $12, *+$12
+
+	AMM_ZP_REL_L = 1<<AMB_ZP_REL_L,		// e [$02]
+	AMM_ZP_REL_Y_L = 1<<AMB_ZP_REL_Y_L,	// f [$00],y
+	AMM_ABS_L = 1<<AMB_ABS_L,			// 10 $bahilo
+	AMM_ABS_L_X = 1<<AMB_ABS_L_X,		// 11 $123456,x
+	AMM_STK = 1<<AMB_STK,				// 12 $12,s
+	AMM_STK_REL_Y = 1<<AMB_STK_REL_Y,	// 13 ($12,s),y
+	AMM_REL_L = 1<<AMB_REL_L,			// 14 [$1234]
+	AMM_BLK_MOV = 1<<AMB_BLK_MOV,		// 15 $12,$34
+
+
 	AMM_FLIPXY = 1<<AMB_FLIPXY,
 	AMM_BRANCH = 1<<AMB_BRANCH,
+	AMM_BRANCH_L = 1<<AMB_BRANCH_L,
+	AMM_IMM_DBL_A = 1<<AMB_IMM_DBL_A,
+	AMM_IMM_DBL_XY = 1<<AMB_IMM_DBL_XY,
 
 	// instruction group specific masks
 	AMM_BRA = AMM_BRANCH | AMM_ABS,
@@ -316,7 +362,6 @@ enum AddrMode {
 	AMM_JMP = AMM_ABS | AMM_REL,
 	AMM_CPY = AMM_IMM | AMM_ZP | AMM_ABS,
 
-
 	// 65C02 groups
 	AMC_ORA = AMM_ORA | AMM_ZP_REL,
 	AMC_STA = AMM_STA | AMM_ZP_REL,
@@ -326,6 +371,24 @@ enum AddrMode {
 	AMC_STZ = AMM_ZP | AMM_ZP_X | AMM_ABS | AMM_ABS_X,
 	AMC_TRB = AMM_ZP | AMM_ABS,
 	AMC_BBR = AMM_ZP_ABS,
+
+	// 65816 groups
+	AM8_JSR = AMM_ABS | AMM_ABS_L,
+	AM8_JSL = AMM_ABS_L,
+	AM8_BIT = AMM_IMM_DBL_A | AMC_BIT,
+	AM8_ORA = AMM_IMM_DBL_A | AMC_ORA | AMM_STK | AMM_ZP_REL_L | AMM_ABS_L | AMM_STK_REL_Y | AMM_ZP_REL_Y_L | AMM_ABS_L_X,
+	AM8_STA = AMC_STA | AMM_STK | AMM_ZP_REL_L | AMM_ABS_L | AMM_STK_REL_Y | AMM_ZP_REL_Y_L | AMM_ABS_L_X,
+	AM8_ORL = AMM_ABS_L | AMM_ABS_L_X,
+	AM8_STL = AMM_ABS_L | AMM_ABS_L_X,
+	AM8_LDX = AMM_IMM_DBL_XY | AMM_LDX,
+	AM8_LDY = AMM_IMM_DBL_XY | AMM_LDY,
+	AM8_CPY = AMM_IMM_DBL_XY | AMM_CPY,
+	AM8_JMP = AMC_JMP | AMM_REL_L,
+	AM8_BRL = AMM_BRANCH_L | AMM_ABS,
+	AM8_MVN = AMM_BLK_MOV,
+	AM8_PEI = AMM_ZP_REL,
+	AM8_PER = AMM_BRANCH_L | AMM_ABS,
+	AM8_REP = AMM_IMM | AMM_ZP,	// Merlin allows this to look like a zp access
 };
 
 struct mnem {
@@ -395,6 +458,12 @@ struct mnem opcodes_6502[] = {
 	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea } }
 };
 
+char* aliases_6502[] = {
+	"bcc", "blt",
+	"bvs", "bge",
+	nullptr, nullptr
+};
+
 static const int num_opcodes_6502 = sizeof(opcodes_6502) / sizeof(opcodes_6502[0]);
 
 struct mnem opcodes_65C02[] = {
@@ -419,6 +488,8 @@ struct mnem opcodes_65C02[] = {
 	{ "ldx", AMM_LDX, { 0x00, 0xa6, 0xa2, 0xae, 0x00, 0xb6, 0x00, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "dec", AMC_DEC, { 0x00, 0xc6, 0x00, 0xce, 0x00, 0xd6, 0x00, 0xde, 0x00, 0x3a, 0x3a, 0x00, 0x00, 0x00 } },
 	{ "inc", AMC_DEC, { 0x00, 0xe6, 0x00, 0xee, 0x00, 0xf6, 0x00, 0xfe, 0x00, 0x1a, 0x1a, 0x00, 0x00, 0x00 } },
+	{ "dea", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xde, 0x00, 0x00, 0x3a, 0x00, 0x00, 0x00 } },
+	{ "ina", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00 } },
 	{ "php", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 } },
 	{ "plp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00 } },
 	{ "pha", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00 } },
@@ -465,30 +536,157 @@ struct mnem opcodes_65C02[] = {
 	{ "dex", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00 } },
 	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0x00 } },
 
-	// WDC specific
+	// WDC specific (18 instructions)
 //	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs
 
-	{"bbr0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f } },
-	{"bbr1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f } },
-	{"bbr2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f } },
-	{"bbr3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f } },
-	{"bbr4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f } },
-	{"bbr5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5f } },
-	{"bbr6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f } },
-	{"bbr7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f } },
-	{"bbs0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8f } },
-	{"bbs1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9f } },
-	{"bbs2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaf } },
-	{"bbs3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xbf } },
-	{"bbs4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcf } },
-	{"bbs5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf } },
-	{"bbs6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef } },
-	{"bbs7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0xff } },
 	{ "stp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdb, 0x00, 0x00, 0x00 } },
 	{ "wai", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x00, 0x00, 0x00 } },
+	{ "bbr0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f } },
+	{ "bbr1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f } },
+	{ "bbr2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f } },
+	{ "bbr3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f } },
+	{ "bbr4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f } },
+	{ "bbr5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5f } },
+	{ "bbr6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f } },
+	{ "bbr7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f } },
+	{ "bbs0", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8f } },
+	{ "bbs1", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9f } },
+	{ "bbs2", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaf } },
+	{ "bbs3", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xbf } },
+	{ "bbs4", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcf } },
+	{ "bbs5", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf } },
+	{ "bbs6", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef } },
+	{ "bbs7", AMC_BBR, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0xff } },
+};
+
+char* aliases_65C02[] = {
+	"bcc", "blt",
+	"bvs", "bge",
+	nullptr, nullptr
 };
 
 static const int num_opcodes_65C02 = sizeof(opcodes_65C02) / sizeof(opcodes_65C02[0]);
+
+struct mnem opcodes_65816[] = {
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs [zp] [zp],y absl absl,x b,s (b,s),y[$000] b,b
+	{ "brk", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jsr", AM8_JSR, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jsl", AM8_JSL, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rti", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rts", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rtl", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ora", AM8_ORA, { 0x01, 0x05, 0x09, 0x0d, 0x11, 0x15, 0x19, 0x1d, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x07, 0x17, 0x0f, 0x1f, 0x03, 0x13, 0x00, 0x00 } },
+	{ "and", AM8_ORA, { 0x21, 0x25, 0x29, 0x2d, 0x31, 0x35, 0x39, 0x3d, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x27, 0x37, 0x2f, 0x3f, 0x23, 0x33, 0x00, 0x00 } },
+	{ "eor", AM8_ORA, { 0x41, 0x45, 0x49, 0x4d, 0x51, 0x55, 0x59, 0x5d, 0x00, 0x00, 0x00, 0x52, 0x00, 0x00, 0x47, 0x57, 0x4f, 0x5f, 0x43, 0x53, 0x00, 0x00 } },
+	{ "adc", AM8_ORA, { 0x61, 0x65, 0x69, 0x6d, 0x71, 0x75, 0x79, 0x7d, 0x00, 0x00, 0x00, 0x72, 0x00, 0x00, 0x67, 0x77, 0x6f, 0x7f, 0x63, 0x73, 0x00, 0x00 } },
+	{ "sta", AM8_STA, { 0x81, 0x85, 0x00, 0x8d, 0x91, 0x95, 0x99, 0x9d, 0x00, 0x00, 0x00, 0x92, 0x00, 0x00, 0x87, 0x97, 0x8f, 0x9f, 0x83, 0x93, 0x00, 0x00 } },
+	{ "lda", AM8_ORA, { 0xa1, 0xa5, 0xa9, 0xad, 0xb1, 0xb5, 0xb9, 0xbd, 0x00, 0x00, 0x00, 0xb2, 0x00, 0x00, 0xa7, 0xb7, 0xaf, 0xbf, 0xa3, 0xb3, 0x00, 0x00 } },
+	{ "cmp", AM8_ORA, { 0xc1, 0xc5, 0xc9, 0xcd, 0xd1, 0xd5, 0xd9, 0xdd, 0x00, 0x00, 0x00, 0xd2, 0x00, 0x00, 0xc7, 0xd7, 0xcf, 0xdf, 0xc3, 0xd3, 0x00, 0x00 } },
+	{ "sbc", AM8_ORA, { 0xe1, 0xe5, 0xe9, 0xed, 0xf1, 0xf5, 0xf9, 0xfd, 0x00, 0x00, 0x00, 0xf2, 0x00, 0x00, 0xe7, 0xf7, 0xef, 0xff, 0xe3, 0xf3, 0x00, 0x00 } },
+	{"oral", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x1f, 0x00, 0x00, 0x00, 0x00 } },
+	{"andl", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f, 0x3f, 0x00, 0x00, 0x00, 0x00 } },
+	{"eorl", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4f, 0x5f, 0x00, 0x00, 0x00, 0x00 } },
+	{"adcl", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f, 0x7f, 0x00, 0x00, 0x00, 0x00 } },
+	{"stal", AM8_STL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8f, 0x9f, 0x00, 0x00, 0x00, 0x00 } },
+	{"ldal", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaf, 0xbf, 0x00, 0x00, 0x00, 0x00 } },
+	{"cmpl", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcf, 0xdf, 0x00, 0x00, 0x00, 0x00 } },
+	{"sbcl", AM8_ORL, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xff, 0x00, 0x00, 0x00, 0x00 } },
+	{ "asl", AMM_ASL, { 0x00, 0x06, 0x00, 0x0e, 0x00, 0x16, 0x00, 0x1e, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rol", AMM_ASL, { 0x00, 0x26, 0x00, 0x2e, 0x00, 0x36, 0x00, 0x3e, 0x00, 0x2a, 0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "lsr", AMM_ASL, { 0x00, 0x46, 0x00, 0x4e, 0x00, 0x56, 0x00, 0x5e, 0x00, 0x4a, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ror", AMM_ASL, { 0x00, 0x66, 0x00, 0x6e, 0x00, 0x76, 0x00, 0x7e, 0x00, 0x6a, 0x6a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "stx", AMM_STX, { 0x00, 0x86, 0x00, 0x8e, 0x00, 0x96, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldx", AM8_LDX, { 0x00, 0xa6, 0xa2, 0xae, 0x00, 0xb6, 0x00, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "dec", AMC_DEC, { 0x00, 0xc6, 0x00, 0xce, 0x00, 0xd6, 0x00, 0xde, 0x00, 0x3a, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "inc", AMC_DEC, { 0x00, 0xe6, 0x00, 0xee, 0x00, 0xf6, 0x00, 0xfe, 0x00, 0x1a, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "dea", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xde, 0x00, 0x00, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ina", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "php", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "plp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "pha", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs [zp] [zp],y absl absl,x b,s (b,s),y[$0000]b,b
+	{ "pla", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "phy", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ply", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "phx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xda, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "plx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "dey", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tay", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "iny", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "inx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bpl", AMM_BRA, { 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bmi", AMM_BRA, { 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvc", AMM_BRA, { 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bvs", AMM_BRA, { 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bra", AMM_BRA, { 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "brl", AM8_BRL, { 0x00, 0x00, 0x00, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcc", AMM_BRA, { 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bcs", AMM_BRA, { 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bne", AMM_BRA, { 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "beq", AMM_BRA, { 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "clc", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "sec", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cli", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "sei", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tya", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "clv", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cld", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "sed", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "bit", AM8_BIT, { 0x00, 0x24, 0x89, 0x2c, 0x00, 0x34, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "stz", AMC_STZ, { 0x00, 0x64, 0x00, 0x9c, 0x00, 0x74, 0x00, 0x9e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "trb", AMC_TRB, { 0x00, 0x14, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tsb", AMC_TRB, { 0x00, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+//	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs [zp] [zp],y absl absl,x b,s (b,s),y[$0000]b,b
+	{ "jmp", AM8_JMP, { 0x00, 0x00, 0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdc, 0x00 } },
+	{ "sty", AMM_STY, { 0x00, 0x84, 0x00, 0x8c, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "ldy", AM8_LDY, { 0x00, 0xa4, 0xa0, 0xac, 0x00, 0xb4, 0x00, 0xbc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cpy", AM8_CPY, { 0x00, 0xc4, 0xc0, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cpx", AM8_CPY, { 0x00, 0xe4, 0xe0, 0xec, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "txa", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "txs", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tax", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tsx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "dex", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "nop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "cop", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "wdm", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "mvp", AM8_MVN, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44 } },
+	{ "mvn", AM8_MVN, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x54 } },
+	{ "pea", AMM_ABS, { 0x00, 0x00, 0x00, 0xf4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "pei", AM8_PEI, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "per", AM8_PER, { 0x00, 0x00, 0x00, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "rep", AM8_REP, { 0x00, 0xc2, 0xc2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "sep", AM8_REP, { 0x00, 0xe2, 0xe2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "phd", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tcs", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "pld", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tsc", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "phk", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tcd", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tdc", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "phb", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "txy", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "plb", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "tyx", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "wai", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "stp", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "xba", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xeB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "xce", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+};
+
+char* aliases_65816[] = {
+	"bcc", "blt",
+	"bvs", "bge",
+	"tcs", "tas",
+	"tsc", "tsa",
+	"xba", "swa",
+	"tcd", "tad",
+	"tdc", "tda",
+	nullptr, nullptr
+};
+
+
+static const int num_opcodes_65816 = sizeof(opcodes_65816) / sizeof(opcodes_65816[0]);
 
 
 // 65C02
@@ -496,17 +694,44 @@ static const int num_opcodes_65C02 = sizeof(opcodes_65C02) / sizeof(opcodes_65C0
 // http://www.oxyron.de/html/opcodesc02.html
 
 // 65816
+// http://wiki.superfamicom.org/snes/show/65816+Reference#fn:14
 // http://softpixel.com/~cwright/sianse/docs/65816NFO.HTM
-
+// http://www.oxyron.de/html/opcodes816.html
 
 // How instruction argument is encoded
 enum CODE_ARG {
 	CA_NONE,			// single byte instruction
 	CA_ONE_BYTE,		// instruction carries one byte
 	CA_TWO_BYTES,		// instruction carries two bytes
-	CA_BRANCH,			// instruction carries a relative address
-	CA_BYTE_BRANCH		// instruction carries one byte and one branch
+	CA_THREE_BYTES,		// instruction carries three bytes
+	CA_BRANCH,			// instruction carries an 8 bit relative address
+	CA_BRANCH_16,		// instruction carries a 16 bit relative address
+	CA_BYTE_BRANCH,		// instruction carries one byte and one branch
+	CA_TWO_ARG_BYTES,	// two separate values
 };
+
+enum CPUIndex {
+	CPU_6502,
+	CPU_65C02,
+	CPU_65C02_WDC,
+	CPU_65816
+};
+
+// CPU by index
+struct CPUDetails {
+	mnem *opcodes;
+	int num_opcodes;
+	char* name;
+	char** aliases;
+} aCPUs[] = {
+	{ opcodes_6502, num_opcodes_6502, "6502", aliases_6502 },
+	{ opcodes_65C02, num_opcodes_65C02-18, "65C02", aliases_65C02 },
+	{ opcodes_65C02, num_opcodes_65C02, "65C02WDC", aliases_65C02 },
+	{ opcodes_65816, num_opcodes_65816, "65816", aliases_65816 },
+};
+
+static const int nCPUs = sizeof(aCPUs) / sizeof(aCPUs[0]);
+
 
 // hardtexted strings
 static const strref c_comment("//");
@@ -520,22 +745,113 @@ static const strref str_const("const");
 static const strref struct_byte("byte");
 static const strref struct_word("word");
 static const char* aAddrModeFmt[] = {
-	"%s ($%02x,x)",
-	"%s $%02x",
-	"%s #$%02x",
-	"%s $%04x",
-	"%s ($%02x),y",
-	"%s $%02x,x",
-	"%s $%04x,y",
-	"%s $%04x,x",
-	"%s ($%04x)",
-	"%s A",
-	"%s ",
-	"%s ($%02x)",
-	"%s ($%04x,x)",
-	"%s $%02x, $%04x",
+	"%s ($%02x,x)",			// 00
+	"%s $%02x",				// 01
+	"%s #$%02x",			// 02
+	"%s $%04x",				// 03
+	"%s ($%02x),y",			// 04
+	"%s $%02x,x",			// 05
+	"%s $%04x,y",			// 06
+	"%s $%04x,x",			// 07
+	"%s ($%04x)",			// 08
+	"%s A",					// 09
+	"%s ",					// 0a
+	"%s ($%02x)",			// 0b
+	"%s ($%04x,x)",			// 0c
+	"%s $%02x, $%04x",		// 0d
+	"%s [$%02x]",			// 0e
+	"%s [$%02x],y",			// 0f
+	"%s $%06x",				// 10
+	"%s $%06x,x",			// 11
+	"%s $%02x,s",			// 12
+	"%s ($%02x,s),y",		// 13
+	"%s [$%04x]",			// 14
+	"%s $%02x,$%02x",		// 15
 };
 
+
+typedef struct {
+	const char *name;
+	AssemblerDirective directive;
+} DirectiveName;
+
+DirectiveName aDirectiveNames[] {
+	{ "CPU", AD_CPU },
+	{ "PROCESSOR", AD_CPU },
+	{ "PC", AD_ORG },
+	{ "ORG", AD_ORG },
+	{ "LOAD", AD_LOAD },
+	{ "EXPORT", AD_EXPORT },
+	{ "SECTION", AD_SECTION },
+	{ "SEG", AD_SECTION },		// DASM version of SECTION
+	{ "LINK", AD_LINK },
+	{ "XDEF", AD_XDEF },
+	{ "INCOBJ", AD_INCOBJ },
+	{ "ALIGN", AD_ALIGN },
+	{ "MACRO", AD_MACRO },
+	{ "EVAL", AD_EVAL },
+	{ "PRINT", AD_EVAL },
+	{ "BYTE", AD_BYTES },
+	{ "BYTES", AD_BYTES },
+	{ "WORD", AD_WORDS },
+	{ "WORDS", AD_WORDS },
+	{ "DC", AD_DC },
+	{ "TEXT", AD_TEXT },
+	{ "INCLUDE", AD_INCLUDE },
+	{ "INCBIN", AD_INCBIN },
+	{ "CONST", AD_CONST },
+	{ "LABEL", AD_LABEL },
+	{ "INCSYM", AD_INCSYM },
+	{ "LABPOOL", AD_LABPOOL },
+	{ "POOL", AD_LABPOOL },
+	{ "#IF", AD_IF },
+	{ "#IFDEF", AD_IFDEF },
+	{ "#ELSE", AD_ELSE },
+	{ "#ELIF", AD_ELIF },
+	{ "#ENDIF", AD_ENDIF },
+	{ "IF", AD_IF },
+	{ "IFDEF", AD_IFDEF },
+	{ "ELSE", AD_ELSE },
+	{ "ELIF", AD_ELIF },
+	{ "ENDIF", AD_ENDIF },
+	{ "STRUCT", AD_STRUCT },
+	{ "ENUM", AD_ENUM },
+	{ "REPT", AD_REPT },
+	{ "INCDIR", AD_INCDIR },
+	{ "A16", AD_A16 },			// A16: Set 16 bit accumulator mode
+	{ "A8", AD_A8 },			// A8: Set 8 bit accumulator mode
+	{ "XY16", AD_XY16 },		// XY16: Set 16 bit index register mode
+	{ "XY8", AD_XY8 },			// XY8: Set 8 bit index register mode
+	{ "I16", AD_XY16 },			// I16: Set 16 bit index register mode
+	{ "I8", AD_XY8 },			// I8: Set 8 bit index register mode
+	{ "MX", AD_MX },
+	{ "DO", AD_IF },			// MERLIN
+	{ "DA", AD_WORDS },			// MERLIN
+	{ "DW", AD_WORDS },			// MERLIN
+	{ "ASC", AD_TEXT },			// MERLIN
+	{ "PUT", AD_INCLUDE },		// MERLIN
+	{ "DDB", AD_WORDS },		// MERLIN
+	{ "DB", AD_BYTES },			// MERLIN
+	{ "DFB", AD_BYTES },		// MERLIN
+	{ "HEX", AD_HEX },			// MERLIN
+	{ "DO", AD_IF },			// MERLIN
+	{ "FIN", AD_ENDIF },		// MERLIN
+	{ "EJECT", AD_EJECT },		// MERLIN
+	{ "OBJ", AD_EJECT },		// MERLIN
+	{ "TR", AD_EJECT },			// MERLIN
+	{ "USR", AD_USR },			// MERLIN
+	{ "DUM", AD_DUMMY },		// MERLIN
+	{ "DEND", AD_DUMMY_END },	// MERLIN
+	{ "LST", AD_LST },			// MERLIN
+	{ "LSTDO", AD_LST },		// MERLIN
+	{ "DS", AD_DS },			// MERLIN
+	{ "LUP", AD_REPT },			// MERLIN
+	{ "MAC", AD_MACRO },		// MERLIN
+	{ "SAV", AD_SAV },			// MERLIN
+	{ "XC", AD_XC },			// MERLIN
+};
+
+static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
@@ -627,7 +943,7 @@ public:
 	H* getKeys() { return keys; }
 	H& getKey(unsigned int pos) { return keys[pos]; }
 	V* getValues() { return values; }
-	V& getValue(unsigned int pos) { return values[pos];  }
+	V& getValue(unsigned int pos) { return values[pos]; }
 	unsigned int count() const { return _count; }
 	unsigned int capacity() const { return _capacity; }
 	void clear() {
@@ -730,34 +1046,40 @@ typedef struct Section {
 	int GetLoadAddress() const { return load_address; }
 
 	void SetDummySection(bool enable) { dummySection = enable; }
-	bool IsDummySection() const { return dummySection;  }
+	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
-	bool IsMergedSection() const { return merged_offset >= 0;  }
+	bool IsMergedSection() const { return merged_offset >= 0; }
 	void AddReloc(int base, int offset, int section, Reloc::Type type = Reloc::WORD);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
 	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr)
-		{ reset(); name = _name; start_address = load_address = address = _address;
-		  address_assigned = true; }
-	Section(strref _name) : pRelocs(nullptr), pListing(nullptr) { reset(); name = _name;
-		start_address = load_address = address = 0; address_assigned = false; }
+	{
+		reset(); name = _name; start_address = load_address = address = _address;
+		address_assigned = true;
+	}
+	Section(strref _name) : pRelocs(nullptr), pListing(nullptr) {
+		reset(); name = _name;
+		start_address = load_address = address = 0; address_assigned = false;
+	}
 	~Section() { }
 
 	// Appending data to a section
 	void CheckOutputCapacity(unsigned int addSize);
 	void AddByte(int b);
 	void AddWord(int w);
+	void AddTriple(int l);
 	void AddBin(unsigned const char *p, int size);
 	void SetByte(size_t offs, int b) { output[offs] = b; }
 	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
+	void SetTriple(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; }
 } Section;
 
 // Symbol list entry (in order of parsing)
 struct MapSymbol {
-    strref name;    // string name
-    short value;
+	strref name;    // string name
+	short value;
 	short section;
-    bool local;     // local variables
+	bool local;     // local variables
 };
 typedef std::vector<struct MapSymbol> MapSymbolArray;
 
@@ -768,7 +1090,7 @@ public:
 	strref pool_name;		// name of the pool that this label is related to
 	int value;
 	int section;			// rel section address labels belong to a section, -1 if fixed address or assigned
-    int mapIndex;           // index into map symbols in case of late resolve
+	int mapIndex;           // index into map symbols in case of late resolve
 	bool evaluated;			// a value may not yet be evaluated
 	bool pc_relative;		// this is an inline label describing a point in the code
 	bool constant;			// the value of this label can not change
@@ -781,7 +1103,9 @@ typedef struct {
 	enum Type {				// When an expression is evaluated late, determine how to encode the result
 		LET_LABEL,			// this evaluation applies to a label and not memory
 		LET_ABS_REF,		// calculate an absolute address and store at 0, +1
+		LET_ABS_L_REF,		// calculate a bank + absolute address and store at 0, +1, +2
 		LET_BRANCH,			// calculate a branch offset and store at this address
+		LET_BRANCH_16,		// calculate a branch offset of 16 bits and store at this address
 		LET_BYTE,			// calculate a byte and store at this address
 	};
 	int target;				// offset into output buffer
@@ -874,7 +1198,7 @@ private:
 public:
 	ContextStack() : currContext(nullptr) { stack.reserve(32); }
 	SourceContext& curr() { return *currContext; }
-	void push(strref src_name, strref src_file, strref code_seg, int rept=1) {
+	void push(strref src_name, strref src_file, strref code_seg, int rept = 1) {
 		if (currContext)
 			currContext->read_source = currContext->next_source;
 		SourceContext context;
@@ -908,15 +1232,18 @@ public:
 	std::vector<strref> includePaths;
 	std::vector<Section> allSections;
 	std::vector<ExtLabels> externals; // external labels organized by object file
-    MapSymbolArray map;
+	MapSymbolArray map;
 
 	// CPU target
 	struct mnem *opcode_table;
 	int opcode_count;
-	
+	CPUIndex cpu, list_cpu;
+	OPLookup aInstructions[MAX_OPCODES_DIRECTIVES];
+	int num_instructions;
+
 	// context for macros / include files
 	ContextStack contextStack;
-	
+
 	// Current section
 	Section *current_section;
 
@@ -933,13 +1260,15 @@ public:
 	int scope_address[MAX_SCOPE_DEPTH];
 	int scope_depth;
 
-	// Eval relative result (only valid if EvalExpression returs STATUS_RELATIVE_SECTION)
+	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
 	int lastEvalValue;
 	Reloc::Type lastEvalPart;
 
 	strref export_base_name;
 	strref last_label;
+	bool accumulator_16bit;
+	bool index_reg_16bit;
 	bool errorEncountered;
 	bool list_assembly;
 	bool end_macro_directive;
@@ -955,7 +1284,7 @@ public:
 
 	// Clean up memory allocations, reset assembler state
 	void Cleanup();
-	
+
 	// Make sure there is room to write more code
 	void CheckOutputCapacity(unsigned int addSize);
 
@@ -975,6 +1304,7 @@ public:
 	int SectionId() { return int(current_section - &allSections[0]); }
 	void AddByte(int b) { CurrSection().AddByte(b); }
 	void AddWord(int w) { CurrSection().AddWord(w); }
+	void AddTriple(int l) { CurrSection().AddTriple(l); }
 	void AddBin(unsigned const char *p, int size) { CurrSection().AddBin(p, size); }
 
 	// Object file handling
@@ -992,9 +1322,9 @@ public:
 
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
-		EvalOperator prev_op, short &section, int &value);
+								 EvalOperator prev_op, short &section, int &value);
 	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
-		EvalOperator prev_op, short &section, int &value);
+						  EvalOperator prev_op, short &section, int &value);
 	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
 
 	// Access labels
@@ -1004,13 +1334,13 @@ public:
 	bool MatchXDEF(strref label);
 	StatusCode AssignLabel(strref label, strref line, bool make_constant = false);
 	StatusCode AddressLabel(strref label);
-	void LabelAdded(Label *pLabel, bool local=false);
+	void LabelAdded(Label *pLabel, bool local = false);
 	void IncludeSymbols(strref line);
 
 	// Manage locals
 	void MarkLabelLocal(strref label, bool scope_label = false);
 	StatusCode FlushLocalLabels(int scope_exit = -1);
-	
+
 	// Label pools
 	LabelPool* GetLabelPool(strref pool_name);
 	StatusCode AddLabelPool(strref name, strref args);
@@ -1022,7 +1352,7 @@ public:
 					 strref source_file, LateEval::Type type);
 	void AddLateEval(strref label, int pc, int scope_pc,
 					 strref expression, LateEval::Type type);
-	StatusCode CheckLateEval(strref added_label=strref(), int scope_end = -1);
+	StatusCode CheckLateEval(strref added_label = strref(), int scope_end = -1);
 
 	// Assembler Directives
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
@@ -1030,12 +1360,12 @@ public:
 	StatusCode Directive_Macro(strref line, strref source_file);
 
 	// Assembler steps
-	AddrMode GetAddressMode(strref line, bool flipXY,
-								  StatusCode &error, strref &expression);
+	StatusCode GetAddressMode(strref line, bool flipXY, AddrMode &addrMode,
+							  int &len, strref &expression);
 	StatusCode AddOpcode(strref line, int index, strref source_file);
-	StatusCode BuildLine(OP_ID *pInstr, int numInstructions, strref line);
-	StatusCode BuildSegment(OP_ID *pInstr, int numInstructions);
-	
+	StatusCode BuildLine(strref line);
+	StatusCode BuildSegment();
+
 	// Display error in stderr
 	void PrintError(strref line, StatusCode error);
 
@@ -1053,14 +1383,18 @@ public:
 
 	// Conditional statement evaluation (A==B? A?)
 	StatusCode EvalStatement(strref line, bool &result);
-	
+
 	// Add include folder
 	void AddIncludeFolder(strref path);
 	char* LoadText(strref filename, size_t &size);
 	char* LoadBinary(strref filename, size_t &size);
 
+	// Change CPU
+	void SetCPU(CPUIndex CPU);
+
 	// constructor
-	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502) {
+	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502), num_instructions(0),
+		cpu(CPU_6502), list_cpu(CPU_6502) {
 		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
 
@@ -1070,7 +1404,7 @@ void Asm::Cleanup() {
 		if (char *data = *i)
 			free(data);
 	}
-    map.clear();
+	map.clear();
 	labelPools.clear();
 	loadedData.clear();
 	labels.clear();
@@ -1089,13 +1423,60 @@ void Asm::Cleanup() {
 	errorEncountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
+	accumulator_16bit = false;
+	index_reg_16bit = false;
+}
+
+
+int sortHashLookup(const void *A, const void *B) {
+	const OPLookup *_A = (const OPLookup*)A;
+	const OPLookup *_B = (const OPLookup*)B;
+	return _A->op_hash > _B->op_hash ? 1 : -1;
+}
+
+int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes, int count)
+{
+	// create an instruction table (mnemonic hash lookup)
+	int numInstructions = 0;
+	for (int i = 0; i < count; i++) {
+		OPLookup &op = pInstr[numInstructions++];
+		op.op_hash = strref(opcodes[i].instr).fnv1a_lower();
+		op.index = i;
+		op.type = OT_MNEMONIC;
+	}
+
+	// add assembler directives
+	for (int d = 0; d<nDirectiveNames; d++) {
+		OPLookup &op_hash = pInstr[numInstructions++];
+		op_hash.op_hash = strref(aDirectiveNames[d].name).fnv1a_lower();
+		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
+		op_hash.type = OT_DIRECTIVE;
+	}
+
+	// sort table by hash for binary search lookup
+	qsort(pInstr, numInstructions, sizeof(OPLookup), sortHashLookup);
+	return numInstructions;
+}
+
+// Change the instruction set
+void Asm::SetCPU(CPUIndex CPU) {
+	cpu = CPU;
+	if (cpu > list_cpu)
+		list_cpu = cpu;
+	opcode_table = aCPUs[CPU].opcodes;
+	opcode_count = aCPUs[CPU].num_opcodes;
+	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count);
+	if (CPU != CPU_65816) {
+		accumulator_16bit = false;
+		index_reg_16bit = false;
+	}
 }
 
 // Read in text data (main source, include, etc.)
 char* Asm::LoadText(strref filename, size_t &size) {
 	strown<512> file(filename);
 	std::vector<strref>::iterator i = includePaths.begin();
-	for(;;) {
+	for (;;) {
 		if (FILE *f = fopen(file.c_str(), "rb")) {
 			fseek(f, 0, SEEK_END);
 			size_t _size = ftell(f);
@@ -1124,7 +1505,7 @@ char* Asm::LoadText(strref filename, size_t &size) {
 char* Asm::LoadBinary(strref filename, size_t &size) {
 	strown<512> file(filename);
 	std::vector<strref>::iterator i = includePaths.begin();
-	for(;;) {
+	for (;;) {
 		if (FILE *f = fopen(file.c_str(), "rb")) {
 			fseek(f, 0, SEEK_END);
 			size_t _size = ftell(f);
@@ -1173,7 +1554,7 @@ void Asm::SetSection(strref name, int address)
 
 void Asm::SetSection(strref name)
 {
-// should same name section within the same file be the same section?
+	// should same name section within the same file be the same section?
 /*	if (name) {
 		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
 			if (i->name && name.same_str(i->name)) {
@@ -1260,6 +1641,8 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 			}
 			section_id++;
 		}
+		if (!has_relative_section && !has_fixed_section)
+			return nullptr;
 		if (has_relative_section) {
 			if (!has_fixed_section) {
 				SetSection(strref(), 0x1000);
@@ -1294,7 +1677,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 				memcpy(output + i->start_address - start_address, i->output, i->size());
 		}
 	}
-	
+
 	// return the result
 	file_size = end_address - start_address;
 	addr = start_address;
@@ -1507,6 +1890,16 @@ void Section::AddWord(int w) {
 	address += 2;
 }
 
+// Add a 24 bit word to a section
+void Section::AddTriple(int l) {
+	if (!dummySection) {
+		CheckOutputCapacity(3);
+		*curr++ = (unsigned char)(l&0xff);
+		*curr++ = (unsigned char)(l>>8);
+		*curr++ = (unsigned char)(l>>16);
+	}
+	address += 3;
+}
 // Add arbitrary length data to a section
 void Section::AddBin(unsigned const char *p, int size) {
 	if (!dummySection) {
@@ -1717,7 +2110,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 	int value = 0;
 
 	struct EvalContext etx(CurrSection().GetPC(),
-		scope_address[scope_depth], -1, -1);
+						   scope_address[scope_depth], -1, -1);
 
 	while (strref line = declaration.line()) {
 		line = line.before_or_full(',');
@@ -1765,7 +2158,7 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 	unsigned int word_hash = struct_word.fnv1a();
 	unsigned short size = 0;
 	unsigned short member_count = 0;
-	
+
 	while (strref line = declaration.line()) {
 		line.trim_whitespace();
 		strref type = line.split_label();
@@ -1792,7 +2185,7 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 			}
 			type_size = pSubStruct->size;
 		}
-		
+
 		// add the new member, don't grow vectors one at a time.
 		if (structMembers.size() == structMembers.capacity())
 			structMembers.reserve(structMembers.size() + 64);
@@ -1806,10 +2199,10 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		size += type_size;
 		member_count++;
 	}
-	
+
 	pStruct->numMembers = member_count;
 	pStruct->size = size;
-	
+
 	return STATUS_OK;
 }
 
@@ -1824,7 +2217,7 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 		if (pStruct) {
 			struct MemberOffset *member = &structMembers[pStruct->first_member];
 			bool found = false;
-			for (int i=0; i<pStruct->numMembers; i++) {
+			for (int i = 0; i<pStruct->numMembers; i++) {
 				if (member->name_hash == seg_hash && member->name.same_str_case(struct_seg)) {
 					offset += member->offset;
 					sub_struct = member->sub_struct;
@@ -1878,9 +2271,9 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			value = etx.pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '/': ++expression; return EVOP_DIV;
 		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
-			++expression; return EVOP_HIB;
+				  ++expression; return EVOP_HIB;
 		case '<': if (expression.get_len() >= 2 && expression[1] == '<') { expression += 2; return EVOP_SHL; }
-			++expression; return EVOP_LOB;
+				  ++expression; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (expression[1]=='0' || expression[1]=='1') {
 				++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
@@ -1888,7 +2281,8 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|':
 		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
-		case '^': ++expression; return EVOP_EOR;
+		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++expression; return EVOP_EOR; }
+				  ++expression;  return EVOP_BAB;
 		case '&': ++expression; return EVOP_AND;
 		case '(': if (prev_op!=EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++expression; return EVOP_RPR;
@@ -1948,7 +2342,8 @@ EvalOperator Asm::RPNToken(strref &expression, const struct EvalContext &etx, Ev
 			if (etx.scope_end_pc<0) return EVOP_NRY;
 			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|': ++expression; return EVOP_OR;
-		case '^': ++expression; return EVOP_EOR;
+		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++expression; return EVOP_EOR; }
+				  ++expression;  return EVOP_BAB;
 		case '&': ++expression; return EVOP_AND;
 		case '(': if (prev_op != EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++expression; return EVOP_RPR;
@@ -2089,7 +2484,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_SUB && ri<2)
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2)
 				break; // ignore suffix operations that are lacking values
 			switch (op) {
 				case EVOP_VAL:	// value
@@ -2155,6 +2550,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 						preByteVal = values[ri - 1];
 						values[ri - 1] = (values[ri - 1] >> 8) & 0xff;
 					} break;
+				case EVOP_BAB:
+					if (ri)
+						values[ri - 1] = (values[ri - 1] >> 16) & 0xff;
+					break;
 				default:
 					return ERROR_EXPRESSION_OPERATION;
 					break;
@@ -2182,7 +2581,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			return STATUS_RELATIVE_SECTION;
 		}
 	}
-			
+
 	return STATUS_OK;
 }
 
@@ -2216,7 +2615,7 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 	le.expression = expression;
 	le.source_file.clear();
 	le.type = type;
-	
+
 	lateEval.push_back(le);
 }
 
@@ -2238,7 +2637,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 			int value = 0;
 			// check if this expression is related to the late change (new label or end of scope)
 			bool check = all || num_new_labels==MAX_LABELS_EVAL_ALL;
-			for (int l=0; l<num_new_labels && !check; l++)
+			for (int l = 0; l<num_new_labels && !check; l++)
 				check = i->expression.find(new_labels[l]) >= 0;
 			if (!check && scope_end>0) {
 				int gt_pos = 0;
@@ -2255,7 +2654,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 			}
 			if (check) {
 				struct EvalContext etx(i->address, i->scope, scope_end,
-					i->type == LateEval::LET_BRANCH ? SectionId() : -1);
+									   i->type == LateEval::LET_BRANCH ? SectionId() : -1);
 				etx.file_ref = i->file_ref;
 				StatusCode ret = EvalExpression(i->expression, etx, value);
 				if (ret == STATUS_OK || ret==STATUS_RELATIVE_SECTION) {
@@ -2279,13 +2678,19 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetByte(trg, value);
 							break;
+						case LateEval::LET_BRANCH_16:
+							value -= i->address+2;
+							if (trg >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							allSections[sec].SetWord(trg, value);
+							break;
 						case LateEval::LET_BYTE:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0)
 									resolved = false;
 								else {
 									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection,
-										 lastEvalPart==Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+															  lastEvalPart==Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 									value = 0;
 								}
 							}
@@ -2305,6 +2710,19 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 							if ((trg+1) >= allSections[sec].size())
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetWord(trg, value);
+							break;
+						case LateEval::LET_ABS_L_REF:
+							if (ret==STATUS_RELATIVE_SECTION) {
+								if (i->section<0)
+									resolved = false;
+								else {
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, lastEvalPart);
+									value = 0;
+								}
+							}
+							if ((trg+1) >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							allSections[sec].SetTriple(trg, value);
 							break;
 						case LateEval::LET_LABEL: {
 							Label *label = GetLabel(i->label, i->file_ref);
@@ -2378,15 +2796,15 @@ Label *Asm::GetLabel(strref label, int file_ref)
 void Asm::LabelAdded(Label *pLabel, bool local)
 {
 	if (pLabel && pLabel->evaluated) {
-        if (map.size() == map.capacity())
-            map.reserve(map.size() + 256);
-        MapSymbol sym;
-        sym.name = pLabel->label_name;
-        sym.section = pLabel->section;
-        sym.value = pLabel->value;
-        sym.local = local;
+		if (map.size() == map.capacity())
+			map.reserve(map.size() + 256);
+		MapSymbol sym;
+		sym.name = pLabel->label_name;
+		sym.section = pLabel->section;
+		sym.value = pLabel->value;
+		sym.local = local;
 		pLabel->mapIndex = -1;
-        map.push_back(sym);
+		map.push_back(sym);
 	}
 }
 
@@ -2641,20 +3059,20 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	StatusCode status = EvalExpression(line, etx, val);
 	if (status != STATUS_NOT_READY && status != STATUS_OK)
 		return status;
-	
+
 	Label *pLabel = GetLabel(label);
 	if (pLabel) {
 		if (pLabel->constant && pLabel->evaluated && val != pLabel->value)
 			return (status == STATUS_NOT_READY) ? STATUS_OK : ERROR_MODIFYING_CONST_LABEL;
 	} else
 		pLabel = AddLabel(label.fnv1a());
-	
+
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
 	pLabel->evaluated = status==STATUS_OK;
 	pLabel->section = -1;	// assigned labels are section-less
 	pLabel->value = val;
-    pLabel->mapIndex = -1;
+	pLabel->mapIndex = -1;
 	pLabel->pc_relative = false;
 	pLabel->constant = make_constant;
 	pLabel->external = MatchXDEF(label);
@@ -2683,7 +3101,7 @@ StatusCode Asm::AddressLabel(strref label)
 		return ERROR_MODIFYING_CONST_LABEL;
 	else
 		constLabel = pLabel->constant;
-	
+
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
 	pLabel->section = CurrSection().IsRelativeSection() ? SectionId() : -1;	// address labels are based on section
@@ -2856,7 +3274,7 @@ void Asm::AddIncludeFolder(strref path)
 {
 	if (!path)
 		return;
-	for (std::vector<strref>::const_iterator i=includePaths.begin(); i!=includePaths.end(); ++i) {
+	for (std::vector<strref>::const_iterator i = includePaths.begin(); i!=includePaths.end(); ++i) {
 		if (path.same_str(*i))
 			return;
 	}
@@ -2866,7 +3284,7 @@ void Asm::AddIncludeFolder(strref path)
 }
 
 // unique key binary search
-int LookupOpCodeIndex(unsigned int hash, OP_ID *lookup, int count)
+int LookupOpCodeIndex(unsigned int hash, OPLookup *lookup, int count)
 {
 	int first = 0;
 	while (count!=first) {
@@ -2881,81 +3299,6 @@ int LookupOpCodeIndex(unsigned int hash, OP_ID *lookup, int count)
 	}
 	return -1;	// index not found
 }
-
-typedef struct {
-	const char *name;
-	AssemblerDirective directive;
-} DirectiveName;
-
-DirectiveName aDirectiveNames[] {
-	{ "CPU", AD_CPU },
-	{ "PROCESSOR", AD_CPU },
-	{ "PC", AD_ORG },
-	{ "ORG", AD_ORG },
-	{ "LOAD", AD_LOAD },
-	{ "EXPORT", AD_EXPORT },
-	{ "SECTION", AD_SECTION },
-	{ "SEG", AD_SECTION },		// DASM version of SECTION
-	{ "LINK", AD_LINK },
-	{ "XDEF", AD_XDEF },
-	{ "INCOBJ", AD_INCOBJ },
-	{ "ALIGN", AD_ALIGN },
-	{ "MACRO", AD_MACRO },
-	{ "EVAL", AD_EVAL },
-	{ "PRINT", AD_EVAL },
-	{ "BYTE", AD_BYTES },
-	{ "BYTES", AD_BYTES },
-	{ "WORD", AD_WORDS },
-	{ "WORDS", AD_WORDS },
-	{ "DC", AD_DC },
-	{ "TEXT", AD_TEXT },
-	{ "INCLUDE", AD_INCLUDE },
-	{ "INCBIN", AD_INCBIN },
-	{ "CONST", AD_CONST },
-	{ "LABEL", AD_LABEL },
-	{ "INCSYM", AD_INCSYM },
-	{ "LABPOOL", AD_LABPOOL },
-	{ "POOL", AD_LABPOOL },
-	{ "#IF", AD_IF },
-	{ "#IFDEF", AD_IFDEF },
-	{ "#ELSE", AD_ELSE },
-	{ "#ELIF", AD_ELIF },
-	{ "#ENDIF", AD_ENDIF },
-	{ "IF", AD_IF },
-	{ "IFDEF", AD_IFDEF },
-	{ "ELSE", AD_ELSE },
-	{ "ELIF", AD_ELIF },
-	{ "ENDIF", AD_ENDIF },
-	{ "STRUCT", AD_STRUCT },
-	{ "ENUM", AD_ENUM },
-	{ "REPT", AD_REPT },
-	{ "INCDIR", AD_INCDIR },
-	{ "DO", AD_IF },			// MERLIN
-	{ "DA", AD_WORDS },			// MERLIN
-	{ "DW", AD_WORDS },			// MERLIN
-	{ "ASC", AD_TEXT },			// MERLIN
-	{ "PUT", AD_INCLUDE },		// MERLIN
-	{ "DDB", AD_WORDS },		// MERLIN
-	{ "DB", AD_BYTES },			// MERLIN
-	{ "DFB", AD_BYTES },		// MERLIN
-	{ "HEX", AD_HEX },			// MERLIN
-	{ "DO", AD_IF },			// MERLIN
-	{ "FIN", AD_ENDIF },		// MERLIN
-	{ "EJECT", AD_EJECT },		// MERLIN
-	{ "OBJ", AD_EJECT },		// MERLIN
-	{ "TR", AD_EJECT },			// MERLIN
-	{ "USR", AD_USR },			// MERLIN
-	{ "DUM", AD_DUMMY },		// MERLIN
-	{ "DEND", AD_DUMMY_END },	// MERLIN
-	{ "LST", AD_LST },			// MERLIN
-	{ "LSTDO", AD_LST },		// MERLIN
-	{ "DS", AD_DS },			// MERLIN
-	{ "LUP", AD_REPT },			// MERLIN
-	{ "MAC", AD_MACRO },		// MERLIN
-	{ "SAV", AD_SAV },			// MERLIN
-};
-
-static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
 
 StatusCode Asm::Directive_Rept(strref line, strref source_file)
 {
@@ -3007,7 +3350,7 @@ StatusCode Asm::Directive_Macro(strref line, strref source_file)
 	if (read_source.is_substr(line.get())) {
 		read_source.skip(strl_t(line.get()-read_source.get()));
 		StatusCode error = AddMacro(read_source, contextStack.curr().source_name,
-							contextStack.curr().source_file, read_source);
+									contextStack.curr().source_file, read_source);
 		contextStack.curr().next_source = read_source;
 		return error;
 	}
@@ -3025,20 +3368,24 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
 	switch (dir) {
 		case AD_CPU:
-			if (!line.same_str("6502"))
-				return ERROR_CPU_NOT_SUPPORTED;
-			break;
-			
+			for (int c = 0; c < nCPUs; c++) {
+				if (line.same_str(aCPUs[c].name)) {
+					SetCPU((CPUIndex)c);
+					break;
+				}
+			}
+			return ERROR_CPU_NOT_SUPPORTED;
+
 		case AD_EXPORT:
 			line.trim_whitespace();
 			CurrSection().export_append = line.split_label();
 			break;
-			
+
 		case AD_ORG: {		// org / pc: current address of code
 			int addr;
 			if (line[0]=='=')
 				++line;
-			else if(keyword_equ.is_prefix_word(line))	// optional '=' or equ
+			else if (keyword_equ.is_prefix_word(line))	// optional '=' or equ
 				line.next_word_ws();
 			line.skip_whitespace();
 			if ((error = EvalExpression(line, etx, addr))) {
@@ -3050,7 +3397,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				CurrSection().start_address = addr;
 				CurrSection().load_address = addr;
 				CurrSection().address = addr;
-				CurrSection().address_assigned  = true;
+				CurrSection().address_assigned = true;
 				LinkLabelsToAddress(SectionId(), addr);	// in case any labels were defined prior to org & data
 			} else
 				SetSection(strref(), addr);
@@ -3161,7 +3508,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
 					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection,
-						lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				AddByte(value);
 			}
 			break;
@@ -3210,7 +3557,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 						value = 0;
 						if (words)
 							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
-						else 
+						else
 							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection,
 								lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 					}
@@ -3231,8 +3578,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 						AddByte(v);
 					b = 0;
 					line.skip_whitespace();
-				}
-				else {
+				} else {
 					if (c >= '0' && c <= '9') v = (v << 4) + (c - '0');
 					else if (c >= 'A' && c <= 'Z') v = (v << 4) + (c - 'A' + 10);
 					else if (c >= 'a' && c <= 'z') v = (v << 4) + (c - 'a' + 10);
@@ -3259,6 +3605,16 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			if (line)
 				CurrSection().export_append = line.split_label();
 			break;
+		case AD_XC:			// XC: MERLIN version of setting CPU
+			if (strref("off").is_prefix_word(line))
+				SetCPU(CPU_6502);
+			else if (strref("xc").is_prefix_word(line))
+				SetCPU(CPU_65816);
+			else if (cpu==CPU_65C02)
+				SetCPU(CPU_65816);
+			else
+				SetCPU(CPU_65C02);
+			break;
 		case AD_TEXT: {		// text: add text within quotes
 			// for now just copy the windows ascii. TODO: Convert to petscii.
 			// https://en.wikipedia.org/wiki/PETSCII
@@ -3281,7 +3637,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					while (line) {
 						char c = line[0];
 						AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
-							((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0])));
+								((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0])));
 						++line;
 					}
 				}
@@ -3394,8 +3750,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					ConditionalElse();
 				else
 					error = ERROR_ELSE_WITHOUT_IF;
-			}
-			else if (ConditionalAvail()) {
+			} else if (ConditionalAvail()) {
 				bool conditional_result;
 				error = EvalStatement(line, conditional_result);
 				EnableConditional(conditional_result);
@@ -3434,12 +3789,33 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
 			break;
 		}
-		case AD_REPT: 
+		case AD_REPT:
 			error = Directive_Rept(line, source_file);
 			break;
 
 		case AD_INCDIR:
 			AddIncludeFolder(line.between('"', '"'));
+			break;
+		case AD_A16:			// A16: Set 16 bit accumulator mode
+			accumulator_16bit = true;
+			break;
+		case AD_A8:			// A8: Set 8 bit accumulator mode
+			accumulator_16bit = false;
+			break;
+		case AD_XY16:			// A16: Set 16 bit accumulator mode
+			index_reg_16bit = true;
+			break;
+		case AD_XY8:			// A8: Set 8 bit accumulator mode
+			index_reg_16bit = false;
+			break;
+		case AD_MX:
+			if (line) {
+				line.trim_whitespace();
+				int value = 0;
+				error = EvalExpression(line, etx, value);
+				index_reg_16bit = !!(value&1);
+				accumulator_16bit = !!(value&2);
+			}
 			break;
 		case AD_LST:
 			line.clear();
@@ -3481,61 +3857,38 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 	return error;
 }
 
-int sortHashLookup(const void *A, const void *B) {
-	const OP_ID *_A = (const OP_ID*)A;
-	const OP_ID *_B = (const OP_ID*)B;
-	return _A->op_hash > _B->op_hash ? 1 : -1;
-}
-
-int BuildInstructionTable(OP_ID *pInstr, int maxInstructions, struct mnem *opcodes, int count)
-{
-	// create an instruction table (mnemonic hash lookup)
-	int numInstructions = 0;
-	for (int i = 0; i < count; i++) {
-		OP_ID &op = pInstr[numInstructions++];
-		op.op_hash = strref(opcodes[i].instr).fnv1a_lower();
-		op.index = i;
-		op.type = OT_MNEMONIC;
-	}
-
-	// add assembler directives
-	for (int d=0; d<nDirectiveNames; d++) {
-		OP_ID &op_hash = pInstr[numInstructions++];
-		op_hash.op_hash = strref(aDirectiveNames[d].name).fnv1a_lower();
-		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
-		op_hash.type = OT_DIRECTIVE;
-	}
-	
-	// sort table by hash for binary search lookup
-	qsort(pInstr, numInstructions, sizeof(OP_ID), sortHashLookup);
-	return numInstructions;
-}
-
-AddrMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, strref &expression)
+StatusCode Asm::GetAddressMode(strref line, bool flipXY, AddrMode &addrMode, int &len, strref &expression)
 {
 	bool force_zp = false;
+	bool force_24 = false;
 	bool need_more = true;
 	strref arg, deco;
-	AddrMode addrMode = AMB_COUNT;
-    
+
+	len = 0;
 	while (need_more) {
+		bool long_rel = false;
 		need_more = false;
 		switch (line.get_first()) {
 			case 0:		// empty line, empty addressing mode
 				addrMode = AMB_NON;
 				break;
+			case '[':
+				long_rel = true; // fall-through to '('
 			case '(':	// relative (jmp (addr), (zp,x), (zp),y)
 				deco = line.scoped_block_skip();
 				line.skip_whitespace();
 				expression = deco.split_token_trim(',');
-				addrMode = AMB_REL;
-				if (deco[0]=='x' || deco[0]=='X')
-					addrMode = AMB_ZP_REL_X;
+				addrMode = long_rel ? (force_zp ? AMB_ZP_REL_L : AMB_REL_L) : (force_zp ? AMB_ZP_REL : AMB_REL);
+				if (strref::tolower(deco[0])=='x')
+					addrMode = long_rel ? AMB_ILL : AMB_ZP_REL_X;
 				else if (line[0]==',') {
 					++line;
 					line.skip_whitespace();
-					if (line[0]=='y' || line[0]=='Y') {
-						addrMode = AMB_ZP_Y_REL;
+					if (strref::tolower(line[0])=='y') {
+						if (strref::tolower(deco[0])=='s')
+							addrMode = AMB_STK_REL_Y;
+						else
+							addrMode = long_rel ? AMB_ZP_REL_Y_L : AMB_ZP_Y_REL;
 						++line;
 					}
 				}
@@ -3547,25 +3900,33 @@ AddrMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, strref
 				break;
 			default: {	// accumulator or absolute
 				if (line) {
-                    if (strref(".z").is_prefix_word(line)) {
-                        force_zp = true;
-                        line += 3;
-                        need_more = true;
-                    } else if (strref("A").is_prefix_word(line)) {
-						addrMode = AMB_ACC;
-					} else {	// absolute (zp, offs x, offs y)
-						addrMode = force_zp ? AMB_ZP : AMB_ABS;
-						expression = line.split_token_trim(',');
-						bool relX = line && (line[0]=='x' || line[0]=='X');
-						bool relY = line && (line[0]=='y' || line[0]=='Y');
-						if ((flipXY && relY) || (!flipXY && relX))
-							addrMode = addrMode==AMB_ZP ? AMB_ZP_X : AMB_ABS_X;
-						else if ((flipXY && relX) || (!flipXY && relY)) {
-							if (force_zp) {
-								error = ERROR_INSTRUCTION_NOT_ZP;
-								break;
+					if (line[0]=='.' && strref::is_ws(line[2])) {
+						switch (strref::tolower(line[1])) {
+							case 'z': force_zp = true; line += 3; need_more = true; len = 1; break;
+							case 'b': line += 3; need_more = true; len = 1; break;
+							case 'w': line += 3; need_more = true; len = 2; break;
+							case 'l': force_24 = true;  line += 3; need_more = true; len = 3; break;
+						}
+					}
+					if (!need_more) {
+						if (strref("A").is_prefix_word(line)) {
+							addrMode = AMB_ACC;
+						} else {	// absolute (zp, offs x, offs y)
+							addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
+							expression = line.split_token_trim(',');
+							if (line && (line[0]=='s' || line[0]=='S'))
+								addrMode = AMB_STK;
+							else {
+								bool relX = line && (line[0]=='x' || line[0]=='X');
+								bool relY = line && (line[0]=='y' || line[0]=='Y');
+								if ((flipXY && relY) || (!flipXY && relX))
+									addrMode = force_24 ? AMB_ABS_L_X : (force_zp ? AMB_ZP_X : AMB_ABS_X);
+								else if ((flipXY && relX) || (!flipXY && relY)) {
+									if (force_zp)
+										return ERROR_INSTRUCTION_NOT_ZP;
+									addrMode = AMB_ABS_Y;
+								}
 							}
-							addrMode = AMB_ABS_Y;
 						}
 					}
 				}
@@ -3573,10 +3934,8 @@ AddrMode Asm::GetAddressMode(strref line, bool flipXY, StatusCode &error, strref
 			}
 		}
 	}
-	return addrMode;
+	return STATUS_OK;
 }
-
-
 
 // Push an opcode to the output buffer
 StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
@@ -3586,6 +3945,9 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 
 	// allowed modes
 	unsigned int validModes = opcode_table[index].modes;
+
+	// instruction parameter length override
+	int op_param = 0;
 
 	// Get the addressing mode and the expression it refers to
 	AddrMode addrMode;
@@ -3600,14 +3962,20 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			addrMode = AMB_ABS;
 			expression = line;
 			break;
+		case AMM_ACC:
+		case (AMM_ACC|AMM_NON):
 		case AMM_NON:
 			addrMode = AMB_NON;
 			break;
+		case AMM_BLK_MOV:
+			addrMode = AMB_BLK_MOV;
+			expression = line;
+			break;
 		default:
-			addrMode = GetAddressMode(line, !!(validModes & AMM_FLIPXY), error, expression);
+			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), addrMode, op_param, expression);
 			break;
 	}
-	
+
 	int value = 0;
 	int target_section = -1;
 	int target_section_offs = -1;
@@ -3615,7 +3983,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	bool evalLater = false;
 	if (expression) {
 		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
-			!!(validModes & AMM_BRANCH) ? SectionId() : -1);
+							   !!(validModes & AMM_BRANCH) ? SectionId() : -1);
 		error = EvalExpression(expression, etx, value);
 		if (error == STATUS_NOT_READY) {
 			evalLater = true;
@@ -3627,23 +3995,35 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 		} else if (error != STATUS_OK)
 			return error;
 	}
-	
+
 	// check if address is in zero page range and should use a ZP mode instead of absolute
 	if (!evalLater && value>=0 && value<0x100 && error != STATUS_RELATIVE_SECTION) {
 		switch (addrMode) {
 			case AMB_ABS:
 				if (validModes & AMM_ZP)
 					addrMode = AMB_ZP;
+				else if (validModes & AMM_ABS_L)
+					addrMode = AMB_ABS_L;
 				break;
 			case AMB_ABS_X:
 				if (validModes & AMM_ZP_X)
 					addrMode = AMB_ZP_X;
+				else if (validModes & AMM_ABS_L_X)
+					addrMode = AMB_ABS_L_X;
 				break;
 			default:
 				break;
 		}
 	}
-	
+
+	// Check if an explicit 24 bit address
+	if (expression[0] == '$' && (expression + 1).len_hex()>4) {
+		if (addrMode == AMB_ABS && (validModes & AMM_ABS_L))
+			addrMode = AMB_ABS_L;
+		else if (addrMode == AMB_ABS_X && (validModes & AMM_ABS_L_X))
+			addrMode = AMB_ABS_L_X;
+	}
+
 	bool valid_addressing_mode = !!(validModes & (1 << addrMode));
 
 	if (!valid_addressing_mode) {
@@ -3652,6 +4032,15 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			valid_addressing_mode = true;
 		} else if (addrMode==AMB_REL && (validModes & AMM_ZP_REL)) {
 			addrMode = AMB_ZP_REL;
+			valid_addressing_mode = true;
+		} else if (addrMode==AMB_ABS && (validModes & AMM_ABS_L)) {
+			addrMode = AMB_ABS_L;
+			valid_addressing_mode = true;
+		} else if (addrMode==AMB_ABS_X && (validModes & AMM_ABS_L_X)) {
+			addrMode = AMB_ABS_L_X;
+			valid_addressing_mode = true;
+		} else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L)) {
+			addrMode = AMB_ZP_REL_L;
 			valid_addressing_mode = true;
 		} else
 			error = ERROR_INVALID_ADDRESSING_MODE;
@@ -3664,22 +4053,69 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 		AddByte(opcode);
 
 		CODE_ARG codeArg = CA_NONE;
-		if (validModes & AMM_BRANCH)
+		if (validModes & AMM_BRANCH_L)
+			codeArg = CA_BRANCH_16;
+		else if (validModes & AMM_BRANCH)
 			codeArg = CA_BRANCH;
-		else if (addrMode == AMB_ABS || addrMode == AMB_REL || addrMode == AMB_ABS_X || addrMode == AMB_ABS_Y)
-			codeArg = CA_TWO_BYTES;
-		else if (addrMode == AMB_ZP_ABS)
-			codeArg = CA_BYTE_BRANCH;
-		else if (addrMode != AMB_NON && addrMode != AMB_ACC)
-			codeArg = CA_ONE_BYTE;
+		else {
+			switch (addrMode) {
+				case AMB_ZP_REL_X:		// 0 ($12:x)
+				case AMB_ZP:			// 1 $12
+				case AMB_ZP_Y_REL:		// 4 ($12),y
+				case AMB_ZP_X:			// 5 $12,x
+				case AMB_ZP_REL:		// b ($12)
+				case AMB_ZP_REL_L:		// e [$02]
+				case AMB_ZP_REL_Y_L:	// f [$00],y
+				case AMB_STK:			// 12 $12,s
+				case AMB_STK_REL_Y:		// 13 ($12,s),y
+					codeArg = CA_ONE_BYTE;
+					break;
 
+				case AMB_ABS_Y:			// 6 $1234,y
+				case AMB_ABS_X:			// 7 $1234,x
+				case AMB_ABS:			// 3 $1234
+				case AMB_REL:			// 8 ($1234)
+				case AMB_REL_X:			// c ($1234,x)
+				case AMB_REL_L:			// 14 [$1234]
+					codeArg = CA_TWO_BYTES;
+					break;
+
+				case AMB_ABS_L:			// 10 $e00001
+				case AMB_ABS_L_X:		// 11 $123456,x
+					codeArg = CA_THREE_BYTES;
+					break;
+
+				case AMB_ACC:			// 9 A
+				case AMB_NON:			// a
+					break;
+
+				case AMB_ZP_ABS:			// d $12, label
+					codeArg = CA_BYTE_BRANCH;
+					break;
+
+				case AMB_BLK_MOV:		// 15 $12,$34
+					codeArg = CA_TWO_ARG_BYTES;
+					break;
+
+				case AMB_IMM:			// 2 #$12
+					if (op_param && (validModes&(AMM_IMM_DBL_A | AMM_IMM_DBL_XY)))
+						codeArg = op_param == 2 ? CA_TWO_BYTES : CA_ONE_BYTE;
+					else  if (((validModes&AMM_IMM_DBL_A) && accumulator_16bit) ||
+						((validModes&AMM_IMM_DBL_XY) && index_reg_16bit))
+						codeArg = CA_TWO_BYTES;
+					else
+						codeArg = CA_ONE_BYTE;
+					break;
+			}
+		}
+			
 		switch (codeArg) {
 			case CA_BYTE_BRANCH: {
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION) {
 					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-						target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				}
 				AddByte(value);
 				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, SectionId());
@@ -3698,23 +4134,54 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 					error = ERROR_BRANCH_OUT_OF_RANGE;
 				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
+			case CA_BRANCH_16:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH_16);
+				AddWord(evalLater ? 0 : (value-(CurrSection().GetPC()+2)));
+				break;
 			case CA_ONE_BYTE:
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
 					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-						target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				AddByte(value);
 				break;
+			case  CA_TWO_ARG_BYTES: {
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
+										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+				}
+				AddByte(value);
+				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, -1);
+				line.split_token_trim(',');
+				error = EvalExpression(line, etx, value);
+				if (error==STATUS_NOT_READY)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
+				AddByte(value);
+				break;
+			}
 			case CA_TWO_BYTES:
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
 				else if (error == STATUS_RELATIVE_SECTION) {
 					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
-						target_section, target_section_type);
+										   target_section, target_section_type);
 					value = 0;
 				}
 				AddWord(value);
+				break;
+			case CA_THREE_BYTES:
+				if (evalLater)
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_L_REF);
+				else if (error == STATUS_RELATIVE_SECTION) {
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
+										   target_section, target_section_type);
+					value = 0;
+				}
+				AddTriple(value);
 				break;
 			case CA_NONE:
 				break;
@@ -3742,7 +4209,7 @@ void Asm::PrintError(strref line, StatusCode error)
 }
 
 // Build a line of code
-StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
+StatusCode Asm::BuildLine(strref line)
 {
 	StatusCode error = STATUS_OK;
 
@@ -3757,9 +4224,9 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 	bool built_opcode = false;
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
-		char char0 = line[0]; // first char including white space
-		line.skip_whitespace();	// skip to first character
-		line = line.before_or_full(';'); // clip any line comments
+		char char0 = line[0];				// first char including white space
+		line.skip_whitespace();				// skip to first character
+		line = line.before_or_full(';');	// clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
 		if (line[0]==':' && syntax!=SYNTAX_MERLIN)	// Kick Assembler macro prefix (incompatible with merlin)
@@ -3771,7 +4238,7 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 
 		line.trim_whitespace();
 		bool force_label = charE==':' || charE=='$';
-		if (!force_label && syntax==SYNTAX_MERLIN && line) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
+		if (!force_label && syntax==SYNTAX_MERLIN && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
 			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
 		else if (!force_label && syntax!=SYNTAX_MERLIN && line[0]==':')
 			force_label = true;
@@ -3808,23 +4275,23 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 						break;
 				}
 			}
-		} else  {
+		} else {
 			// ignore leading period for instructions and directives - not for labels
 			strref label = operation;
 			if ((syntax != SYNTAX_MERLIN && operation[0]==':') || operation[0]=='.')
 				++operation;
 			operation = operation.before_or_full('.');
 
-			int op_idx = LookupOpCodeIndex(operation.fnv1a_lower(), pInstr, numInstructions);
-			if (op_idx >= 0 && !force_label && (pInstr[op_idx].type==OT_DIRECTIVE || line[0]!='=')) {
-				if (pInstr[op_idx].type==OT_DIRECTIVE) {
-					if (line_nocom.is_substr(operation.get())) {
-						line = line_nocom + strl_t(operation.get()+operation.get_len()-line_nocom.get());
-						line.skip_whitespace();
-					}
-					error = ApplyDirective((AssemblerDirective)pInstr[op_idx].index, line, contextStack.curr().source_file);
-				} else if (ConditionalAsm() && pInstr[op_idx].type == OT_MNEMONIC) {
-					error = AddOpcode(line, pInstr[op_idx].index, contextStack.curr().source_file);
+			int op_idx = LookupOpCodeIndex(operation.fnv1a_lower(), aInstructions, num_instructions);
+			if (op_idx >= 0 && !force_label && (aInstructions[op_idx].type==OT_DIRECTIVE || line[0]!='=')) {
+				if (line_nocom.is_substr(operation.get())) {
+					line = line_nocom + strl_t(operation.get()+operation.get_len()-line_nocom.get());
+					line.skip_whitespace();
+				}
+				if (aInstructions[op_idx].type==OT_DIRECTIVE) {
+					error = ApplyDirective((AssemblerDirective)aInstructions[op_idx].index, line, contextStack.curr().source_file);
+				} else if (ConditionalAsm() && aInstructions[op_idx].type == OT_MNEMONIC) {
+					error = AddOpcode(line, aInstructions[op_idx].index, contextStack.curr().source_file);
 					built_opcode = true;
 				}
 				line.clear();
@@ -3893,13 +4360,13 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 				return ERROR_UNTERMINATED_CONDITION;
 			}
 		}
-		
+
 		if (line.same_str_case(line_start))
 			error = ERROR_UNABLE_TO_PROCESS;
-		
+
 		if (error > STATUS_NOT_READY)
 			PrintError(line_start, error);
-		
+
 		// dealt with error, continue with next instruction unless too broken
 		if (error < ERROR_STOP_PROCESSING_ON_HIGHER)
 			error = STATUS_OK;
@@ -3928,12 +4395,12 @@ StatusCode Asm::BuildLine(OP_ID *pInstr, int numInstructions, strref line)
 }
 
 // Build a segment of code (file or macro)
-StatusCode Asm::BuildSegment(OP_ID *pInstr, int numInstructions)
+StatusCode Asm::BuildSegment()
 {
 	StatusCode error = STATUS_OK;
 	while (contextStack.curr().read_source) {
 		contextStack.curr().next_source = contextStack.curr().read_source;
-		error = BuildLine(pInstr, numInstructions, contextStack.curr().next_source.line());
+		error = BuildLine(contextStack.curr().next_source.line());
 		if (error > ERROR_STOP_PROCESSING_ON_HIGHER)
 			break;
 		contextStack.curr().read_source = contextStack.curr().next_source;
@@ -3956,17 +4423,23 @@ bool Asm::List(strref filename)
 		opened = true;
 	}
 
+	// ensure that the greatest instruction set referenced is used for listing
+	if (list_cpu != cpu)
+		SetCPU(list_cpu);
+
 	// Build a disassembly lookup table
 	unsigned char mnemonic[256];
 	unsigned char addrmode[256];
 	memset(mnemonic, 255, sizeof(mnemonic));
 	memset(addrmode, 255, sizeof(addrmode));
 	for (int i = 0; i < opcode_count; i++) {
-		for (int j = 0; j < AMB_COUNT; j++) {
+		for (int j = AMB_COUNT-1; j >= 0; j--) {
 			if (opcode_table[i].modes & (1 << j)) {
 				unsigned char op = opcode_table[i].aCodes[j];
-				mnemonic[op] = i;
-				addrmode[op] = j;
+				if (addrmode[op]==255) {
+					mnemonic[op] = i;
+					addrmode[op] = j;
+				}
 			}
 		}
 	}
@@ -3982,8 +4455,7 @@ bool Asm::List(strref filename)
 			if (prev_src.fnv1a() != lst.source_name.fnv1a() || lst.line_offs < prev_offs) {
 				fprintf(f, STRREF_FMT "(%d):\n", STRREF_ARG(lst.source_name), lst.code.count_lines(lst.line_offs));
 				prev_src = lst.source_name;
-			}
-			else {
+			} else {
 				strref prvline = lst.code.get_substr(prev_offs, lst.line_offs - prev_offs);
 				prvline.next_line();
 				if (prvline.count_lines() < 5) {
@@ -3999,8 +4471,7 @@ bool Asm::List(strref filename)
 						fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
 						out.clear();
 					}
-				}
-				else {
+				} else {
 					fprintf(f, STRREF_FMT "(%d):\n", STRREF_ARG(lst.source_name), lst.code.count_lines(lst.line_offs));
 				}
 			}
@@ -4026,10 +4497,18 @@ bool Asm::List(strref filename)
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], (char)buf[2] + lst.address + si->start_address + 3);
 					else if (opcode_table[op].modes & AMM_BRANCH)
 						out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
+					else if (opcode_table[op].modes & AMM_BRANCH_L)
+						out.sprintf_append(fmt, opcode_table[op].instr, (short)(buf[1] | (buf[2] << 8)) + lst.address + si->start_address + 3);
 					else if (am == AMB_NON || am == AMB_ACC)
 						out.sprintf_append(fmt, opcode_table[op].instr);
-					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL || am == AMB_REL_X)
+					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL || am == AMB_REL_X || am == AMB_REL_L)
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1] | (buf[2] << 8));
+					else if (am == AMB_ABS_L || am == AMB_ABS_L_X)
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1] | (buf[2] << 8) | (buf[3] << 16));
+					else if (am == AMB_BLK_MOV)
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], buf[2]);
+					else if (am == AMB_IMM && lst.size==3)
+						out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1] | (buf[2]<<8));
 					else
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
 				}
@@ -4065,8 +4544,9 @@ bool Asm::AllOpcodes(strref filename)
 		opened = true;
 	}
 	for (int i = 0; i < opcode_count; i++) {
+		unsigned int modes = opcode_table[i].modes;
 		for (int a = 0; a < AMB_COUNT; a++) {
-			if (opcode_table[i].modes & (1 << a)) {
+			if (modes & (1 << a)) {
 				const char *fmt = aAddrModeFmt[a];
 				fputs("\t", f);
 				if (opcode_table[i].modes & AMM_BRANCH)
@@ -4078,11 +4558,19 @@ bool Asm::AllOpcodes(strref filename)
 						if (a == AMB_ZP_X)	fmt = "%s $%02x,y";
 						else if (a == AMB_ABS_X) fmt = "%s $%04x,y";
 					}
-					if (a == AMB_ABS || a == AMB_ABS_X || a == AMB_ABS_Y || a == AMB_REL || a == AMB_REL_X)
+					if (a == AMB_ABS_L || a == AMB_ABS_L_X) {
+						if ((modes & ~(AMM_ABS_L|AMM_ABS_L_X)))
+							fprintf(f, a==AMB_ABS_L ? "%s.l $%06x" : "%s.l $%06x,x", opcode_table[i].instr, 0x222120);
+						else
+							fprintf(f, fmt, opcode_table[i].instr, 0x222120);
+					} else if (a == AMB_ABS || a == AMB_ABS_X || a == AMB_ABS_Y || a == AMB_REL || a == AMB_REL_X || a == AMB_REL_L)
 						fprintf(f, fmt, opcode_table[i].instr, 0x2120);
-					else
+					else if (a == AMB_IMM && (modes&(AMM_IMM_DBL_A|AMM_IMM_DBL_XY))) {
+						fprintf(f, "%s.b #$%02x\n", opcode_table[i].instr, 0x21);
+						fprintf(f, "\t%s.w #$%04x", opcode_table[i].instr, 0x2322);
+					} else
 						fprintf(f, fmt, opcode_table[i].instr, 0x21, 0x20, 0x1f);
-				}
+					}
 				fputs("\n", f);
 			}
 		}
@@ -4095,15 +4583,14 @@ bool Asm::AllOpcodes(strref filename)
 // create an instruction table (mnemonic hash lookup + directives)
 void Asm::Assemble(strref source, strref filename, bool obj_target)
 {
-	OP_ID *pInstr = new OP_ID[256];
-	int numInstructions = BuildInstructionTable(pInstr, 256, opcode_table, opcode_count);
+	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count);
 
 	StatusCode error = STATUS_OK;
 	contextStack.push(filename, source, source);
 
 	scope_address[scope_depth] = CurrSection().GetPC();
 	while (contextStack.has_work()) {
-		error = BuildSegment(pInstr, numInstructions);
+		error = BuildSegment();
 		if (contextStack.curr().complete())
 			contextStack.pop();
 		else
@@ -4320,7 +4807,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 					(lo.external ? ObjFileLabel::OFL_XDEF : 0);
 			}
 		}
-		
+
 		// protected labels included from other object files
 		if (hdr.labels) {
 			int file_index = 1;
@@ -4563,7 +5050,7 @@ int main(int argc, char **argv)
 	const char *binary_out_name = nullptr;
 	const char *sym_file = nullptr, *vs_file = nullptr;
 	strref list_file, allinstr_file;
-	for (int a=1; a<argc; a++) {
+	for (int a = 1; a<argc; a++) {
 		strref arg(argv[a]);
 		if (arg.get_first()=='-') {
 			++arg;
@@ -4598,44 +5085,48 @@ int main(int argc, char **argv)
 				allinstr_file = arg.after('=');
 			} else if (arg.has_prefix(cpu) && (arg.get_len() == cpu.get_len() || arg[cpu.get_len()] == '=')) {
 				arg.split_token_trim('=');
-				if (arg.same_str("6502")) {
-					assembler.opcode_table = opcodes_6502;
-					assembler.opcode_count = num_opcodes_6502;
-				} else if (arg.same_str("65c02")) {
-					assembler.opcode_table = opcodes_65C02;
-					assembler.opcode_count = num_opcodes_65C02;
+				for (int c = 0; c<nCPUs; c++) {
+					if (arg) {
+						if (arg.same_str(aCPUs[c].name)) {
+							assembler.SetCPU((CPUIndex)c);
+							break;
+						}
+					} else
+						printf("%s\n", aCPUs[c].name);
 				}
+				if (!arg)
+					return 0;
 			} else if (arg.same_str("sym") && (a + 1) < argc)
-					sym_file = argv[++a];
-				else if (arg.same_str("obj") && (a + 1) < argc)
-					obj_out_file = argv[++a];
-				else if (arg.same_str("vice") && (a + 1) < argc)
-					vs_file = argv[++a];
-			} else if (!source_filename)
-				source_filename = arg.get();
-			else if (!binary_out_name)
-				binary_out_name = arg.get();
+				sym_file = argv[++a];
+			else if (arg.same_str("obj") && (a + 1) < argc)
+				obj_out_file = argv[++a];
+			else if (arg.same_str("vice") && (a + 1) < argc)
+				vs_file = argv[++a];
+		} else if (!source_filename)
+			source_filename = arg.get();
+		else if (!binary_out_name)
+			binary_out_name = arg.get();
 	}
 
 	if (gen_allinstr) {
 		assembler.AllOpcodes(allinstr_file);
 	} else if (!source_filename) {
-		puts(	"Usage:\n"
-				" x65 filename.s code.prg [options]\n"
-				"  * -i(path) : Add include path\n"
-				"  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
-				"  * -cpu=6502/65c02: assemble with opcodes for a different cpu\n"
-				"  * -obj(file.x65) : generate object file for later linking\n"
-				"  * -bin : Raw binary\n"
-				"  * -c64 : Include load address(default)\n"
-				"  * -a2b : Apple II Dos 3.3 Binary\n"
-				"  * -sym(file.sym) : symbol file\n"
-				"  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
-				"  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
-				"  * -sect: display sections loaded and built\n"
-				"  * -vice(file.vs) : export a vice symbol file\n"
-				"  * -nerlin: use Merlin syntax\n"
-				"  * -endm : macros end with endm or endmacro instead of scoped('{' - '}')\n");
+		puts("Usage:\n"
+			 " x65 filename.s code.prg [options]\n"
+			 "  * -i(path) : Add include path\n"
+			 "  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
+			 "  * -cpu=6502/65c02: assemble with opcodes for a different cpu\n"
+			 "  * -obj(file.x65) : generate object file for later linking\n"
+			 "  * -bin : Raw binary\n"
+			 "  * -c64 : Include load address(default)\n"
+			 "  * -a2b : Apple II Dos 3.3 Binary\n"
+			 "  * -sym(file.sym) : symbol file\n"
+			 "  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
+			 "  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
+			 "  * -sect: display sections loaded and built\n"
+			 "  * -vice(file.vs) : export a vice symbol file\n"
+			 "  * -nerlin: use Merlin syntax\n"
+			 "  * -endm : macros end with endm or endmacro instead of scoped('{' - '}')\n");
 		return 0;
 	}
 
@@ -4651,7 +5142,7 @@ int main(int argc, char **argv)
 			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));
 
 			assembler.Assemble(strref(buffer, strl_t(size)), srcname, obj_out_file != nullptr);
-			
+
 			if (assembler.errorEncountered)
 				return_value = 1;
 			else {
@@ -4699,8 +5190,8 @@ int main(int argc, char **argv)
 						Section &s = assembler.allSections[i];
 						if (s.address > s.start_address) {
 							printf("Section %d: \"" STRREF_FMT "\" Dummy: %s Relative: %s Merged: %s Start: 0x%04x End: 0x%04x\n",
-								(int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
-								s.IsRelativeSection() ? "yes" : "no", s.IsMergedSection() ? "yes" : "no", s.start_address, s.address);
+								   (int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
+								   s.IsRelativeSection() ? "yes" : "no", s.IsMergedSection() ? "yes" : "no", s.start_address, s.address);
 							if (s.pRelocs) {
 								for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
 									printf("\tReloc value $%x at offs $%x section %d\n", i->base_value, i->section_offset, i->target_section);
@@ -4716,9 +5207,9 @@ int main(int argc, char **argv)
 				// export .sym file
 				if (sym_file && !srcname.same_str(sym_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(sym_file, "w")) {
-                        bool wasLocal = false;
-                        for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-                            unsigned int value = (unsigned int)i->value;
+						bool wasLocal = false;
+						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
+							unsigned int value = (unsigned int)i->value;
 							int section = i->section;
 							while (section >= 0 && section < (int)assembler.allSections.size()) {
 								if (assembler.allSections[section].IsMergedSection()) {
@@ -4733,8 +5224,8 @@ int main(int argc, char **argv)
 									wasLocal==i->local ? "\n" : (i->local ? " {\n" : "\n}\n"),
 									STRREF_ARG(i->name), value);
 							wasLocal = i->local;
-                        }
-                        fputs(wasLocal ? "\n}\n" : "\n", f);
+						}
+						fputs(wasLocal ? "\n}\n" : "\n", f);
 						fclose(f);
 					}
 				}
@@ -4742,23 +5233,22 @@ int main(int argc, char **argv)
 				// export vice label file
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
-                        for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-                            unsigned int value = (unsigned int)i->value;
+						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
+							unsigned int value = (unsigned int)i->value;
 							int section = i->section;
 							while (section >= 0 && section < (int)assembler.allSections.size()) {
 								if (assembler.allSections[section].IsMergedSection()) {
 									value += assembler.allSections[section].merged_offset;
 									section = assembler.allSections[section].merged_section;
-								}
-								else {
+								} else {
 									value += assembler.allSections[section].start_address;
 									break;
 								}
 							}
 							fprintf(f, "al $%04x %s" STRREF_FMT "\n",
-										value, i->name[0]=='.' ? "" : ".",
-										STRREF_ARG(i->name));
-                        }
+									value, i->name[0]=='.' ? "" : ".",
+									STRREF_ARG(i->name));
+						}
 						fclose(f);
 					}
 				}
