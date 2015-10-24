@@ -738,6 +738,7 @@ Currently the assembler is in an early revision and while features are tested in
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 7 - 65816 support
 * 6 - 65C02 support
 * 5 - Merlin syntax
 * 4 - Object files, relative sections and linking
