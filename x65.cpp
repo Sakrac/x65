@@ -215,6 +215,7 @@ enum AssemblerDirective {
 	AD_INCLUDE,		// INCLUDE: Load and assemble another file at this address
 	AD_INCBIN,		// INCBIN: Load and directly insert another file at this address
 	AD_CONST,		// CONST: Prevent a label from mutating during assemble
+	AD_IMPORT,		// IMPORT: Include or Incbin or Incobj or Incsym
 	AD_LABEL,		// LABEL: Create a mutable label (optional)
 	AD_INCSYM,		// INCSYM: Reference labels from another assemble
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
@@ -783,6 +784,12 @@ static const strref str_label("label");
 static const strref str_const("const");
 static const strref struct_byte("byte");
 static const strref struct_word("word");
+static const strref import_source("source");
+static const strref import_binary("binary");
+static const strref import_c64("c64");
+static const strref import_text("text");
+static const strref import_object("object");
+static const strref import_symbols("symbols");
 static const char* aAddrModeFmt[] = {
 	"%s ($%02x,x)",			// 00
 	"%s $%02x",				// 01
@@ -838,6 +845,7 @@ DirectiveName aDirectiveNames[] {
 	{ "TEXT", AD_TEXT },
 	{ "INCLUDE", AD_INCLUDE },
 	{ "INCBIN", AD_INCBIN },
+	{ "IMPORT", AD_IMPORT },
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
 	{ "INCSYM", AD_INCSYM },
@@ -856,6 +864,7 @@ DirectiveName aDirectiveNames[] {
 	{ "STRUCT", AD_STRUCT },
 	{ "ENUM", AD_ENUM },
 	{ "REPT", AD_REPT },
+	{ "REPEAT", AD_REPT },		// ca65 version of rept
 	{ "INCDIR", AD_INCDIR },
 	{ "A16", AD_A16 },			// A16: Set 16 bit accumulator mode
 	{ "A8", AD_A8 },			// A8: Set 8 bit accumulator mode
@@ -863,8 +872,14 @@ DirectiveName aDirectiveNames[] {
 	{ "XY8", AD_XY8 },			// XY8: Set 8 bit index register mode
 	{ "I16", AD_XY16 },			// I16: Set 16 bit index register mode
 	{ "I8", AD_XY8 },			// I8: Set 8 bit index register mode
-	{ "MX", AD_MX },
-	{ "DO", AD_IF },			// MERLIN
+	{ "DUMMY", AD_DUMMY },
+	{ "DUMMY_END", AD_DUMMY_END },
+	{ "DS", AD_DS },			// Define space
+};
+
+// Merlin specific directives separated from regular directives to avoid confusion
+DirectiveName aDirectiveNamesMerlin[] {
+	{ "MX", AD_MX },			// MERLIN
 	{ "DA", AD_WORDS },			// MERLIN
 	{ "DW", AD_WORDS },			// MERLIN
 	{ "ASC", AD_TEXT },			// MERLIN
@@ -883,7 +898,6 @@ DirectiveName aDirectiveNames[] {
 	{ "DEND", AD_DUMMY_END },	// MERLIN
 	{ "LST", AD_LST },			// MERLIN
 	{ "LSTDO", AD_LST },		// MERLIN
-	{ "DS", AD_DS },			// MERLIN
 	{ "LUP", AD_REPT },			// MERLIN
 	{ "MAC", AD_MACRO },		// MERLIN
 	{ "SAV", AD_SAV },			// MERLIN
@@ -891,6 +905,7 @@ DirectiveName aDirectiveNames[] {
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
+static const int nDirectiveNamesMerlin = sizeof(aDirectiveNamesMerlin) / sizeof(aDirectiveNamesMerlin[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
@@ -1107,6 +1122,7 @@ typedef struct Section {
 	void AddWord(int w);
 	void AddTriple(int l);
 	void AddBin(unsigned const char *p, int size);
+	void AddText(strref line, strref text_prefix);
 	void SetByte(size_t offs, int b) { output[offs] = b; }
 	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
 	void SetTriple(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; }
@@ -1205,6 +1221,7 @@ struct ExtLabels {
 	pairArray<unsigned int, Label> labels;
 };
 
+// EvalExpression needs a location reference to work out some addresses
 struct EvalContext {
 	int pc;					// current address at point of eval
 	int scope_pc;			// current scope open at point of eval
@@ -1223,7 +1240,8 @@ typedef struct {
 	strref code_segment;	// the segment of the file for this context
 	strref read_source;		// current position/length in source file
 	strref next_source;		// next position/length in source file
-	int repeat;				// how many times to repeat this code segment
+	short repeat;			// how many times to repeat this code segment
+	bool scoped_context;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
 } SourceContext;
@@ -1246,6 +1264,7 @@ public:
 		context.read_source = code_seg;
 		context.next_source = code_seg;
 		context.repeat = rept;
+		context.scoped_context = false;
 		stack.push_back(context);
 		currContext = &stack[stack.size()-1];
 	}
@@ -1289,7 +1308,7 @@ public:
 
 	// Conditional assembly vars
 	int conditional_depth;
-	strref conditional_source[MAX_CONDITIONAL_DEPTH];	// start of conditional for error fixing
+	strref conditional_source[MAX_CONDITIONAL_DEPTH];	// start of conditional for error report
 	char conditional_nesting[MAX_CONDITIONAL_DEPTH];
 	bool conditional_consumed[MAX_CONDITIONAL_DEPTH];
 
@@ -1302,13 +1321,13 @@ public:
 	int lastEvalValue;
 	Reloc::Type lastEvalPart;
 
-	strref export_base_name;
-	strref last_label;
-	bool accumulator_16bit;
-	bool index_reg_16bit;
-	bool errorEncountered;
-	bool list_assembly;
-	bool end_macro_directive;
+	strref export_base_name;	// binary output name if available
+	strref last_label;			// most recently defined label for Merlin macro
+	bool accumulator_16bit;		// 65816 specific software dependent immediate mode
+	bool index_reg_16bit;		// -"-
+	bool errorEncountered;		// if any error encountered, don't export binary
+	bool list_assembly;			// generate assembler listing
+	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -1327,14 +1346,14 @@ public:
 
 	// Operations on current section
 	void SetSection(strref name, int address);	// fixed address section
-	void SetSection(strref name); // relative address section
+	void SetSection(strref name);				// relative address section
 	StatusCode AppendSection(Section &relSection, Section &trgSection);
-	StatusCode LinkSections(strref name); // link relative address sections with this name here
+	StatusCode LinkSections(strref name);		// link relative address sections with this name here
 	void LinkLabelsToAddress(int section_id, int section_address);
 	StatusCode LinkRelocs(int section_id, int section_address);
-	void DummySection(int address);
-	void DummySection();
-	void EndSection();
+	void DummySection(int address);				// non-data section (fixed)
+	void DummySection();						// non-data section (relative)
+	void EndSection();							// pop current section
 	Section& CurrSection() { return *current_section; }
 	unsigned char* BuildExport(strref append, int &file_size, int &addr);
 	int GetExportNames(strref *aNames, int maxNames);
@@ -1345,8 +1364,8 @@ public:
 	void AddBin(unsigned const char *p, int size) { CurrSection().AddBin(p, size); }
 
 	// Object file handling
-	StatusCode WriteObjectFile(strref filename);
-	StatusCode ReadObjectFile(strref filename);
+	StatusCode WriteObjectFile(strref filename);	// write x65 object file
+	StatusCode ReadObjectFile(strref filename);		// read x65 object file
 
 	// Macro management
 	StatusCode AddMacro(strref macro, strref source_name, strref source_file, strref &left);
@@ -1395,6 +1414,9 @@ public:
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
 	StatusCode Directive_Rept(strref line, strref source_file);
 	StatusCode Directive_Macro(strref line, strref source_file);
+	StatusCode Directive_Include(strref line);
+	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
+	StatusCode Directive_Import(strref line);
 
 	// Assembler steps
 	StatusCode GetAddressMode(strref line, bool flipXY, AddrMode &addrMode,
@@ -1472,7 +1494,8 @@ int sortHashLookup(const void *A, const void *B) {
 	return _A->op_hash > _B->op_hash ? 1 : -1;
 }
 
-int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes, int count, const char **aliases)
+int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes,
+						  int count, const char **aliases, bool merlin)
 {
 	// create an instruction table (mnemonic hash lookup)
 	int numInstructions = 0;
@@ -1508,6 +1531,15 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 		op_hash.type = OT_DIRECTIVE;
 	}
 	
+	if (merlin) {
+		for (int d = 0; d<nDirectiveNamesMerlin; d++) {
+			OPLookup &op_hash = pInstr[numInstructions++];
+			op_hash.op_hash = strref(aDirectiveNamesMerlin[d].name).fnv1a_lower();
+			op_hash.index = (unsigned char)aDirectiveNamesMerlin[d].directive;
+			op_hash.type = OT_DIRECTIVE;
+		}
+	}
+	
 	// sort table by hash for binary search lookup
 	qsort(pInstr, numInstructions, sizeof(OPLookup), sortHashLookup);
 	return numInstructions;
@@ -1520,7 +1552,8 @@ void Asm::SetCPU(CPUIndex CPU) {
 		list_cpu = cpu;
 	opcode_table = aCPUs[CPU].opcodes;
 	opcode_count = aCPUs[CPU].num_opcodes;
-	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table, opcode_count, aCPUs[CPU].aliases);
+	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table,
+											 opcode_count, aCPUs[CPU].aliases, syntax == SYNTAX_MERLIN);
 	if (CPU != CPU_65816) {
 		accumulator_16bit = false;
 		index_reg_16bit = false;
@@ -1967,6 +2000,34 @@ void Section::AddBin(unsigned const char *p, int size) {
 	address += size;
 }
 
+// Add text data to a section
+void Section::AddText(strref line, strref text_prefix) {
+	// https://en.wikipedia.org/wiki/PETSCII
+	// ascii: no change
+	// shifted: a-z => $41.. A-Z => $61..
+	// unshifted: a-z, A-Z => $41
+
+	CheckOutputCapacity(line.get_len());
+	{
+		if (!text_prefix || text_prefix.same_str("ascii")) {
+			AddBin((unsigned const char*)line.get(), line.get_len());
+		} else if (text_prefix.same_str("petscii")) {
+			while (line) {
+				char c = line[0];
+				AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c > 0x60 ? ' ' : line[0]));
+				++line;
+			}
+		} else if (text_prefix.same_str("petscii_shifted")) {
+			while (line) {
+				char c = line[0];
+				AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
+						((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0])));
+				++line;
+			}
+		}
+	}
+}
+
 // Add a relocation marker to a section
 void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
 {
@@ -1981,9 +2042,6 @@ void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
 void Asm::CheckOutputCapacity(unsigned int addSize) {
 	CurrSection().CheckOutputCapacity(addSize);
 }
-
-
-
 
 
 
@@ -2061,7 +2119,6 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		left = macro;
 		pMacro->macro = source;
 		source.skip_whitespace();
-		left = source;
 	} else if (end_macro_directive) {
 		int f = -1;
 		const strref endm("endm");
@@ -2102,7 +2159,48 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 		(macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
-	if (params) {
+	if (syntax == SYNTAX_MERLIN) {
+		// need to include comment field because separator is ;
+		if (contextStack.curr().read_source.is_substr(arg_list.get()))
+			arg_list = (contextStack.curr().read_source +
+						strl_t(arg_list.get()-contextStack.curr().read_source.get())
+						).line();
+		arg_list = arg_list.before_or_full(c_comment);
+		strref arg = arg_list;
+		strown<16> tag;
+		int t_max = 16;
+		int dSize = 0;
+		for (int t=1; t<t_max; t++) {
+			tag.sprintf("]%d", t);
+			strref a = arg.split_token_trim(';');
+			if (!a) {
+				t_max = t;
+				break;
+			}
+			int count = macro_src.substr_case_count(tag.get_strref());
+			dSize += count * ((int)a.get_len() - (int)tag.get_len());
+		}
+		int mac_size = macro_src.get_len() + dSize + 32;
+		if (char *buffer = (char*)malloc(mac_size)) {
+			loadedData.push_back(buffer);
+			strovl macexp(buffer, mac_size);
+			macexp.copy(macro_src);
+			arg = arg_list;
+			for (int t=1; t<t_max; t++) {
+				tag.sprintf("]%d", t);
+				strref a = arg.split_token_trim(';');
+				macexp.replace(tag.get_strref(), a);
+			}
+			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+			if (scope_depth>=(MAX_SCOPE_DEPTH-1))
+				return ERROR_TOO_DEEP_SCOPE;
+			else
+				scope_address[++scope_depth] = CurrSection().GetPC();
+			contextStack.curr().scoped_context = true;
+			return STATUS_OK;
+		} else
+			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
+	} else if (params) {
 		if (arg_list[0]=='(')
 			arg_list = arg_list.scoped_block_skip();
 		strref pchk = params;
@@ -2127,12 +2225,20 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				macexp.replace(param, a);
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
-			return FlushLocalLabels();
+			if (end_macro_directive) {
+				contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+				if (scope_depth>=(MAX_SCOPE_DEPTH-1))
+					return ERROR_TOO_DEEP_SCOPE;
+				else
+					scope_address[++scope_depth] = CurrSection().GetPC();
+				contextStack.curr().scoped_context = true;
+			}
+			return STATUS_OK;
 		} else
 			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
 	}
 	contextStack.push(m.source_name, m.source_file, macro_src);
-	return FlushLocalLabels();
+	return STATUS_OK;
 }
 
 
@@ -3372,7 +3478,7 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 	if (read_source.is_substr(line.get())) {
 		read_source.skip(strl_t(line.get() - read_source.get()));
 		strref expression;
-		if (syntax == SYNTAX_MERLIN) {
+		if (syntax == SYNTAX_MERLIN || end_macro_directive) {
 			expression = line;			// Merlin repeat body begins next line
 			read_source.line();
 		} else {
@@ -3389,12 +3495,12 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 		if (STATUS_OK != EvalExpression(expression, etx, count))
 			return ERROR_REPT_COUNT_EXPRESSION;
 		strref recur;
-		if (syntax == SYNTAX_MERLIN) {
+		if (syntax == SYNTAX_MERLIN || end_macro_directive) {
 			recur = read_source;		// Merlin repeat body ends at "--^"
 			while (strref next_line = read_source.line()) {
 				next_line = next_line.before_or_full(';');
 				next_line = next_line.before_or_full(c_comment);
-				int term = next_line.find("--^");
+				int term = next_line.find(end_macro_directive ? "endr" : "--^");
 				if (term >= 0) {
 					recur = recur.get_substr(0, strl_t(next_line.get() + term - recur.get()));
 					break;
@@ -3421,6 +3527,131 @@ StatusCode Asm::Directive_Macro(strref line, strref source_file)
 	}
 	return STATUS_OK;
 }
+
+// include: read in a source file and assemble at this point
+StatusCode Asm::Directive_Include(strref line)
+{
+	strref file = line.between('"', '"');
+	if (!file)								// MERLIN: No quotes around PUT filenames
+		file = line.split_range(filename_end_char_range);
+	size_t size = 0;
+	char *buffer = nullptr;
+	if ((buffer = LoadText(file, size))) {
+		loadedData.push_back(buffer);
+		strref src(buffer, strl_t(size));
+		contextStack.push(file, src, src);
+	} else if (syntax == SYNTAX_MERLIN) {
+		// MERLIN include file name rules
+		if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
+			loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
+			strref src(buffer, strl_t(size));
+			contextStack.push(file+1, src, src);
+		} else {
+			strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
+			fileadd.append(".s");
+			if ((buffer = LoadText(fileadd.get_strref(), size))) {
+				loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
+				strref src(buffer, strl_t(size));
+				contextStack.push(file, src, src);
+			} else {
+				fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
+				fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
+				if ((buffer = LoadText(fileadd.get_strref(), size))) {
+					loadedData.push_back(buffer);
+					strref src(buffer, strl_t(size));
+					contextStack.push(file, src, src);
+				}
+			}
+		}
+	}
+	if (!size)
+		return ERROR_COULD_NOT_INCLUDE_FILE;
+	return STATUS_OK;
+}
+
+// incbin: import binary data in place
+StatusCode Asm::Directive_Incbin(strref line, int skip, int len)
+{
+	line = line.between('"', '"');
+	strown<512> filename(line);
+	size_t size = 0;
+	if (char *buffer = LoadBinary(line, size)) {
+		int bin_size = (int)size - skip;
+		if (bin_size>len)
+			bin_size = len;
+		if (bin_size>0)
+			AddBin((const unsigned char*)buffer+skip, bin_size);
+		free(buffer);
+		return STATUS_OK;
+	}
+
+	return ERROR_COULD_NOT_INCLUDE_FILE;
+}
+
+// import is a catch-all file reference
+StatusCode Asm::Directive_Import(strref line)
+{
+	line.skip_whitespace();
+	
+	int skip = 0;	// binary import skip this amount
+	int len = 0;	// binary import load up to this amount
+	strref param;	// read out skip & max len parameters
+	int q = line.find('"');
+	if (q>=0) {
+		param = line + q;
+		param.scoped_block_skip();
+		param.trim_whitespace();
+		if (param[0]==',') {
+			++param;
+			param.skip_whitespace();
+			if (param) {
+				struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+				EvalExpression(param.split_token_trim(','), etx, skip);
+				if (param)
+					EvalExpression(param, etx, len);
+			}
+		}
+	}
+	
+	if (line[0]=='"')
+		return Directive_Incbin(line);
+	else if (import_source.is_prefix_word(line)) {
+		line += import_source.get_len();
+		line.skip_whitespace();
+		return Directive_Include(line);
+	} else if (import_binary.is_prefix_word(line)) {
+		line += import_binary.get_len();
+		line.skip_whitespace();
+		return Directive_Incbin(line, skip, len);
+	} else if (import_c64.is_prefix_word(line)) {
+		line += import_c64.get_len();
+		line.skip_whitespace();
+		return Directive_Incbin(line, 2+skip, len); // 2 = load address skip size
+	} else if (import_text.is_prefix_word(line)) {
+		line += import_text.get_len();
+		line.skip_whitespace();
+		strref text_type = "petscii";
+		if (line[0]!='"') {
+			text_type = line.get_word_ws();
+			line += text_type.get_len();
+			line.skip_whitespace();
+		}
+		CurrSection().AddText(line, text_type);
+		return STATUS_OK;
+	} else if (import_object.is_prefix_word(line)) {
+		line += import_object.get_len();
+		line.trim_whitespace();
+		return ReadObjectFile(line[0]=='"' ? line.between('"', '"') : line);
+	} else if (import_symbols.is_prefix_word(line)) {
+		line += import_symbols.get_len();
+		line.skip_whitespace();
+		IncludeSymbols(line);
+		return STATUS_OK;
+	}
+	
+	return STATUS_OK;
+}
+
 
 // Action based on assembler directive
 StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref source_file)
@@ -3682,82 +3913,24 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				SetCPU(CPU_65C02);
 			break;
 		case AD_TEXT: {		// text: add text within quotes
-			// https://en.wikipedia.org/wiki/PETSCII
-			// ascii: no change
-			// shifted: a-z => $41.. A-Z => $61..
-			// unshifted: a-z, A-Z => $41
 			strref text_prefix = line.before('"').get_trimmed_ws();
 			line = line.between('"', '"');
-			CheckOutputCapacity(line.get_len());
-			{
-				if (!text_prefix || text_prefix.same_str("ascii")) {
-					AddBin((unsigned const char*)line.get(), line.get_len());
-				} else if (text_prefix.same_str("petscii")) {
-					while (line) {
-						char c = line[0];
-						AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c > 0x60 ? ' ' : line[0]));
-						++line;
-					}
-				} else if (text_prefix.same_str("petscii_shifted")) {
-					while (line) {
-						char c = line[0];
-						AddByte((c >= 'a' && c <= 'z') ? (c - 'a' + 0x61) :
-								((c >= 'A' && c <= 'Z') ? (c - 'A' + 0x61) : (c > 0x60 ? ' ' : line[0])));
-						++line;
-					}
-				}
-			}
+			CurrSection().AddText(line, text_prefix);
 			break;
 		}
 		case AD_MACRO:
 			error = Directive_Macro(line, source_file);
 			break;
 
-		case AD_INCLUDE: {	// include: assemble another file in place
-			strref file = line.between('"', '"');
-			if (!file)								// MERLIN: No quotes around PUT filenames
-				file = line.split_range(filename_end_char_range);
-			size_t size = 0;
-			char *buffer = nullptr;
-			if ((buffer = LoadText(file, size))) {
-				loadedData.push_back(buffer);
-				strref src(buffer, strl_t(size));
-				contextStack.push(file, src, src);
-			} else if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
-				loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
-				strref src(buffer, strl_t(size));
-				contextStack.push(file+1, src, src);
-			} else {
-				strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
-				fileadd.append(".s");
-				if ((buffer = LoadText(fileadd.get_strref(), size))) {
-					loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
-					strref src(buffer, strl_t(size));
-					contextStack.push(file, src, src);
-				} else {
-					fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
-					fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
-					if ((buffer = LoadText(fileadd.get_strref(), size))) {
-						loadedData.push_back(buffer);
-						strref src(buffer, strl_t(size));
-						contextStack.push(file, src, src);
-					}
-				}
-			}
-			if (!size)
-				error = ERROR_COULD_NOT_INCLUDE_FILE;
-			break;
-		}
-		case AD_INCBIN: {	// incbin: import binary data in place
-			line = line.between('"', '"');
-			strown<512> filename(line);
-			size_t size = 0;
-			if (char *buffer = LoadBinary(line, size)) {
-				AddBin((const unsigned char*)buffer, (int)size);
-				free(buffer);
-			}
-			break;
-		}
+		case AD_INCLUDE:	// assemble another file in place
+			return Directive_Include(line);
+			
+		case AD_INCBIN:
+			return Directive_Incbin(line);
+			
+		case AD_IMPORT:
+			return Directive_Import(line);
+
 		case AD_LABEL:
 		case AD_CONST: {
 			line.trim_whitespace();
@@ -3769,15 +3942,15 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_UNEXPECTED_LABEL_ASSIGMENT_FORMAT;
 			break;
 		}
-		case AD_INCSYM: {
+			
+		case AD_INCSYM:
 			IncludeSymbols(line);
 			break;
-		}
-		case AD_LABPOOL: {
-			strref label = line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0);
-			AddLabelPool(label, line);
+			
+		case AD_LABPOOL:
+			AddLabelPool(line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0), line);
 			break;
-		}
+
 		case AD_IF:
 			if (NewConditional()) {			// Start new conditional block
 				CheckConditionalDepth();	// Check if nesting
@@ -3789,6 +3962,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					SetConditional();
 			}
 			break;
+			
 		case AD_IFDEF:
 			if (NewConditional()) {			// Start new conditional block
 				CheckConditionalDepth();	// Check if nesting
@@ -3800,6 +3974,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					SetConditional();
 			}
 			break;
+			
 		case AD_ELSE:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
@@ -3809,6 +3984,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			} else if (ConditionalAvail())
 				EnableConditional(true);
 			break;
+			
 		case AD_ELIF:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
@@ -3821,6 +3997,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				EnableConditional(conditional_result);
 			}
 			break;
+			
 		case AD_ENDIF:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
@@ -3833,6 +4010,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					CloseConditional();
 			}
 			break;
+			
 		case AD_ENUM:
 		case AD_STRUCT: {
 			strref read_source = contextStack.curr().read_source;
@@ -3854,25 +4032,30 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_STRUCT_CANT_BE_ASSEMBLED;
 			break;
 		}
+			
 		case AD_REPT:
-			error = Directive_Rept(line, source_file);
-			break;
+			return Directive_Rept(line, source_file);
 
 		case AD_INCDIR:
 			AddIncludeFolder(line.between('"', '"'));
 			break;
+			
 		case AD_A16:			// A16: Set 16 bit accumulator mode
 			accumulator_16bit = true;
 			break;
+			
 		case AD_A8:			// A8: Set 8 bit accumulator mode
 			accumulator_16bit = false;
 			break;
+			
 		case AD_XY16:			// A16: Set 16 bit accumulator mode
 			index_reg_16bit = true;
 			break;
+			
 		case AD_XY8:			// A8: Set 8 bit accumulator mode
 			index_reg_16bit = false;
 			break;
+			
 		case AD_MX:
 			if (line) {
 				line.trim_whitespace();
@@ -3882,9 +4065,11 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				accumulator_16bit = !!(value&2);
 			}
 			break;
+			
 		case AD_LST:
 			line.clear();
 			break;
+			
 		case AD_DUMMY:
 			line.trim_whitespace();
 			if (line) {
@@ -3896,6 +4081,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			DummySection();
 			break;
+			
 		case AD_DUMMY_END:
 			while (CurrSection().IsDummySection()) {
 				EndSection();
@@ -3903,6 +4089,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					break;
 			}
 			break;
+			
 		case AD_DS: {
 			int value;
 			strref size = line.split_token_trim(',');
@@ -4035,7 +4222,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			break;
 		case AMM_BLK_MOV:
 			addrMode = AMB_BLK_MOV;
-			expression = line;
+			expression = line.before_or_full(',');
 			break;
 		default:
 			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), addrMode, op_param, expression);
@@ -4155,7 +4342,10 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				case AMB_IMM:			// 2 #$12
 					if (op_param && (validModes&(AMM_IMM_DBL_A | AMM_IMM_DBL_XY)))
 						codeArg = op_param == 2 ? CA_TWO_BYTES : CA_ONE_BYTE;
-					else  if (((validModes&AMM_IMM_DBL_A) && accumulator_16bit) ||
+					else if ((validModes&(AMM_IMM_DBL_A | AMM_IMM_DBL_XY)) &&
+							 expression[0]=='$' && (expression+1).len_hex()==4)
+						codeArg = CA_TWO_BYTES;
+					else if (((validModes&AMM_IMM_DBL_A) && accumulator_16bit) ||
 						((validModes&AMM_IMM_DBL_XY) && index_reg_16bit))
 						codeArg = CA_TWO_BYTES;
 					else
@@ -4657,9 +4847,15 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 	scope_address[scope_depth] = CurrSection().GetPC();
 	while (contextStack.has_work()) {
 		error = BuildSegment();
-		if (contextStack.curr().complete())
+		if (contextStack.curr().complete()) {
+			if (contextStack.curr().scoped_context && scope_depth) {
+				CheckLateEval(strref(), CurrSection().GetPC());
+				FlushLocalLabels(scope_depth);
+				FlushLabelPools(scope_depth);
+				--scope_depth;
+			}
 			contextStack.pop();
-		else
+		} else
 			contextStack.curr().restart();
 	}
 	if (error == STATUS_OK) {

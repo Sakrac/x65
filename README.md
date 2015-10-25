@@ -48,7 +48,7 @@ x65 [-DLabel] [-iIncDir] (source.s) (dest.prg) [-lst[=file.lst]] [-opcodes[=file
 x65 filename.s code.prg [options]
 * -i(path): Add include path
 * -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
-* -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
+* -cpu=6502/6502ill/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
@@ -56,10 +56,10 @@ x65 filename.s code.prg [options]
 * -sym (file.sym): symbol file
 * -merlin: use Merlin syntax
 * -lst / -lst=(file.lst): generate disassembly text from result (file or stdout)
-* -opcodes / -opcodes=(file.s): dump all available opcodes (file or stdout)
+* -opcodes / -opcodes=(file.s): dump all available opcodes for current CPU (file or stdout)
 * -sect: display sections loaded and built
 * -vice (file.vs): export a vice symbol file
-* -endm: macros end with endm or endmacro instead of scoped ('{' - '}')
+* -endm: macro and rept end with endm/endr or endmacro/endrepeat instead of scoped ('{' - '}')
 
 ## Features
 
@@ -141,6 +141,7 @@ Directives are assembler commands that control the code generation but that does
 * [**TEXT**](#text) Insert text at this address
 * [**INCLUDE**](#include) Include another source file and assemble at this address
 * [**INCBIN**](#incbin) Include a binary file at this address
+* [**IMPORT**](#import) Catch-all file inclusion (source, bin, text, object, symbols)
 * [**CONST**](#const) Assign a value to a label and make it constant (error if reassigned with other value)
 * [**LABEL**](#label) Decorative directive to assign an expression to a label
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
@@ -330,6 +331,29 @@ Example:
 incbin "wizfx.gfx"
 ```
 
+<a name="import">**IMPORT**
+
+Insert multiple types of data or code at the current address. Import takes an additional parameter to determine what to do with the file data, and can accept reading in a portion of binary data.
+
+The options for import are:
+* source: same as **INCLUDE**
+* binary: same as **INCBIN**
+* c64: same as **INCBIN** but skip first two bytes of file as if this was a c64 prg file
+* text: include text data from another file, default is petscii otherwise add another directive from the **TEXT** directive
+* object: same as **INCOBJ**
+* symbols: same as **INCSYM**, specify list of desired symbols prior to filename.
+
+After the filename for binary and c64 files follow comma separated values for skip data size and max load size. c64 mode will add the two extra bytes to the skip size.
+
+```
+	import source "EQ.S"
+	import binary "GFX.BIN",0,256
+	import c64 "FONT.BIN",8,8*26
+	import text petscii_shifted "LICENSE.TXT"
+	import object "engine.x65"
+	import symbols InitEffect, UpdateEffect "effect.sym"
+```
+
 <a name="const">**CONST**
 
 Prefix a label assignment with 'const' or '.const' to cause an error if the label gets reassigned.
@@ -451,7 +475,7 @@ EVAL(29): "Mixed.things.thing_one.count" = $2
 
 <a name="rept">**REPT**
 
-Repeat a scoped block of code a number of times. The syntax is rept \<count\> { \<code\> }.
+Repeat a scoped block of code a number of times. The syntax is rept \<count\> { \<code\> }. The full word **REPEAT** is also recognized.
 
 Example:
 
@@ -483,6 +507,15 @@ rept columns {
 	height_buf = height_buf+1
 }
 ```
+
+Note that if the -endm command line option is used (macros are not defined with curly brackets but inbetween macro and endm*) this also affects rept so the syntax for a repeat block changes to
+
+```
+.REPEAT 4
+	lsr
+.ENDREPEAT
+```
+
 <a name="incdir">**INCDIR**
 
 Adds a folder to search for INCLUDE, INCBIN, etc. files in
@@ -503,6 +536,13 @@ An alternative method is to add .b/.w to immediate mode instructions that suppor
 	ora.w #$2322
 ```
 This alleviates some confusion about which mode a certain line might be assembled for when looking at source code.
+
+Note that in case a 4 digit hex value is used in 8 bit mode and an immediate mode is allowed but is not currently enable a two byte value will be emitted
+
+```
+	lda #$0043	; will be 16 bit regardless of accumulator mode if in 65816 mode
+	lda #$43	; will be 8 bit or 16 bit depending on accumulator mode
+```
 
 Similarly for instructions that accept 3 byte addresses (bank + address) adding .l instructs the assembler to choose a bank address:
 
@@ -713,17 +753,22 @@ FindFirstSpace
 
 ### Development Status
 
-Currently the assembler is in an early revision and while features are tested individually it is fairly certain that untested combinations of features will indicate flaws and certain features are not in a complete state.
+Currently the assembler is in a limited release and while all features are in place and tested, more testing is needed to verify the completeness. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
+* Set 65816 immediate op size on command line for files that make that assumption
 * Macro parameters should replace only whole words instead of any substring
-* Add 'import' directive as a catch-all include/incbin/etc. alternative
 * irp (indefinite repeat)
 * boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* Merlin specific directives are not available in non-merlin syntax mode to avoid confusion
+* Merlin macros use ]1, ]2, ]3 as arguments instead of the parameter list after [**MAC**](#merlin)
+* -endm option also affects [**REPT**](#rept) 
+* Added [**IMPORT**](#import) directive as a catch-all include/incbin/etc. alternative
+* Added 6502 illegal opcodes (cpu=6502ill)
 * 65816
-* 65C02 enabled through directives (PROCESSOR/CPU/XC)
+* 65C02 enabled through directives ([**PROCESSOR**/**CPU**](#cpu)/[**XC**](#merlin))
 * 65c02 (currently only through command line, not as a directive)
 * Now accepts negative numbers, Merlin LUP and MAC keyword support
 * Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
@@ -736,7 +781,7 @@ Currently the assembler is in an early revision and while features are tested in
 * Added directives from older assemblers
 * Added ENUM, sharing some functionality with STRUCT
 * Added INCDIR and command line options
-* [REPT](#rept)
+* [**REPT**](#rept)
 * fixed a flaw in expressions that ignored the next operator after raw hex values if no whitespace
 * expressions now handles high byte/low byte (\>, \<) as RPN tokens and not special cased.
 * structs
