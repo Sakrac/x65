@@ -49,6 +49,8 @@ x65 filename.s code.prg [options]
 * -i(path): Add include path
 * -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
 * -cpu=6502/6502ill/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
+* -acc=8/16: start assembling with accumulator immediate mode instruction size 8 or 16 bits
+* -xy=8/16: start assembling with index register immediate mode instruction size 8 or 16 bits
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
@@ -83,7 +85,7 @@ In order to manage more complex projects linking multiple assembled object files
 
 Comments are currently line based and both ';' and '//' are accepted as delimiters.
 
-### <a name="expressions">Expressions
+### Expressions
 
 Anywhere a number can be entered it can also be interpreted as a full expression, for example:
 
@@ -648,11 +650,31 @@ Expressions contain values, such as labels or raw numbers and operators includin
 * $: Precedes hexadecimal value
 * %: If immediately followed by '0' or '1' this is a binary value and not scope closure address
 
+**Conditional operators**
+
+* ==: Double equal signs yields 1 if left value is the same as the right value
+* <: If inbetween two values, less than will yield 1 if left value is less than right value
+* >: If inbetween two values, greater than will yield 1 if left value is greater than right value
+* <=: If inbetween two values, less than or equal will yield 1 if left value is less than or equal to right value
+* >=: If inbetween two values, greater than or equal will yield 1 if left value is greater than or equal to right value
+
 Example:
 
 ```
 lda #(((>SCREEN_MATRIX)&$3c)*4)+8
 sta $d018
+```
+
+Avoid using parenthesis as the first character of the parameter of an opcode that can be relative addressed instead of an absolute address. This can be avoided by 
+
+```
+	jmp (a+b)	; generates a relative jump
+	jmp.a (a+b)	; generates an absolute jump
+	jmp +(a+b)	; generates an absolute jump
+
+c = (a+b)
+	jmp c		; generates an absolute jump
+	jmp a+b		; generates an absolute jump
 ```
 
 ## <a name="macro">Macros
@@ -756,12 +778,12 @@ FindFirstSpace
 Currently the assembler is in a limited release and while all features are in place and tested, more testing is needed to verify the completeness. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
-* Set 65816 immediate op size on command line for files that make that assumption
-* Macro parameters should replace only whole words instead of any substring
 * irp (indefinite repeat)
-* boolean operators (==, <, >, etc.) for better conditional expressions
 
 **FIXED**
+* Macro parameters should replace only whole words instead of any substring
+* boolean operators (==, <, >, etc.) for better conditional expressions
+* Set 65816 immediate op size on command line for files that make that assumption
 * Merlin specific directives are not available in non-merlin syntax mode to avoid confusion
 * Merlin macros use ]1, ]2, ]3 as arguments instead of the parameter list after [**MAC**](#merlin)
 * -endm option also affects [**REPT**](#rept) 

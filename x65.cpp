@@ -255,23 +255,28 @@ enum OperationType {
 enum EvalOperator {
 	EVOP_NONE,
 	EVOP_VAL = 'a',	// a, value => read from value queue
-	EVOP_LPR,		// b, left parenthesis
-	EVOP_RPR,		// c, right parenthesis
-	EVOP_ADD,		// d, +
-	EVOP_SUB,		// e, -
-	EVOP_MUL,		// f, * (note: if not preceded by value or right paren this is current PC)
-	EVOP_DIV,		// g, /
-	EVOP_AND,		// h, &
-	EVOP_OR,		// i, |
-	EVOP_EOR,		// j, ^
-	EVOP_SHL,		// k, <<
-	EVOP_SHR,		// l, >>
-	EVOP_LOB,		// m, low byte of 16 bit value
-	EVOP_HIB,		// n, high byte of 16 bit value
-	EVOP_BAB,		// o, bank byte of 24 bit value
-	EVOP_STP,		// p, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// q, Not ready yet
-	EVOP_ERR,		// r, Error
+	EVOP_EQU,		// b, 1 if left equal to right otherwise 0
+	EVOP_LT,		// c, 1 if left less than right otherwise 0
+	EVOP_GT,		// d, 1 if left greater than right otherwise 0
+	EVOP_LTE,		// e, 1 if left less than or equal to right otherwise 0
+	EVOP_GTE,		// f, 1 if left greater than or equal to right otherwise 0
+	EVOP_LPR,		// g, left parenthesis
+	EVOP_RPR,		// h, right parenthesis
+	EVOP_ADD,		// i, +
+	EVOP_SUB,		// j, -
+	EVOP_MUL,		// k, * (note: if not preceded by value or right paren this is current PC)
+	EVOP_DIV,		// l, /
+	EVOP_AND,		// m, &
+	EVOP_OR,		// n, |
+	EVOP_EOR,		// o, ^
+	EVOP_SHL,		// p, <<
+	EVOP_SHR,		// q, >>
+	EVOP_LOB,		// r, low byte of 16 bit value
+	EVOP_HIB,		// s, high byte of 16 bit value
+	EVOP_BAB,		// t, bank byte of 24 bit value
+	EVOP_STP,		// u, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// v, Not ready yet
+	EVOP_ERR,		// w, Error
 };
 
 // Opcode encoding
@@ -1367,6 +1372,10 @@ public:
 	StatusCode WriteObjectFile(strref filename);	// write x65 object file
 	StatusCode ReadObjectFile(strref filename);		// read x65 object file
 
+	// Scope management
+	StatusCode EnterScope();
+	StatusCode ExitScope();
+
 	// Macro management
 	StatusCode AddMacro(strref macro, strref source_name, strref source_file, strref &left);
 	StatusCode BuildMacro(Macro &m, strref arg_list);
@@ -1419,8 +1428,8 @@ public:
 	StatusCode Directive_Import(strref line);
 
 	// Assembler steps
-	StatusCode GetAddressMode(strref line, bool flipXY, AddrMode &addrMode,
-							  int &len, strref &expression);
+	StatusCode GetAddressMode(strref line, bool flipXY, unsigned int validModes,
+							  AddrMode &addrMode, int &len, strref &expression);
 	StatusCode AddOpcode(strref line, int index, strref source_file);
 	StatusCode BuildLine(strref line);
 	StatusCode BuildSegment();
@@ -1554,10 +1563,6 @@ void Asm::SetCPU(CPUIndex CPU) {
 	opcode_count = aCPUs[CPU].num_opcodes;
 	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table,
 											 opcode_count, aCPUs[CPU].aliases, syntax == SYNTAX_MERLIN);
-	if (CPU != CPU_65816) {
-		accumulator_16bit = false;
-		index_reg_16bit = false;
-	}
 }
 
 // Read in text data (main source, include, etc.)
@@ -2044,6 +2049,33 @@ void Asm::CheckOutputCapacity(unsigned int addSize) {
 }
 
 
+//
+//
+// SCOPE MANAGEMENT
+//
+//
+
+
+StatusCode Asm::EnterScope()
+{
+	if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
+		return ERROR_TOO_DEEP_SCOPE;
+	scope_address[++scope_depth] = CurrSection().GetPC();
+	return STATUS_OK;
+}
+
+StatusCode Asm::ExitScope()
+{
+	CheckLateEval(strref(), CurrSection().GetPC());
+	FlushLocalLabels(scope_depth);
+	FlushLabelPools(scope_depth);
+	--scope_depth;
+	if (scope_depth<0)
+		return ERROR_UNBALANCED_SCOPE_CLOSURE;
+	return STATUS_OK;
+}
+
+
 
 //
 //
@@ -2154,9 +2186,17 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 // Compile in a macro
 StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 {
-	strref macro_src = m.macro;
-	strref params = m.params_first_line ? macro_src.line() :
-		(macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
+	strref macro_src = m.macro, params;
+	if (m.params_first_line) {
+		if (end_macro_directive)
+			params = macro_src.line();
+		else {
+			params = macro_src.before('{');
+			macro_src += params.get_len();
+		}
+	}
+	else
+		params = (macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
 	if (syntax == SYNTAX_MERLIN) {
@@ -2165,7 +2205,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			arg_list = (contextStack.curr().read_source +
 						strl_t(arg_list.get()-contextStack.curr().read_source.get())
 						).line();
-		arg_list = arg_list.before_or_full(c_comment);
+		arg_list = arg_list.before_or_full(c_comment).get_trimmed_ws();
 		strref arg = arg_list;
 		strown<16> tag;
 		int t_max = 16;
@@ -2189,7 +2229,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			for (int t=1; t<t_max; t++) {
 				tag.sprintf("]%d", t);
 				strref a = arg.split_token_trim(';');
-				macexp.replace(tag.get_strref(), a);
+				macexp.replace_bookend(tag.get_strref(), a, label_end_char_range_merlin);
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
 			if (scope_depth>=(MAX_SCOPE_DEPTH-1))
@@ -2222,7 +2262,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			macexp.copy(macro_src);
 			while (strref param = params.split_token_trim(token_macro)) {
 				strref a = arg_list.split_token_trim(token);
-				macexp.replace(param, a);
+				macexp.replace_bookend(param, a, label_end_char_range);
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
 			if (end_macro_directive) {
@@ -2485,48 +2525,53 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value)
+EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value)
 {
-	char c = expression.get_first();
+	char c = exp.get_first();
 	switch (c) {
-		case '$': ++expression; value = expression.ahextoui_skip(); return EVOP_VAL;
-		case '-': ++expression; return EVOP_SUB;
-		case '+': ++expression;	return EVOP_ADD;
+		case '$': ++exp; value = exp.ahextoui_skip(); return EVOP_VAL;
+		case '-': ++exp; return EVOP_SUB;
+		case '+': ++exp;	return EVOP_ADD;
 		case '*': // asterisk means both multiply and current PC, disambiguate!
-			++expression;
-			if (expression[0] == '*') return EVOP_STP; // double asterisks indicates comment
+			++exp;
+			if (exp[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
 			value = etx.pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
-		case '/': ++expression; return EVOP_DIV;
-		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
-				  ++expression; return EVOP_HIB;
-		case '<': if (expression.get_len() >= 2 && expression[1] == '<') { expression += 2; return EVOP_SHL; }
-				  ++expression; return EVOP_LOB;
+		case '/': ++exp; return EVOP_DIV;
+		case '=': if (exp[1] == '=') { exp += 2; return EVOP_EQU; } return EVOP_STP;
+		case '>': if (exp.get_len() >= 2 && exp[1] == '>') { exp += 2; return EVOP_SHR; }
+				  if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp;
+					if (exp[0] == '=') { ++exp; return EVOP_GTE; } return EVOP_GT; }
+				  ++exp; return EVOP_HIB;
+		case '<': if (exp.get_len() >= 2 && exp[1] == '<') { exp += 2; return EVOP_SHR; }
+				  if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp;
+					if (exp[0] == '=') { ++exp; return EVOP_LTE; } return EVOP_LT; }
+				  ++exp; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
-			if (expression[1] == '0' || expression[1] == '1') { ++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
+			if (exp[1] == '0' || exp[1] == '1') { ++exp; value = exp.abinarytoui_skip(); return EVOP_VAL; }
 			if (etx.scope_end_pc<0) return EVOP_NRY;
-			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
-		case '|': ++expression; return EVOP_OR;
-		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++expression; return EVOP_EOR; }
-				  ++expression;  return EVOP_BAB;
-		case '&': ++expression; return EVOP_AND;
-		case '(': if (prev_op != EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
-		case ')': ++expression; return EVOP_RPR;
+			++exp; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+		case '|': ++exp; return EVOP_OR;
+		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
+				  ++exp;  return EVOP_BAB;
+		case '&': ++exp; return EVOP_AND;
+		case '(': if (prev_op != EVOP_VAL) { ++exp; return EVOP_LPR; } return EVOP_STP;
+		case ')': ++exp; return EVOP_RPR;
 		case ',':
 		case '?':
 		case '\'': return EVOP_STP;
 		default: {	// ! by itself is current scope, !+label char is a local label
-			if (c == '!' && !(expression + 1).len_label()) {
+			if (c == '!' && !(exp + 1).len_label()) {
 				if (etx.scope_pc < 0) return EVOP_NRY;
-				++expression; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+				++exp; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 			} else if (strref::is_number(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
-				value = expression.atoi_skip(); return EVOP_VAL;
+				value = exp.atoi_skip(); return EVOP_VAL;
 			} else if (c == '!' || c == ':' || c=='.' || c=='@' || strref::is_valid_label(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
-				char e0 = expression[0];
+				char e0 = exp[0];
 				int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
-				strref label = expression.split_range_trim(label_end_char_range, start_pos);
+				strref label = exp.split_range_trim(label_end_char_range, start_pos);
 				Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
 				if (!pLabel) {
 					StatusCode ret = EvalStruct(label, value);
@@ -2656,6 +2701,26 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					for (int i = 0; i<num_sections; i++)
 						section_counts[i][ri] = i==section_val[ri] ? 1 : 0;
 					values[ri++] = values[valIdx++]; break;
+				case EVOP_EQU:	// ==
+					ri--;
+					values[ri - 1] = values[ri - 1] == values[ri];
+					break;
+				case EVOP_GT:	// >
+					ri--;
+					values[ri - 1] = values[ri - 1] > values[ri];
+					break;
+				case EVOP_LT:	// <
+					ri--;
+					values[ri - 1] = values[ri - 1] < values[ri];
+					break;
+				case EVOP_GTE:	// >=
+					ri--;
+					values[ri - 1] = values[ri - 1] >= values[ri];
+					break;
+				case EVOP_LTE:	// >=
+					ri--;
+					values[ri - 1] = values[ri - 1] <= values[ri];
+					break;
 				case EVOP_ADD:	// +
 					ri--;
 					for (int i = 0; i<num_sections; i++)
@@ -4110,80 +4175,73 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 }
 
 // Make an educated guess at the intended address mode from an opcode argument
-StatusCode Asm::GetAddressMode(strref line, bool flipXY, AddrMode &addrMode, int &len, strref &expression)
+StatusCode Asm::GetAddressMode(strref line, bool flipXY, unsigned int validModes, AddrMode &addrMode, int &len, strref &expression)
 {
 	bool force_zp = false;
 	bool force_24 = false;
+	bool force_abs = false;
 	bool need_more = true;
 	strref arg, deco;
 
 	len = 0;
 	while (need_more) {
-		bool long_rel = false;
 		need_more = false;
-		switch (line.get_first()) {
-			case 0:		// empty line, empty addressing mode
-				addrMode = AMB_NON;
-				break;
-			case '[':
-				long_rel = true; // fall-through to '('
-			case '(':	// relative (jmp (addr), (zp,x), (zp),y)
-				deco = line.scoped_block_skip();
-				line.skip_whitespace();
-				expression = deco.split_token_trim(',');
-				addrMode = long_rel ? (force_zp ? AMB_ZP_REL_L : AMB_REL_L) : (force_zp ? AMB_ZP_REL : AMB_REL);
-				if (strref::tolower(deco[0])=='x')
-					addrMode = long_rel ? AMB_ILL : AMB_ZP_REL_X;
-				else if (line[0]==',') {
-					++line;
-					line.skip_whitespace();
-					if (strref::tolower(line[0])=='y') {
-						if (strref::tolower(deco[0])=='s')
-							addrMode = AMB_STK_REL_Y;
-						else
-							addrMode = long_rel ? AMB_ZP_REL_Y_L : AMB_ZP_Y_REL;
-						++line;
-					}
-				}
-				break;
-			case '#':	// immediate, determine if value is ok
+		unsigned char c = line.get_first();
+		if (!c)
+			addrMode = AMB_NON;
+		else if (!force_abs && (c == '[' || (c == '(' &&
+				(validModes&(AMM_REL | AMM_REL_X | AMM_ZP_REL_X | AMM_ZP_Y_REL))))) {
+			deco = line.scoped_block_skip();
+			line.skip_whitespace();
+			expression = deco.split_token_trim(',');
+			addrMode = c == '[' ? (force_zp ? AMB_ZP_REL_L : AMB_REL_L) : (force_zp ? AMB_ZP_REL : AMB_REL);
+			if (strref::tolower(deco[0]) == 'x')
+				addrMode = c == '[' ? AMB_ILL : AMB_ZP_REL_X;
+			else if (line[0] == ',') {
 				++line;
-				addrMode = AMB_IMM;
-				expression = line;
-				break;
-			default: {	// accumulator or absolute
-				if (line) {
-					if (line[0]=='.' && strref::is_ws(line[2])) {
-						switch (strref::tolower(line[1])) {
-							case 'z': force_zp = true; line += 3; need_more = true; len = 1; break;
-							case 'b': line += 3; need_more = true; len = 1; break;
-							case 'w': line += 3; need_more = true; len = 2; break;
-							case 'l': force_24 = true;  line += 3; need_more = true; len = 3; break;
-						}
-					}
-					if (!need_more) {
-						if (strref("A").is_prefix_word(line)) {
-							addrMode = AMB_ACC;
-						} else {	// absolute (zp, offs x, offs y)
-							addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
-							expression = line.split_token_trim(',');
-							if (line && (line[0]=='s' || line[0]=='S'))
-								addrMode = AMB_STK;
-							else {
-								bool relX = line && (line[0]=='x' || line[0]=='X');
-								bool relY = line && (line[0]=='y' || line[0]=='Y');
-								if ((flipXY && relY) || (!flipXY && relX))
-									addrMode = force_24 ? AMB_ABS_L_X : (force_zp ? AMB_ZP_X : AMB_ABS_X);
-								else if ((flipXY && relX) || (!flipXY && relY)) {
-									if (force_zp)
-										return ERROR_INSTRUCTION_NOT_ZP;
-									addrMode = AMB_ABS_Y;
-								}
-							}
+				line.skip_whitespace();
+				if (strref::tolower(line[0]) == 'y') {
+					if (strref::tolower(deco[0]) == 's')
+						addrMode = AMB_STK_REL_Y;
+					else
+						addrMode = c == '[' ? AMB_ZP_REL_Y_L : AMB_ZP_Y_REL;
+					++line;
+				}
+			}
+		} else if (c == '#') {
+			++line;
+			addrMode = AMB_IMM;
+			expression = line;
+		} else if (line) {
+			if (line[0]=='.' && strref::is_ws(line[2])) {
+				switch (strref::tolower(line[1])) {
+					case 'z': force_zp = true; line += 3; need_more = true; len = 1; break;
+					case 'b': line += 3; need_more = true; len = 1; break;
+					case 'w': line += 3; need_more = true; len = 2; break;
+					case 'l': force_24 = true;  line += 3; need_more = true; len = 3; break;
+					case 'a': force_abs = true;  line += 3; need_more = true; break;
+				}
+			}
+			if (!need_more) {
+				if (strref("A").is_prefix_word(line)) {
+					addrMode = AMB_ACC;
+				} else {	// absolute (zp, offs x, offs y)
+					addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
+					expression = line.split_token_trim(',');
+					if (line && (line[0]=='s' || line[0]=='S'))
+						addrMode = AMB_STK;
+					else {
+						bool relX = line && (line[0]=='x' || line[0]=='X');
+						bool relY = line && (line[0]=='y' || line[0]=='Y');
+						if ((flipXY && relY) || (!flipXY && relX))
+							addrMode = force_24 ? AMB_ABS_L_X : (force_zp ? AMB_ZP_X : AMB_ABS_X);
+						else if ((flipXY && relX) || (!flipXY && relY)) {
+							if (force_zp)
+								return ERROR_INSTRUCTION_NOT_ZP;
+							addrMode = AMB_ABS_Y;
 						}
 					}
 				}
-				break;
 			}
 		}
 	}
@@ -4225,7 +4283,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			expression = line.before_or_full(',');
 			break;
 		default:
-			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), addrMode, op_param, expression);
+			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), validModes, addrMode, op_param, expression);
 			break;
 	}
 
@@ -4503,9 +4561,8 @@ StatusCode Asm::BuildLine(strref line)
 				// scope open / close
 				switch (line[0]) {
 					case '{':
-						if (scope_depth>=(MAX_SCOPE_DEPTH-1))
-							error = ERROR_TOO_DEEP_SCOPE;
-						else {
+						error = EnterScope();
+						if (error == STATUS_OK) {
 							scope_address[++scope_depth] = CurrSection().GetPC();
 							++line;
 							line.skip_whitespace();
@@ -4513,14 +4570,11 @@ StatusCode Asm::BuildLine(strref line)
 						break;
 					case '}':
 						// check for late eval of anything with an end scope
-						CheckLateEval(strref(), CurrSection().GetPC());
-						FlushLocalLabels(scope_depth);
-						FlushLabelPools(scope_depth);
-						--scope_depth;
-						if (scope_depth<0)
-							error = ERROR_UNBALANCED_SCOPE_CLOSURE;
-						++line;
-						line.skip_whitespace();
+						error = ExitScope();
+						if (error == STATUS_OK) {
+							++line;
+							line.skip_whitespace();
+						}
 						break;
 					case '*':
 						// if first char is '*' this seems like a line comment on some assemblers
@@ -4848,12 +4902,8 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 	while (contextStack.has_work()) {
 		error = BuildSegment();
 		if (contextStack.curr().complete()) {
-			if (contextStack.curr().scoped_context && scope_depth) {
-				CheckLateEval(strref(), CurrSection().GetPC());
-				FlushLocalLabels(scope_depth);
-				FlushLabelPools(scope_depth);
-				--scope_depth;
-			}
+			if (contextStack.curr().scoped_context && scope_depth)
+				ExitScope();
 			contextStack.pop();
 		} else
 			contextStack.curr().restart();
@@ -5305,6 +5355,8 @@ int main(int argc, char **argv)
 	const strref allinstr("opcodes");
 	const strref endmacro("endm");
 	const strref cpu("cpu");
+	const strref acc("acc");
+	const strref xy("xy");
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -5349,16 +5401,26 @@ int main(int argc, char **argv)
 			} else if (arg.has_prefix(allinstr) && (arg.get_len() == allinstr.get_len() || arg[allinstr.get_len()] == '=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
+			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
+				assembler.accumulator_16bit = arg.after('=').atoi() == 16;
+			} else if (arg.has_prefix(xy) && arg[xy.get_len()] == '=') {
+				assembler.index_reg_16bit = arg.after('=').atoi() == 16;
 			} else if (arg.has_prefix(cpu) && (arg.get_len() == cpu.get_len() || arg[cpu.get_len()] == '=')) {
 				arg.split_token_trim('=');
+				bool found = false;
 				for (int c = 0; c<nCPUs; c++) {
 					if (arg) {
 						if (arg.same_str(aCPUs[c].name)) {
 							assembler.SetCPU((CPUIndex)c);
+							found = true;
 							break;
 						}
 					} else
 						printf("%s\n", aCPUs[c].name);
+				}
+				if (!found && arg) {
+					printf("ERROR: UNKNOWN CPU " STRREF_FMT "\n", STRREF_ARG(arg));
+					return 1;
 				}
 				if (!arg)
 					return 0;
@@ -5382,6 +5444,8 @@ int main(int argc, char **argv)
 			 "  * -i(path) : Add include path\n"
 			 "  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
 			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
+			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits"
+			 "  * -xy=8/16: set the iundex register mode for 65816 at start, default is 8 bits"
 			 "  * -obj(file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
@@ -5486,9 +5550,8 @@ int main(int argc, char **argv)
 									break;
 								}
 							}
-							fprintf(f, "%s.label " STRREF_FMT " = $%04x",
-									wasLocal==i->local ? "\n" : (i->local ? " {\n" : "\n}\n"),
-									STRREF_ARG(i->name), value);
+							fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal==i->local ? "\n" :
+									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
 							wasLocal = i->local;
 						}
 						fputs(wasLocal ? "\n}\n" : "\n", f);
@@ -5511,8 +5574,7 @@ int main(int argc, char **argv)
 									break;
 								}
 							}
-							fprintf(f, "al $%04x %s" STRREF_FMT "\n",
-									value, i->name[0]=='.' ? "" : ".",
+							fprintf(f, "al $%04x %s" STRREF_FMT "\n", value, i->name[0]=='.' ? "" : ".",
 									STRREF_ARG(i->name));
 						}
 						fclose(f);
