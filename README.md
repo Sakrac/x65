@@ -15,7 +15,7 @@ To keep up with this trend x65 is adding the following features to the mix:
 * Labels don't need to end with colon, but they can.
 * No indentation required for instructions, meaning that labels can't be mnemonics, macros or directives.
 * Conditional assembly with #if/#ifdef/#else etc.
-* As far as achievable, support the syntax of other 6502 assemblers (Merlin syntax now requires command line argument).
+* As far as achievable, support the syntax of other 6502 assemblers (Merlin syntax now requires command line argument, -endm adds support for sources using macro/endmacro and repeat/endrepeat combos rather than scoeps).
 
 In summary, if you are familiar with any 6502 assembler syntax you should feel at home with x65. If you're familiar with C programming expressions you should be familiar with '{', '}' scoping and complex expressions.
 
@@ -637,6 +637,30 @@ In Merlin USR calls a function at a fixed address in memory, x65 safely avoids t
 
 SAV causes Merlin to save the result it has generated so far, which is somewhat similar to the [EXPORT](#export) directive. If the SAV name is different than the source name the section will have a different EXPORT name appended and exported to a separate binary file.
 
+**DSK**
+
+DSK is similar to SAV
+
+**ENT**
+
+ENT defines the label that preceeds it as external
+
+**EXT**
+
+EXT imports an external label, x65 doesn't need this.
+
+**LNK** / **STR**
+
+LNK links the contents of an object file, to fit with the named section method of linking in x65 this keyword has been reworked to have a similar result, the actual linking doesn't begin until the current section is complete.
+
+**ADR**
+
+Define byte triplets (like **DA** but three bytes instead of 2)
+
+**ADRL**
+
+Define values of four bytes.
+
 ## <a name="expressions">Expression syntax
 
 Expressions contain values, such as labels or raw numbers and operators including +, -, \*, /, & (and), | (or), ^ (eor), << (shift left), >> (shift right) similar to how expressions work in C. Parenthesis are supported for managing order of operations where C style precedence needs to be overridden. In addition there are some special characters supported:
@@ -781,6 +805,11 @@ Currently the assembler is in a limited release and while all features are in pl
 * irp (indefinite repeat)
 
 **FIXED**
+* Rastan for Apple II gs assembles and links.
+* Merlin LNK, ENT, ADR, ADRL functional
+* Merlin allows odd address mode of pei / pea.
+* jsr (addr,x) and jml / jmp.l $123456,x was missing from 65816 instructions
+* Fixed a bug with CPU indexes (forgot to add 6502 illegal ops to cpu indices)
 * Macro parameters should replace only whole words instead of any substring
 * boolean operators (==, <, >, etc.) for better conditional expressions
 * Set 65816 immediate op size on command line for files that make that assumption
@@ -816,6 +845,7 @@ Currently the assembler is in a limited release and while all features are in pl
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
+* 8 - Linking tested and passed with external project (Apple II gs Rastan)
 * 7 - 65816 support
 * 6 - 65C02 support
 * 5 - Merlin syntax

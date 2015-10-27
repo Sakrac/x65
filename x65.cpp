@@ -242,6 +242,10 @@ enum AssemblerDirective {
 	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
 	AD_XC,			// XC: MERLIN version of setting CPU
 	AD_MX,			// MX: MERLIN control accumulator 16 bit mode
+	AD_LNK,			// LNK: MERLIN load object and link
+	AD_ADR,			// ADR: MERLIN store 3 byte word
+	AD_ADRL,		// ADRL: MERLIN store 4 byte word
+	AD_ENT,			// ENT: MERLIN extern this address label
 };
 
 // Operators are either instructions or directives
@@ -260,20 +264,20 @@ enum EvalOperator {
 	EVOP_GT,		// d, 1 if left greater than right otherwise 0
 	EVOP_LTE,		// e, 1 if left less than or equal to right otherwise 0
 	EVOP_GTE,		// f, 1 if left greater than or equal to right otherwise 0
-	EVOP_LPR,		// g, left parenthesis
-	EVOP_RPR,		// h, right parenthesis
-	EVOP_ADD,		// i, +
-	EVOP_SUB,		// j, -
-	EVOP_MUL,		// k, * (note: if not preceded by value or right paren this is current PC)
-	EVOP_DIV,		// l, /
-	EVOP_AND,		// m, &
-	EVOP_OR,		// n, |
-	EVOP_EOR,		// o, ^
-	EVOP_SHL,		// p, <<
-	EVOP_SHR,		// q, >>
-	EVOP_LOB,		// r, low byte of 16 bit value
-	EVOP_HIB,		// s, high byte of 16 bit value
-	EVOP_BAB,		// t, bank byte of 24 bit value
+	EVOP_LOB,		// g, low byte of 16 bit value
+	EVOP_HIB,		// h, high byte of 16 bit value
+	EVOP_BAB,		// i, bank byte of 24 bit value
+	EVOP_LPR,		// j, left parenthesis
+	EVOP_RPR,		// k, right parenthesis
+	EVOP_ADD,		// l, +
+	EVOP_SUB,		// m, -
+	EVOP_MUL,		// n, * (note: if not preceded by value or right paren this is current PC)
+	EVOP_DIV,		// o, /
+	EVOP_AND,		// p, &
+	EVOP_OR,		// q, |
+	EVOP_EOR,		// r, ^
+	EVOP_SHL,		// s, <<
+	EVOP_SHR,		// t, >>
 	EVOP_STP,		// u, Unexpected input, should stop and evaluate what we have
 	EVOP_NRY,		// v, Not ready yet
 	EVOP_ERR,		// w, Error
@@ -394,7 +398,7 @@ enum AddrMode {
 	AMC_BBR = AMM_ZP_ABS,
 
 	// 65816 groups
-	AM8_JSR = AMM_ABS | AMM_ABS_L,
+	AM8_JSR = AMM_ABS | AMM_ABS_L | AMM_REL_X,
 	AM8_JSL = AMM_ABS_L,
 	AM8_BIT = AMM_IMM_DBL_A | AMC_BIT,
 	AM8_ORA = AMM_IMM_DBL_A | AMC_ORA | AMM_STK | AMM_ZP_REL_L | AMM_ABS_L | AMM_STK_REL_Y | AMM_ZP_REL_Y_L | AMM_ABS_L_X,
@@ -404,7 +408,8 @@ enum AddrMode {
 	AM8_LDX = AMM_IMM_DBL_XY | AMM_LDX,
 	AM8_LDY = AMM_IMM_DBL_XY | AMM_LDY,
 	AM8_CPY = AMM_IMM_DBL_XY | AMM_CPY,
-	AM8_JMP = AMC_JMP | AMM_REL_L,
+	AM8_JMP = AMC_JMP | AMM_REL_L | AMM_ABS_L | AMM_REL_X,
+	AM8_JML = AMM_REL_L | AMM_ABS_L,
 	AM8_BRL = AMM_BRANCH_L | AMM_ABS,
 	AM8_MVN = AMM_BLK_MOV,
 	AM8_PEI = AMM_ZP_REL,
@@ -616,7 +621,7 @@ static const int num_opcodes_65C02 = sizeof(opcodes_65C02) / sizeof(opcodes_65C0
 struct mnem opcodes_65816[] = {
 //	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs [zp] [zp],y absl absl,x b,s (b,s),y[$000] b,b
 	{ "brk", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
-	{ "jsr", AM8_JSR, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ "jsr", AM8_JSR, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "jsl", AM8_JSL, { 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "rti", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "rts", AMM_NON, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
@@ -683,7 +688,8 @@ struct mnem opcodes_65816[] = {
 	{ "trb", AMC_TRB, { 0x00, 0x14, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "tsb", AMC_TRB, { 0x00, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 //	   nam   modes     (zp,x)   zp     # $0000 (zp),y zp,x  abs,y abs,x (xx)     A  empty (zp)(abs,x)zp,abs [zp] [zp],y absl absl,x b,s (b,s),y[$0000]b,b
-	{ "jmp", AM8_JMP, { 0x00, 0x00, 0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdc, 0x00 } },
+	{ "jmp", AM8_JMP, { 0x00, 0x00, 0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00, 0xdc, 0x00 } },
+	{ "jml", AM8_JML, { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00, 0xdc, 0x00 } },
 	{ "sty", AMM_STY, { 0x00, 0x84, 0x00, 0x8c, 0x00, 0x94, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "ldy", AM8_LDY, { 0x00, 0xa4, 0xa0, 0xac, 0x00, 0xb4, 0x00, 0xbc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 	{ "cpy", AM8_CPY, { 0x00, 0xc4, 0xc0, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
@@ -757,6 +763,7 @@ enum CODE_ARG {
 
 enum CPUIndex {
 	CPU_6502,
+	CPU_6502_ILLEGAL,
 	CPU_65C02,
 	CPU_65C02_WDC,
 	CPU_65816
@@ -885,6 +892,7 @@ DirectiveName aDirectiveNames[] {
 // Merlin specific directives separated from regular directives to avoid confusion
 DirectiveName aDirectiveNamesMerlin[] {
 	{ "MX", AD_MX },			// MERLIN
+	{ "STR", AD_LNK },			// MERLIN
 	{ "DA", AD_WORDS },			// MERLIN
 	{ "DW", AD_WORDS },			// MERLIN
 	{ "ASC", AD_TEXT },			// MERLIN
@@ -898,6 +906,8 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "EJECT", AD_EJECT },		// MERLIN
 	{ "OBJ", AD_EJECT },		// MERLIN
 	{ "TR", AD_EJECT },			// MERLIN
+	{ "END", AD_EJECT },		// MERLIN
+	{ "REL", AD_EJECT },		// MERLIN
 	{ "USR", AD_USR },			// MERLIN
 	{ "DUM", AD_DUMMY },		// MERLIN
 	{ "DEND", AD_DUMMY_END },	// MERLIN
@@ -906,7 +916,13 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "LUP", AD_REPT },			// MERLIN
 	{ "MAC", AD_MACRO },		// MERLIN
 	{ "SAV", AD_SAV },			// MERLIN
+	{ "DSK", AD_SAV },			// MERLIN
+	{ "LNK", AD_LNK },			// MERLIN
 	{ "XC", AD_XC },			// MERLIN
+	{ "ENT", AD_ENT },			// MERLIN (xdef, but label on same line)
+	{ "EXT", AD_EJECT },		// MERLIN (xref, which are implied in x65 object files)
+	{ "ADR", AD_ADR },			// ADR: MERLIN store 3 byte word
+	{ "ADRL", AD_ADRL },		// ADRL: MERLIN store 4 byte word
 };
 
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
@@ -1131,6 +1147,7 @@ typedef struct Section {
 	void SetByte(size_t offs, int b) { output[offs] = b; }
 	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
 	void SetTriple(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; }
+	void SetQuad(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; output[offs+3] = w>>24; }
 } Section;
 
 // Symbol list entry (in order of parsing)
@@ -1163,6 +1180,7 @@ typedef struct {
 		LET_LABEL,			// this evaluation applies to a label and not memory
 		LET_ABS_REF,		// calculate an absolute address and store at 0, +1
 		LET_ABS_L_REF,		// calculate a bank + absolute address and store at 0, +1, +2
+		LET_ABS_4_REF,		// calculate a 32 bit number
 		LET_BRANCH,			// calculate a branch offset and store at this address
 		LET_BRANCH_16,		// calculate a branch offset of 16 bits and store at this address
 		LET_BYTE,			// calculate a byte and store at this address
@@ -1333,6 +1351,7 @@ public:
 	bool errorEncountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
+	bool link_all_section;		// link all known relative sections to this section at end
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -1359,6 +1378,7 @@ public:
 	void DummySection(int address);				// non-data section (fixed)
 	void DummySection();						// non-data section (relative)
 	void EndSection();							// pop current section
+	void LinkAllToSection();					// link all loaded relative sections to this section at end
 	Section& CurrSection() { return *current_section; }
 	unsigned char* BuildExport(strref append, int &file_size, int &addr);
 	int GetExportNames(strref *aNames, int maxNames);
@@ -1426,6 +1446,10 @@ public:
 	StatusCode Directive_Include(strref line);
 	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
 	StatusCode Directive_Import(strref line);
+	StatusCode Directive_ORG(strref line);
+	StatusCode Directive_LOAD(strref line);
+	StatusCode Directive_LNK(strref line);
+	StatusCode Directive_XDEF(strref line);
 
 	// Assembler steps
 	StatusCode GetAddressMode(strref line, bool flipXY, unsigned int validModes,
@@ -1481,6 +1505,7 @@ void Asm::Cleanup() {
 	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti !=externals.end(); ++exti)
 		exti->labels.clear();
 	externals.clear();
+	link_all_section = false;
 	// this section is relocatable but is assigned address $1000 if exporting without directives
 	SetSection(strref("default"));
 	current_section = &allSections[0];
@@ -1492,10 +1517,9 @@ void Asm::Cleanup() {
 	errorEncountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
-	accumulator_16bit = false;
-	index_reg_16bit = false;
+	accumulator_16bit = false;	// default 65816 8 bit immediate mode
+	index_reg_16bit = false;	// other CPUs won't be affected.
 }
-
 
 int sortHashLookup(const void *A, const void *B) {
 	const OPLookup *_A = (const OPLookup*)A;
@@ -1637,6 +1661,8 @@ void Asm::SetSection(strref name, int address)
 			}
 		}
 	}
+	if (link_all_section)
+		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 	Section newSection(name, address);
@@ -1648,15 +1674,8 @@ void Asm::SetSection(strref name, int address)
 
 void Asm::SetSection(strref name)
 {
-	// should same name section within the same file be the same section?
-/*	if (name) {
-		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
-			if (i->name && name.same_str(i->name)) {
-				current_section = &*i;
-				return;
-			}
-		}
-	}*/
+	if (link_all_section)
+		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 	int align = 1;
@@ -1673,13 +1692,30 @@ void Asm::SetSection(strref name)
 	current_section = &allSections[allSections.size()-1];
 }
 
+// Merlin linking includes one file at a time ignoring the section naming
+// so just wait until the end of the current section to link all unlinked
+// sections.
+void Asm::LinkAllToSection() {
+	if (CurrSection().IsDummySection())
+		return;
+	bool gotRelSect = true;
+	while (gotRelSect) {
+		gotRelSect = false;
+		for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
+			if (s->IsRelativeSection()) {
+				LinkSections(s->name);
+				gotRelSect = true;
+				break;
+			}
+		}
+	}
+	link_all_section = false;
+}
+
 // Fixed address dummy section
 void Asm::DummySection(int address) {
-	if (CurrSection().empty() && address == CurrSection().GetPC()) {
-		CurrSection().SetDummySection(true);
-		return;
-	}
-
+	if (link_all_section)
+		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 	Section newSection(strref(), address);
@@ -1694,6 +1730,8 @@ void Asm::DummySection() {
 }
 
 void Asm::EndSection() {
+	if (link_all_section)
+		LinkAllToSection();
 	int section = (int)(current_section - &allSections[0]);
 	if (section)
 		current_section = &allSections[section-1];
@@ -2937,9 +2975,23 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 									value = 0;
 								}
 							}
-							if ((trg+1) >= allSections[sec].size())
+							if ((trg+2) >= allSections[sec].size())
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							allSections[sec].SetTriple(trg, value);
+							break;
+
+						case LateEval::LET_ABS_4_REF:
+							if (ret==STATUS_RELATIVE_SECTION) {
+								if (i->section<0)
+									resolved = false;
+								else {
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, lastEvalPart);
+									value = 0;
+								}
+							}
+							if ((trg+3) >= allSections[sec].size())
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							allSections[sec].SetQuad(trg, value);
 							break;
 
 						case LateEval::LET_BRANCH:
@@ -3717,6 +3769,85 @@ StatusCode Asm::Directive_Import(strref line)
 	return STATUS_OK;
 }
 
+// org / pc: current address of code
+StatusCode Asm::Directive_ORG(strref line)
+{
+	int addr;
+	if (line[0]=='=')
+		++line;
+	else if (keyword_equ.is_prefix_word(line))	// optional '=' or equ
+		line.next_word_ws();
+	line.skip_whitespace();
+	
+	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	StatusCode error = EvalExpression(line, etx, addr);
+	if (error != STATUS_OK) {
+		error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
+		return error;
+	}
+
+	// Section immediately followed by ORG reassigns that section to be fixed
+	if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
+		CurrSection().start_address = addr;
+		CurrSection().load_address = addr;
+		CurrSection().address = addr;
+		CurrSection().address_assigned = true;
+		LinkLabelsToAddress(SectionId(), addr);	// in case any labels were defined prior to org & data
+	} else
+		SetSection(strref(), addr);
+	return STATUS_OK;
+}
+
+// load: address for target to load code at
+StatusCode Asm::Directive_LOAD(strref line)
+{
+	int addr;
+	if (line[0]=='=' || keyword_equ.is_prefix_word(line))
+		line.next_word_ws();
+
+	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	StatusCode error = EvalExpression(line, etx, addr);
+	if (error != STATUS_OK)
+		return error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
+
+	CurrSection().SetLoadAddress(addr);
+	return STATUS_OK;
+}
+
+// MERLIN version of AD_LINK, which is more like AD_INCOBJ + link to current section
+StatusCode Asm::Directive_LNK(strref line)
+{
+	strref file = line.between('"', '"');
+	if (!file)		// MERLIN: No quotes around include filenames
+		file = line.split_range(filename_end_char_range);
+	StatusCode error = ReadObjectFile(file);
+	if (!error && !CurrSection().IsRelativeSection())
+		link_all_section = true;
+	return error;
+}
+
+// this stores a string that when matched with a label will make that label external
+StatusCode Asm::Directive_XDEF(strref line)
+{
+	line.trim_whitespace();
+	if (strref xdef = line.split_range(syntax == SYNTAX_MERLIN ?
+			label_end_char_range_merlin : label_end_char_range)) {
+		char f = xdef.get_first();
+		char e = xdef.get_last();
+		if (f != '.' && f != '!' && f != '@' && e != '$') {
+			unsigned int hash = xdef.fnv1a();
+			unsigned int pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
+			while (pos < xdefs.count() && xdefs.getKey(pos) == hash) {
+				if (xdefs.getValue(pos).same_str_case(xdef))
+					return STATUS_OK;
+				++pos;
+			}
+			xdefs.insert(pos, hash);
+			xdefs.getValues()[pos] = xdef;
+		}
+	}
+	return STATUS_OK;
+}
 
 // Action based on assembler directive
 StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref source_file)
@@ -3743,79 +3874,37 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			CurrSection().export_append = line.split_label();
 			break;
 
-		case AD_ORG: {		// org / pc: current address of code
-			int addr;
-			if (line[0]=='=')
-				++line;
-			else if (keyword_equ.is_prefix_word(line))	// optional '=' or equ
-				line.next_word_ws();
-			line.skip_whitespace();
-			if ((error = EvalExpression(line, etx, addr))) {
-				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
-				break;
-			}
-			// Section immediately followed by ORG reassigns that section to be fixed
-			if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
-				CurrSection().start_address = addr;
-				CurrSection().load_address = addr;
-				CurrSection().address = addr;
-				CurrSection().address_assigned = true;
-				LinkLabelsToAddress(SectionId(), addr);	// in case any labels were defined prior to org & data
-			} else
-				SetSection(strref(), addr);
-			break;
-		}
-		case AD_LOAD: {		// load: address for target to load code at
-			int addr;
-			if (line[0]=='=' || keyword_equ.is_prefix_word(line))
-				line.next_word_ws();
-			if ((error = EvalExpression(line, etx, addr))) {
-				error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
-				break;
-			}
-			CurrSection().SetLoadAddress(addr);
-			break;
-		}
+		case AD_ORG:
+			return Directive_ORG(line);
 
+		case AD_LOAD:
+			return Directive_LOAD(line);
+	
 		case AD_SECTION:
-			line.trim_whitespace();
-			SetSection(line);
+			SetSection(line.get_trimmed_ws());
 			break;
 
 		case AD_LINK:
-			line.trim_whitespace();
-			error = LinkSections(line);
-			break;
+			return LinkSections(line.get_trimmed_ws());
+
+		case AD_LNK:
+			return Directive_LNK(line);
 
 		case AD_INCOBJ: {
 			strref file = line.between('"', '"');
-			if (!file)								// MERLIN: No quotes around PUT filenames
+			if (!file)		// MERLIN: No quotes around include filenames
 				file = line.split_range(filename_end_char_range);
 			error = ReadObjectFile(file);
 			break;
 		}
 
-		case AD_XDEF: {
-			// this stores a string that when matched with a label will make that label external
-			line.skip_whitespace();
-			strref xdef = line.split_range(syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
-			if (xdef) {
-				char f = xdef.get_first();
-				char e = xdef.get_last();
-				if (f != '.' && f != '!' && f != '@' && e != '$') {
-					unsigned int hash = xdef.fnv1a();
-					unsigned int pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
-					while (pos < xdefs.count() && xdefs.getKey(pos) == hash) {
-						if (xdefs.getValue(pos).same_str_case(xdef))
-							return STATUS_OK;
-						++pos;
-					}
-					xdefs.insert(pos, hash);
-					xdefs.getValues()[pos] = xdef;
-				}
-			}
+		case AD_XDEF:
+			return Directive_XDEF(line.get_trimmed_ws());
+
+		case AD_ENT:	// MERLIN version of xdef, makes most recently defined label external
+			if (Label *pLastLabel = GetLabel(last_label))
+				pLastLabel->external = true;
 			break;
-		}
 
 		case AD_ALIGN:		// align: align address to multiple of value, fill space with 0
 			if (line) {
@@ -3893,6 +3982,32 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				AddWord(value);
 			}
 			break;
+			
+		case AD_ADR:		// ADR: MERLIN store 3 byte word
+		case AD_ADRL: {		// ADRL: MERLIN store 4 byte word
+			while (strref exp_w = line.split_token_trim(',')) {
+				int value = 0;
+				if (!CurrSection().IsDummySection()) {
+					if (syntax==SYNTAX_MERLIN && exp_w.get_first()=='#')	// MERLIN allows for an immediate declaration on data
+						++exp_w;
+					error = EvalExpression(exp_w, etx, value);
+					if (error>STATUS_NOT_READY)
+						break;
+					else if (error==STATUS_NOT_READY)
+						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, dir==AD_ADR ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF);
+					else if (error == STATUS_RELATIVE_SECTION) {
+						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
+						value = 0;
+					}
+				}
+				unsigned char bytes[4] = {
+					(unsigned char)value, (unsigned char)(value>>8),
+					(unsigned char)(value>>16), (unsigned char)(value>>24) };
+				AddBin(bytes, dir==AD_ADRL ? 4 : 3);
+			}
+			break;
+		}
+
 		case AD_DC: {
 			bool words = false;
 			if (line[0]=='.') {
@@ -3930,6 +4045,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			break;
 		}
+			
 		case AD_HEX: {
 			unsigned char b = 0, v = 0;
 			while (line) {	// indeterminable length, can't read hex to int
@@ -3960,6 +4076,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_USR:
 			line.clear();
 			break;
+			
 		case AD_SAV:
 			line.trim_whitespace();
 			if (line.has_prefix(export_base_name))
@@ -3967,6 +4084,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			if (line)
 				CurrSection().export_append = line.split_label();
 			break;
+			
 		case AD_XC:			// XC: MERLIN version of setting CPU
 			if (strref("off").is_prefix_word(line))
 				SetCPU(CPU_6502);
@@ -3977,6 +4095,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			else
 				SetCPU(CPU_65C02);
 			break;
+			
 		case AD_TEXT: {		// text: add text within quotes
 			strref text_prefix = line.before('"').get_trimmed_ws();
 			line = line.between('"', '"');
@@ -4011,7 +4130,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_INCSYM:
 			IncludeSymbols(line);
 			break;
-			
+
 		case AD_LABPOOL:
 			AddLabelPool(line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0), line);
 			break;
@@ -4126,8 +4245,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				line.trim_whitespace();
 				int value = 0;
 				error = EvalExpression(line, etx, value);
-				index_reg_16bit = !!(value&1);
-				accumulator_16bit = !!(value&2);
+				index_reg_16bit = !(value&1);
+				accumulator_16bit = !(value&2);
 			}
 			break;
 			
@@ -4346,6 +4465,10 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			addrMode = AMB_ABS_L_X;
 		else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L))
 			addrMode = AMB_ZP_REL_L;
+		else if (syntax == SYNTAX_MERLIN && addrMode==AMB_IMM && validModes==AMM_ABS)
+			addrMode = AMB_ABS;	// Merlin seems to allow this
+		else if (syntax == SYNTAX_MERLIN && addrMode==AMB_ABS && validModes==AMM_ZP_REL)
+			addrMode = AMB_ZP_REL;	// Merlin seems to allow this
 		else
 			return ERROR_INVALID_ADDRESSING_MODE;
 	}
@@ -4536,6 +4659,7 @@ StatusCode Asm::BuildLine(strref line)
 	int start_address = CurrSection().address;
 	strref code_line = line;
 	bool built_opcode = false;
+	bool list_keyword = false;
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
 		char char0 = line[0];				// first char including white space
@@ -4600,6 +4724,7 @@ StatusCode Asm::BuildLine(strref line)
 				}
 				if (aInstructions[op_idx].type==OT_DIRECTIVE) {
 					error = ApplyDirective((AssemblerDirective)aInstructions[op_idx].index, line, contextStack.curr().source_file);
+					list_keyword = true;
 				} else if (ConditionalAsm() && aInstructions[op_idx].type == OT_MNEMONIC) {
 					error = AddOpcode(line, aInstructions[op_idx].index, contextStack.curr().source_file);
 					built_opcode = true;
@@ -4611,11 +4736,13 @@ StatusCode Asm::BuildLine(strref line)
 				++line;
 				error = AssignLabel(label, line);
 				line.clear();
+				list_keyword = true;
 			} else if (keyword_equ.is_prefix_word(line)) {
 				line += keyword_equ.get_len();
 				line.skip_whitespace();
 				error = AssignLabel(label, line);
 				line.clear();
+				list_keyword = true;
 			} else {
 				unsigned int nameHash = label.fnv1a();
 				unsigned int macro = FindLabelIndex(nameHash, macros.getKeys(), macros.count());
@@ -4653,6 +4780,7 @@ StatusCode Asm::BuildLine(strref line)
 							line = line_start + int(label.get() + label.get_len() -line_start.get());
 							if (line[0]==':' || line[0]=='?')
 								++line;	// there may be codes after the label
+							list_keyword = true;
 						}
 					}
 				}
@@ -4683,13 +4811,13 @@ StatusCode Asm::BuildLine(strref line)
 	}
 	// update listing
 	if (error == STATUS_OK && list_assembly) {
-		Section &curr = CurrSection();
-		if (!curr.pListing)
-			curr.pListing = new Listing;
-		if (curr.pListing && curr.pListing->size() == curr.pListing->capacity())
-			curr.pListing->reserve(curr.pListing->size() + 256);
 		if (SectionId() == start_section) {
-			if (curr.address != start_address && curr.size() && !curr.IsDummySection()) {
+			Section &curr = CurrSection();
+			if (!curr.pListing)
+				curr.pListing = new Listing;
+			if (curr.pListing && curr.pListing->size() == curr.pListing->capacity())
+				curr.pListing->reserve(curr.pListing->size() + 256);
+			if ((list_keyword || (curr.address != start_address && curr.size())) && !curr.IsDummySection()) {
 				struct ListLine lst;
 				lst.address = start_address - curr.start_address;
 				lst.size = curr.address - start_address;
@@ -4908,6 +5036,8 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 		} else
 			contextStack.curr().restart();
 	}
+	if (link_all_section)
+		LinkAllToSection();
 	if (error == STATUS_OK) {
 		error = CheckLateEval();
 		if (error > STATUS_NOT_READY) {
@@ -4997,7 +5127,6 @@ struct ObjFileLabel {
 struct ObjFileLateEval {
 	struct ObjFileStr label;
 	struct ObjFileStr expression;
-	struct ObjFileStr source_file;
 	int address;			// PC relative to section or fixed
 	short section;			// section to target
 	short target;			// offset into section memory
@@ -5017,6 +5146,7 @@ static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, 
 {
 	if (!str.get() || !str.get_len())
 		return -1;	// empty string
+
 	unsigned int hash = str.fnv1a();
 	unsigned int index = FindLabelIndex(hash, pLookup->getKeys(), pLookup->count());
 	if (index<pLookup->count() && str.same_str_case(*strPool + pLookup->getValue(index)))
@@ -5024,7 +5154,7 @@ static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, 
 
 	int strOffs = strPoolSize;
 	if ((strOffs + str.get_len() + 1) > strPoolCap) {
-		strPoolCap += 4096;
+		strPoolCap = strOffs + str.get_len() + 4096;
 		char *strPoolGrow = (char*)malloc(strPoolCap);
 		if (strPoolGrow) {
 			if (*strPool) {
@@ -5151,7 +5281,6 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				struct ObjFileLateEval &le = aLateEvals[late++];
 				le.label.offs = _AddStrPool(lei->label, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				le.expression.offs = _AddStrPool(lei->expression, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-				le.source_file.offs = _AddStrPool(lei->source_file, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				le.section = lei->section;
 				le.target = (short)lei->target;
 				le.address = lei->address;
@@ -5208,8 +5337,12 @@ StatusCode Asm::WriteObjectFile(strref filename)
 StatusCode Asm::ReadObjectFile(strref filename)
 {
 	size_t size;
+	strown<512> file;
+	file.copy(filename); // Merlin mostly uses extension-less files, append .x65 as a default
+	if ((syntax==SYNTAX_MERLIN && !file.has_suffix(".x65")) || filename.find('.')<0)
+		file.append(".x65");
 	int file_index = (int)externals.size();
-	if (char *data = LoadBinary(filename, size)) {
+	if (char *data = LoadBinary(file.get_strref(), size)) {
 		struct ObjFileHeader &hdr = *(struct ObjFileHeader*)data;
 		size_t sum = sizeof(hdr) + hdr.sections*sizeof(struct ObjFileSection) +
 			hdr.relocs * sizeof(struct ObjFileReloc) + hdr.labels * sizeof(struct ObjFileLabel) +
@@ -5328,11 +5461,11 @@ StatusCode Asm::ReadObjectFile(strref filename)
 						AddLateEval(name, le.address, le.scope, strref(str_pool + le.expression.offs), (LateEval::Type)le.type);
 						LateEval &last = lateEval[lateEval.size()-1];
 						last.section = le.section >= 0 ? aSctRmp[le.section] : le.section;
-						last.source_file = le.source_file.offs >= 0 ? strref(str_pool + le.source_file.offs) : strref();
+						last.source_file = strref();
 						last.file_ref = file_index;
 					}
 				} else {
-					AddLateEval(le.target, le.address, le.scope, strref(str_pool + le.expression.offs), strref(str_pool + le.source_file.offs), (LateEval::Type)le.type);
+					AddLateEval(le.target, le.address, le.scope, strref(str_pool + le.expression.offs), strref(), (LateEval::Type)le.type);
 					LateEval &last = lateEval[lateEval.size()-1];
 					last.file_ref = file_index;
 				}
@@ -5445,7 +5578,7 @@ int main(int argc, char **argv)
 			 "  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
 			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
 			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits"
-			 "  * -xy=8/16: set the iundex register mode for 65816 at start, default is 8 bits"
+			 "  * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits"
 			 "  * -obj(file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
