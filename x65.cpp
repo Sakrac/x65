@@ -1153,7 +1153,7 @@ typedef struct Section {
 // Symbol list entry (in order of parsing)
 struct MapSymbol {
 	strref name;    // string name
-	short value;
+	int value;
 	short section;
 	bool local;     // local variables
 };
@@ -3090,7 +3090,7 @@ void Asm::LabelAdded(Label *pLabel, bool local)
 		sym.section = pLabel->section;
 		sym.value = pLabel->value;
 		sym.local = local;
-		pLabel->mapIndex = -1;
+		pLabel->mapIndex = pLabel->evaluated ? -1 : (int)map.size();
 		map.push_back(sym);
 	}
 }
@@ -5400,7 +5400,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 
 			for (int si = 0; si < hdr.sections; si++) {
 				for (int r = 0; r < aSect[si].relocs; r++) {
-					struct ObjFileReloc &rs = aReloc[reloc_idx++];
+					struct ObjFileReloc &rs = aReloc[r];
 					allSections[aSctRmp[si]].AddReloc(rs.base_value, rs.section_offset, aSctRmp[rs.target_section], Reloc::Type(rs.value_type));
 				}
 			}
@@ -5445,7 +5445,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 					lbl->pc_relative = !!(f & ObjFileLabel::OFL_ADDR);
 					lbl->external = external == ObjFileLabel::OFL_XDEF;
 					lbl->section = l.section >= 0 ? aSctRmp[l.section] : l.section;
-					lbl->mapIndex = l.mapIndex + (int)map.size();
+					lbl->mapIndex = l.mapIndex >= 0 ? (l.mapIndex + (int)map.size()) : -1;
 				}
 			}
 

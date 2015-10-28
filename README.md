@@ -805,6 +805,7 @@ Currently the assembler is in a limited release and while all features are in pl
 * irp (indefinite repeat)
 
 **FIXED**
+* Link file issues fixed, added a dump tool to show the contents of object files for debugging.
 * Rastan for Apple II gs assembles and links.
 * Merlin LNK, ENT, ADR, ADRL functional
 * Merlin allows odd address mode of pei / pea.
