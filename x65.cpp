@@ -1788,7 +1788,8 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 						StatusCode status = AppendSection(*i, allSections[last_fixed_section]);
 						if (status != STATUS_OK)
 							return nullptr;
-						end_address = allSections[last_fixed_section].start_address +
+						Section &s = allSections[last_fixed_section];
+						end_address = s.start_address +
 							(int)allSections[last_fixed_section].size();
 					}
 				}
@@ -1914,6 +1915,20 @@ StatusCode Asm::AppendSection(Section &s, Section &curr)
 		int section_size = (int)s.size();
 
 		int section_address = curr.GetPC();
+
+		// calculate space for alignment
+		int align_size = s.align_address <= 1 ? 0 :
+			(s.align_address-(section_address % s.align_address)) % s.align_address;
+
+		// Get base addresses
+		curr.CheckOutputCapacity(section_size + align_size);
+
+		// add 0's
+		for (int a = 0; a<align_size; a++)
+			curr.AddByte(0);
+
+		section_address += align_size;
+
 		curr.CheckOutputCapacity((int)s.size());
 		unsigned char *section_out = curr.curr;
 		if (s.output)
@@ -1924,19 +1939,6 @@ StatusCode Asm::AppendSection(Section &s, Section &curr)
 		s.output = 0;
 		s.curr = 0;
 		s.output_capacity = 0;
-
-		// calculate space for alignment
-		int align_size = s.align_address <= 1 ? 0 :
-			((section_address + s.align_address - 1) % s.align_address);
-
-		// Get base addresses
-		curr.CheckOutputCapacity(section_size + align_size);
-
-		// add 0's
-		for (int a = 0; a<align_size; a++)
-			curr.AddByte(0);
-
-		section_address += align_size;
 
 		// Update address range and mark section as merged
 		s.start_address = section_address;
@@ -4131,9 +4133,11 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			IncludeSymbols(line);
 			break;
 
-		case AD_LABPOOL:
-			AddLabelPool(line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0), line);
+		case AD_LABPOOL: {
+			strref name = line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0);
+			AddLabelPool(name, line);
 			break;
+		}
 
 		case AD_IF:
 			if (NewConditional()) {			// Start new conditional block
@@ -4687,7 +4691,6 @@ StatusCode Asm::BuildLine(strref line)
 					case '{':
 						error = EnterScope();
 						if (error == STATUS_OK) {
-							scope_address[++scope_depth] = CurrSection().GetPC();
 							++line;
 							line.skip_whitespace();
 						}

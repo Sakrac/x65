@@ -294,6 +294,9 @@ int main(int argc, char **argv)
 			} else if (arg.same_str("late_eval")) {
 				show = prv_show | SHOW_LATE_EVAL;
 				prv_show = show;
+			} else if (arg.same_str("all")) {
+				show = prv_show | SHOW_SECTIONS | SHOW_RELOCS | SHOW_LABELS | SHOW_MAP_SYMBOLS | SHOW_LATE_EVAL;
+				prv_show = show;
 			}
 		} else if (!file)
 			file = argv[a];

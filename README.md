@@ -32,6 +32,8 @@ x65.cpp requires struse.h which is a single file text parsing library that can b
 * [6502 opcodes](http://www.6502.org/tutorials/6502opcodes.html)
 * [6502 opcode grid](http://www.llx.com/~nparker/a2/opcodes.html)
 * [Codebase64 CPU section](http://codebase64.org/doku.php?id=base:6502_6510_coding)
+* [6502 illegal opcodes](http://www.oxyron.de/html/opcodes02.html)
+* [65816 opcodes](http://wiki.superfamicom.org/snes/show/65816+Reference#fn:14)
 
 ## Command Line Options
 
@@ -238,6 +240,8 @@ The following lines will place all sections named Code sequentially at location 
 ```
 
 There is currently object file support (use -obj <filename> argument to generate), the recommended file extension for object files is .x65. In order to access symbols from object file code use XDEF <labelname> prior to declaring a label within the object.
+
+To inspect the contents of x65 objects files there is a 'dump_x65' tool included in this archive.
 
 <a name="load">**LOAD**
 
@@ -799,12 +803,13 @@ FindFirstSpace
 
 ### Development Status
 
-Currently the assembler is in a limited release and while all features are in place and tested, more testing is needed to verify the completeness. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
+Fish food! Assembler has all important features and switching to make a 6502 project for more testing. Currently the assembler is in a limited release. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
 * irp (indefinite repeat)
 
 **FIXED**
+* Nested scopes and label pools broke recently and was fixed, section alignment wasn't working.
 * Link file issues fixed, added a dump tool to show the contents of object files for debugging.
 * Rastan for Apple II gs assembles and links.
 * Merlin LNK, ENT, ADR, ADRL functional
@@ -846,7 +851,7 @@ Currently the assembler is in a limited release and while all features are in pl
 * TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
 
 Revisions:
-* 8 - Linking tested and passed with external project (Apple II gs Rastan)
+* 8 - Fish food / Linking tested and passed with external project (Apple II gs Rastan)
 * 7 - 65816 support
 * 6 - 65C02 support
 * 5 - Merlin syntax
