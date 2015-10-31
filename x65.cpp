@@ -2379,7 +2379,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		line = line.before_or_full(',');
 		line.trim_whitespace();
 		strref name = line.split_token_trim('=');
-		line = line.before(';').before(c_comment).get_trimmed_ws();
+		line = line.before_or_full(';').before_or_full(c_comment).get_trimmed_ws();
 		if (line) {
 			StatusCode error = EvalExpression(line, etx, value);
 			if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
