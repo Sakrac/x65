@@ -81,6 +81,7 @@ enum StatusCode {
 	STATUS_OK,			// everything is fine
 	STATUS_RELATIVE_SECTION, // value is relative to a single section
 	STATUS_NOT_READY,	// label could not be evaluated at this time
+	STATUS_XREF_DEPENDENT,	// evaluated but relied on an XREF label to do so
 	STATUS_NOT_STRUCT,	// return is not a struct.
 	FIRST_ERROR,
 	ERROR_UNDEFINED_CODE = FIRST_ERROR,
@@ -142,6 +143,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"ok",
 	"relative section",
 	"not ready",
+	"XREF dependent result",
 	"name is not a struct",
 	"Undefined code",
 	"Unexpected character in expression",
@@ -203,7 +205,8 @@ enum AssemblerDirective {
 	AD_LOAD,		// LOAD: If applicable, instruct to load at this address
 	AD_SECTION,		// SECTION: Enable code that will be assigned a start address during a link step
 	AD_LINK,		// LINK: Put sections with this name at this address (must be ORG / fixed address section)
-	AD_XDEF,		// XDEF: Externally declare a label
+	AD_XDEF,		// XDEF: Externally declare a symbol
+	AD_XREF,		// XREF: Reference an external symbol
 	AD_INCOBJ,		// INCOBJ: Read in an object file saved from a previous build
 	AD_ALIGN,		// ALIGN: Add to address to make it evenly divisible by this
 	AD_MACRO,		// MACRO: Create a macro
@@ -280,7 +283,8 @@ enum EvalOperator {
 	EVOP_SHR,		// t, >>
 	EVOP_STP,		// u, Unexpected input, should stop and evaluate what we have
 	EVOP_NRY,		// v, Not ready yet
-	EVOP_ERR,		// w, Error
+	EVOP_XRF,		// w, value from XREF label
+	EVOP_ERR,		// x, Error
 };
 
 // Opcode encoding
@@ -513,6 +517,17 @@ const char* aliases_6502[] = {
 	"bcc", "blt",
 	"bcs", "bge",
 	nullptr, nullptr
+};
+
+unsigned char timing_6502[] = {
+	0x0e, 0x0c, 0xff, 0xff, 0xff, 0x06, 0x0a, 0xff, 0x06, 0x04, 0x04, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
+	0x0c, 0x0c, 0xff, 0xff, 0x06, 0x06, 0x0a, 0xff, 0x08, 0x04, 0x04, 0xff, 0x08, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
+	0x0c, 0x0c, 0xff, 0xff, 0xff, 0x06, 0x0a, 0xff, 0x06, 0x04, 0x04, 0xff, 0x06, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
+	0x0c, 0x0c, 0xff, 0xff, 0xff, 0x06, 0x0a, 0xff, 0x08, 0x04, 0x04, 0xff, 0x0a, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
+	0xff, 0x0c, 0xff, 0xff, 0x06, 0x06, 0x06, 0xff, 0x04, 0xff, 0x04, 0xff, 0x08, 0x08, 0x08, 0xff, 0x05, 0x0c, 0xff, 0xff, 0x08, 0x08, 0x08, 0xff, 0x04, 0x0a, 0x04, 0xff, 0xff, 0x0a, 0xff, 0xff,
+	0x04, 0x0c, 0x04, 0xff, 0x06, 0x06, 0x06, 0xff, 0x04, 0x04, 0x04, 0xff, 0x08, 0x08, 0x08, 0xff, 0x05, 0x0b, 0xff, 0xff, 0x08, 0x08, 0x08, 0xff, 0x04, 0x09, 0x04, 0xff, 0x09, 0x09, 0x09, 0xff,
+	0x04, 0x0c, 0xff, 0xff, 0x06, 0x06, 0x0a, 0xff, 0x04, 0x04, 0x04, 0xff, 0x08, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
+	0x04, 0x0c, 0xff, 0xff, 0x06, 0x06, 0x0a, 0xff, 0x04, 0x04, 0x04, 0xff, 0x08, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff
 };
 
 static const int num_opcodes_6502 = sizeof(opcodes_6502) / sizeof(opcodes_6502[0]);
@@ -775,12 +790,13 @@ struct CPUDetails {
 	int num_opcodes;
 	const char* name;
 	const char** aliases;
+	const unsigned char *timing;
 } aCPUs[] = {
-	{ opcodes_6502, num_opcodes_6502 - NUM_ILLEGAL_6502_OPS, "6502", aliases_6502 },
-	{ opcodes_6502, num_opcodes_6502, "6502ill", aliases_6502 },
-	{ opcodes_65C02, num_opcodes_65C02 - NUM_WDC_65C02_SPECIFIC_OPS, "65C02", aliases_65C02 },
-	{ opcodes_65C02, num_opcodes_65C02, "65C02WDC", aliases_65C02 },
-	{ opcodes_65816, num_opcodes_65816, "65816", aliases_65816 },
+	{ opcodes_6502, num_opcodes_6502 - NUM_ILLEGAL_6502_OPS, "6502", aliases_6502, timing_6502 },
+	{ opcodes_6502, num_opcodes_6502, "6502ill", aliases_6502, timing_6502 },
+	{ opcodes_65C02, num_opcodes_65C02 - NUM_WDC_65C02_SPECIFIC_OPS, "65C02", aliases_65C02, nullptr },
+	{ opcodes_65C02, num_opcodes_65C02, "65C02WDC", aliases_65C02, nullptr },
+	{ opcodes_65816, num_opcodes_65816, "65816", aliases_65816, nullptr },
 };
 static const int nCPUs = sizeof(aCPUs) / sizeof(aCPUs[0]);
 
@@ -844,6 +860,7 @@ DirectiveName aDirectiveNames[] {
 	{ "SEG", AD_SECTION },		// DASM version of SECTION
 	{ "LINK", AD_LINK },
 	{ "XDEF", AD_XDEF },
+	{ "XREF", AD_XREF },
 	{ "INCOBJ", AD_INCOBJ },
 	{ "ALIGN", AD_ALIGN },
 	{ "MACRO", AD_MACRO },
@@ -1171,6 +1188,7 @@ public:
 	bool pc_relative;		// this is an inline label describing a point in the code
 	bool constant;			// the value of this label can not change
 	bool external;			// this label is globally accessible
+	bool reference;			// this label is accessed from external and can't be used for evaluation locally
 } Label;
 
 // If an expression can't be evaluated immediately, this is required
@@ -1348,7 +1366,7 @@ public:
 	strref last_label;			// most recently defined label for Merlin macro
 	bool accumulator_16bit;		// 65816 specific software dependent immediate mode
 	bool index_reg_16bit;		// -"-
-	bool errorEncountered;		// if any error encountered, don't export binary
+	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
 	bool link_all_section;		// link all known relative sections to this section at end
@@ -1437,7 +1455,7 @@ public:
 					 strref source_file, LateEval::Type type);
 	void AddLateEval(strref label, int pc, int scope_pc,
 					 strref expression, LateEval::Type type);
-	StatusCode CheckLateEval(strref added_label = strref(), int scope_end = -1);
+	StatusCode CheckLateEval(strref added_label = strref(), int scope_end = -1, bool missing_is_error = false);
 
 	// Assembler Directives
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
@@ -1514,7 +1532,7 @@ void Asm::Cleanup() {
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
-	errorEncountered = false;
+	error_encountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
 	accumulator_16bit = false;	// default 65816 8 bit immediate mode
@@ -2361,9 +2379,10 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		line = line.before_or_full(',');
 		line.trim_whitespace();
 		strref name = line.split_token_trim('=');
+		line = line.before(';').before(c_comment).get_trimmed_ws();
 		if (line) {
 			StatusCode error = EvalExpression(line, etx, value);
-			if (error == STATUS_NOT_READY)
+			if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 				return ERROR_ENUM_CANT_BE_ASSEMBLED;
 			else if (error != STATUS_OK)
 				return error;
@@ -2619,7 +2638,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
-				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
+				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
 			return EVOP_ERR;
 		}
@@ -2652,6 +2671,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 	short section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
 	short section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
 	short num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
+	bool xrefd = false;
 	values[0] = 0;					// Initialize RPN if no expression
 	{
 		int sp = 0;
@@ -2670,6 +2690,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
 			else if (op == EVOP_NRY)
 				return STATUS_NOT_READY;
+			else if (op == EVOP_XRF) {
+				xrefd = true;
+				op = EVOP_VAL;
+			}
 			if (section >= 0) {
 				for (int s = 0; s<num_sections && index_section<0; s++) {
 					if (section_ids[s] == section) index_section = s;
@@ -2724,6 +2748,11 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			ops[numOps++] = op_stack[sp];
 		}
 	}
+
+	// Check if dependent on XREF'd symbol
+	if (xrefd)
+		return STATUS_XREF_DEPENDENT;
+
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
 	// exceed itself.
@@ -2891,7 +2920,7 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 
 // When a label is defined or a scope ends check if there are
 // any related late label evaluators that can now be evaluated.
-StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
+StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_missing_reference_errors)
 {
 	bool evaluated_label = true;
 	strref new_labels[MAX_LABELS_EVAL_ALL];
@@ -3031,8 +3060,13 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end)
 					}
 					if (resolved)
 						i = lateEval.erase(i);
-				} else
+				} else {
+					if (print_missing_reference_errors && ret!=STATUS_XREF_DEPENDENT) {
+						PrintError(i->expression, ret);
+						error_encountered = true;
+					}
 					++i;
+				}
 			} else
 				++i;
 		}
@@ -3255,6 +3289,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->pc_relative = true;
 	pLabel->constant = true;
 	pLabel->external = false;
+	pLabel->reference = false;
 
 	MarkLabelLocal(label, true);
 	return error;
@@ -3365,6 +3400,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	pLabel->pc_relative = false;
 	pLabel->constant = make_constant;
 	pLabel->external = MatchXDEF(label);
+	pLabel->reference = false;
 
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (!pLabel->evaluated)
@@ -3398,6 +3434,7 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->evaluated = true;
 	pLabel->pc_relative = true;
 	pLabel->external = MatchXDEF(label);
+	pLabel->reference = false;
 	pLabel->constant = constLabel;
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
@@ -3783,10 +3820,9 @@ StatusCode Asm::Directive_ORG(strref line)
 	
 	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
 	StatusCode error = EvalExpression(line, etx, addr);
-	if (error != STATUS_OK) {
-		error = error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
-		return error;
-	}
+	if (error != STATUS_OK)
+		return (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
+			ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 
 	// Section immediately followed by ORG reassigns that section to be fixed
 	if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
@@ -3810,7 +3846,8 @@ StatusCode Asm::Directive_LOAD(strref line)
 	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
 	StatusCode error = EvalExpression(line, etx, addr);
 	if (error != STATUS_OK)
-		return error == STATUS_NOT_READY ? ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
+		return (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
+			ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 
 	CurrSection().SetLoadAddress(addr);
 	return STATUS_OK;
@@ -3881,7 +3918,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_LOAD:
 			return Directive_LOAD(line);
-	
+
 		case AD_SECTION:
 			SetSection(line.get_trimmed_ws());
 			break;
@@ -3903,6 +3940,23 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_XDEF:
 			return Directive_XDEF(line.get_trimmed_ws());
 
+		case AD_XREF: {
+			strref label = line.split_range_trim(syntax==SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+			if (Label *pXRefLabel = GetLabel(label))
+				break;	// XREF already defined label => no action
+			Label *pLabelXREF = AddLabel(label.fnv1a());
+			pLabelXREF->label_name = label;
+			pLabelXREF->pool_name.clear();
+			pLabelXREF->section = -1;	// address labels are based on section
+			pLabelXREF->value = 0;
+			pLabelXREF->evaluated = true;
+			pLabelXREF->pc_relative = true;
+			pLabelXREF->external = false;
+			pLabelXREF->constant = false;
+			pLabelXREF->reference = true;
+			break;
+		}
+
 		case AD_ENT:	// MERLIN version of xdef, makes most recently defined label external
 			if (Label *pLastLabel = GetLabel(last_label))
 				pLastLabel->external = true;
@@ -3914,7 +3968,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					line.next_word_ws();
 				int value;
 				int status = EvalExpression(line, etx, value);
-				if (status == STATUS_NOT_READY)
+				if (status == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					error = ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY;
 				else if (status == STATUS_OK && value>0) {
 					if (CurrSection().address_assigned) {
@@ -3955,9 +4009,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				if (syntax==SYNTAX_MERLIN && exp.get_first()=='#')	// MERLIN allows for an immediate declaration on data
 					++exp;
 				error = EvalExpression(exp, etx, value);
-				if (error>STATUS_NOT_READY)
+				if (error>STATUS_XREF_DEPENDENT)
 					break;
-				else if (error==STATUS_NOT_READY)
+				else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
 					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection,
@@ -3972,9 +4026,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					if (syntax==SYNTAX_MERLIN && exp_w.get_first()=='#')	// MERLIN allows for an immediate declaration on data
 						++exp_w;
 					error = EvalExpression(exp_w, etx, value);
-					if (error>STATUS_NOT_READY)
+					if (error>STATUS_XREF_DEPENDENT)
 						break;
-					else if (error==STATUS_NOT_READY)
+					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, LateEval::LET_ABS_REF);
 					else if (error == STATUS_RELATIVE_SECTION) {
 						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
@@ -3993,9 +4047,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					if (syntax==SYNTAX_MERLIN && exp_w.get_first()=='#')	// MERLIN allows for an immediate declaration on data
 						++exp_w;
 					error = EvalExpression(exp_w, etx, value);
-					if (error>STATUS_NOT_READY)
+					if (error>STATUS_XREF_DEPENDENT)
 						break;
-					else if (error==STATUS_NOT_READY)
+					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, dir==AD_ADR ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF);
 					else if (error == STATUS_RELATIVE_SECTION) {
 						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
@@ -4028,9 +4082,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					if (syntax==SYNTAX_MERLIN && exp_dc.get_first()=='#')	// MERLIN allows for an immediate declaration on data
 						++exp_dc;
 					error = EvalExpression(exp_dc, etx, value);
-					if (error > STATUS_NOT_READY)
+					if (error > STATUS_XREF_DEPENDENT)
 						break;
-					else if (error == STATUS_NOT_READY)
+					else if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 						AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file, words ? LateEval::LET_ABS_REF : LateEval::LET_BYTE);
 					else if (error == STATUS_RELATIVE_SECTION) {
 						value = 0;
@@ -4419,7 +4473,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
 							   !!(validModes & AMM_BRANCH) ? SectionId() : -1);
 		error = EvalExpression(expression, etx, value);
-		if (error == STATUS_NOT_READY) {
+		if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) {
 			evalLater = true;
 			error = STATUS_OK;
 		} else if (error == STATUS_RELATIVE_SECTION) {
@@ -4588,7 +4642,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, -1);
 				line.split_token_trim(',');
 				error = EvalExpression(line, etx, value);
-				if (error==STATUS_NOT_READY)
+				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
 				AddByte(value);
 				break;
@@ -4617,11 +4671,12 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				AddByte(value);
 				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, SectionId());
 				error = EvalExpression(line, etx, value);
-				if (error==STATUS_NOT_READY)
+				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BRANCH);
 				else if (((int)value - (int)CurrSection().GetPC() - 1) < -128 || ((int)value - (int)CurrSection().GetPC() - 1) > 127)
 					error = ERROR_BRANCH_OUT_OF_RANGE;
-				AddByte(error == STATUS_NOT_READY ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
+				AddByte((error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
+						0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 			}
 			case CA_NONE:
@@ -4646,7 +4701,7 @@ void Asm::PrintError(strref line, StatusCode error)
 	errorText.append("\"\n");
 	errorText.c_str();
 	fwrite(errorText.get(), errorText.get_len(), 1, stderr);
-	errorEncountered = true;
+	error_encountered = true;
 }
 
 // Build a line of code
@@ -4805,7 +4860,7 @@ StatusCode Asm::BuildLine(strref line)
 		if (line.same_str_case(line_start))
 			error = ERROR_UNABLE_TO_PROCESS;
 
-		if (error > STATUS_NOT_READY)
+		if (error > STATUS_XREF_DEPENDENT)
 			PrintError(line_start, error);
 
 		// dealt with error, continue with next instruction unless too broken
@@ -4907,7 +4962,7 @@ bool Asm::List(strref filename)
 							if (line_fix[pos] == '\t')
 								line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
 						}
-						out.append_to(' ', 30);
+						out.append_to(' ', aCPUs[cpu].timing ? 36 : 33);
 						out.append(line_fix.get_strref());
 						fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
 						out.clear();
@@ -4952,9 +5007,13 @@ bool Asm::List(strref filename)
 						out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1] | (buf[2]<<8));
 					else
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
+					if (aCPUs[cpu].timing) {
+						out.append_to(' ', 33);
+						out.sprintf_append("%x%s", aCPUs[cpu].timing[*buf] / 2, (aCPUs[cpu].timing[*buf] & 1) ? "+" : "");
+					}
 				}
 			}
-			out.append_to(' ', 33);
+			out.append_to(' ', aCPUs[cpu].timing ? 36 : 33);
 			strref line = lst.code.get_skipped(lst.line_offs).get_line();
 			line.clip_trailing_whitespace();
 			strown<128> line_fix(line);
@@ -5043,12 +5102,13 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 		LinkAllToSection();
 	if (error == STATUS_OK) {
 		error = CheckLateEval();
-		if (error > STATUS_NOT_READY) {
+		if (error > STATUS_XREF_DEPENDENT) {
 			strown<512> errorText;
 			errorText.copy("Error: ");
 			errorText.append(aStatusStrings[error]);
 			fwrite(errorText.get(), errorText.get_len(), 1, stderr);
-		}
+		} else
+			CheckLateEval(strref(), -1, true);	// output any missing xref's
 
 		if (!obj_target) {
 			for (std::vector<LateEval>::iterator i = lateEval.begin(); i!=lateEval.end(); ++i) {
@@ -5193,10 +5253,17 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				hdr.relocs += short(s->pRelocs->size());
 			hdr.bindata += (int)s->size();
 		}
-		hdr.labels = labels.count();
 		hdr.late_evals = (short)lateEval.size();
 		hdr.map_symbols = (short)map.size();
 		hdr.stringdata = 0;
+
+		// labels don't include XREF labels
+		hdr.labels = 0;
+		for (unsigned int l = 0; l<labels.count(); l++) {
+			if (!labels.getValue(l).reference)
+				hdr.labels++;
+		}
+
 
 		// include space for external protected labels
 		for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el)
@@ -5244,16 +5311,18 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		if (hdr.labels) {
 			for (unsigned int li = 0; li<labels.count(); li++) {
 				Label &lo = labels.getValue(li);
-				struct ObjFileLabel &l = aLabels[labs++];
-				l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-				l.value = lo.value;
-				l.section = lo.section;
-				l.mapIndex = lo.mapIndex;
-				l.flags =
-					(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
-					(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
-					(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
-					(lo.external ? ObjFileLabel::OFL_XDEF : 0);
+				if (!lo.reference) {
+					struct ObjFileLabel &l = aLabels[labs++];
+					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+					l.value = lo.value;
+					l.section = lo.section;
+					l.mapIndex = lo.mapIndex;
+					l.flags =
+						(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
+						(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
+						(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
+						(lo.external ? ObjFileLabel::OFL_XDEF : 0);
+				}
 			}
 		}
 
@@ -5609,7 +5678,7 @@ int main(int argc, char **argv)
 
 			assembler.Assemble(strref(buffer, strl_t(size)), srcname, obj_out_file != nullptr);
 
-			if (assembler.errorEncountered)
+			if (assembler.error_encountered)
 				return_value = 1;
 			else {
 				// export object file

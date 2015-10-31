@@ -135,6 +135,7 @@ Directives are assembler commands that control the code generation but that does
 * [**SECTION**](#section) Start a relative section
 * [**LINK**](#link) Link a relative section at this address
 * [**XDEF**](#xdef) Make a label available globally
+* [**XREF**](#xref) Reference a label declared globally in a different object file (.x65)
 * [**INCOBJ**](#incobj) Include an object file (.x65) to this file
 * [**EXPORT**](#export) Save out additional binary files with argument appended to filename
 * [**ALIGN**](#align) Align the address to a multiple by filling with 0s
@@ -222,6 +223,10 @@ Non-xdef'd labels are kept private to the object file for the purpose of late ev
 InitBobs:
 	rts
 ```
+
+<a name="xref">**XREF**
+
+In order to reference a label that was globally declared in another object file using XDEF the label must be declared by using XREF.
 
 <a name="incobj">**INCOBJ**
 
@@ -603,7 +608,7 @@ Change processor. The first instance of XC will switch from 6502 to 65C02, the s
 
 **MX**
 
-MX sets the immediate mode accumulator instruction size, it takes a number and uses the lowest two bits. Bit 0 applies to index registers (x, y) where 0 means 8 bits and 1 means 16 bits, bit 1 applies to the accumulator. Normally it is specified in binary using the '%' prefix.
+MX sets the immediate mode accumulator instruction size, it takes a number and uses the lowest two bits. Bit 0 applies to index registers (x, y) where 0 means 16 bits and 1 means 8 bits, bit 1 applies to the accumulator. Normally it is specified in binary using the '%' prefix.
 
 ```
     MX %11
@@ -647,11 +652,11 @@ DSK is similar to SAV
 
 **ENT**
 
-ENT defines the label that preceeds it as external
+ENT defines the label that preceeds it as external, same as [**XDEF**](#xdef).
 
 **EXT**
 
-EXT imports an external label, x65 doesn't need this.
+EXT imports an external label, same as [**XREF**](#xref).
 
 **LNK** / **STR**
 
@@ -806,9 +811,14 @@ FindFirstSpace
 Fish food! Assembler has all important features and switching to make a 6502 project for more testing. Currently the assembler is in a limited release. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
+* OMF export for Apple II GS/OS executables
+* Hierarchical cycle timing in list file
 * irp (indefinite repeat)
 
 **FIXED**
+* First pass cycle timing in listing file for 6502 targets
+* Enums can have comments
+* XREF required to reference XDEF symbols in object files (.x65)
 * Nested scopes and label pools broke recently and was fixed, section alignment wasn't working.
 * Link file issues fixed, added a dump tool to show the contents of object files for debugging.
 * Rastan for Apple II gs assembles and links.
