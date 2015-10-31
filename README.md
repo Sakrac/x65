@@ -59,7 +59,7 @@ x65 filename.s code.prg [options]
 * -a2b: Apple II Dos 3.3 Binary
 * -sym (file.sym): symbol file
 * -merlin: use Merlin syntax
-* -lst / -lst=(file.lst): generate disassembly text from result (file or stdout)
+* -lst / -lst=(file.lst): generate disassembly/cycle/source text from result (file or stdout)
 * -opcodes / -opcodes=(file.s): dump all available opcodes for current CPU (file or stdout)
 * -sect: display sections loaded and built
 * -vice (file.vs): export a vice symbol file
@@ -662,6 +662,10 @@ EXT imports an external label, same as [**XREF**](#xref).
 
 LNK links the contents of an object file, to fit with the named section method of linking in x65 this keyword has been reworked to have a similar result, the actual linking doesn't begin until the current section is complete.
 
+**CYC**
+
+CYC starts and stops a cycle counter, x65 scoping allows for hierarchical cycle listings but the first merlin directive CYC starts the counter and the next CYC stops the counter and shows the result. This is 6502 only until data is entered for other CPUs.
+
 **ADR**
 
 Define byte triplets (like **DA** but three bytes instead of 2)
@@ -772,6 +776,8 @@ Currently macros with parameters use search and replace without checking if the 
 
 Scopes are lines inbetween '{' and '}' including macros. The purpose of scopes is to reduce the need for local labels and the scopes nest just like C code to support function level and loops and inner loop scoping. '!' is a label that is the first address of the scope and '%' the first address after the scope.
 
+Additionally scopes have a meaning for counting cycles when exporting a .lst file, each open scope '{' will add a new counter of CPU cycles that will accumulate until the corresponding '}' which will be shown on that line in the listing file. Use -lst as a command line option to generate a listing file.
+
 This means you can write
 ```
 {
@@ -812,10 +818,10 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 
 **TODO**
 * OMF export for Apple II GS/OS executables
-* Hierarchical cycle timing in list file
 * irp (indefinite repeat)
 
 **FIXED**
+* Enabled EXT and CYC directive for merlin, accumulating cycle timing within scope (Hierarchical cycle timing in list file) / CYC...CYC (6502 only for now)
 * First pass cycle timing in listing file for 6502 targets
 * Enums can have comments
 * XREF required to reference XDEF symbols in object files (.x65)
