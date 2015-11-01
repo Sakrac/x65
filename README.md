@@ -81,7 +81,7 @@ Code is any valid mnemonic/opcode and addressing mode. At the moment only one op
 
 ### Linking
 
-In order to manage more complex projects linking multiple assembled object files is desirable. x65 implements this by saving the state of the assembler as an 'object' file that can be appended into the assembling of another source file with the [INCOBJ](#incobj) directive. To control the final layout of code and data a [SECTION](#section) directive can be used to specify the kind of data that is declared. As a result of the custom object file, fixed address sections (ORG) can be declared within x65 object files. x65 does not support any other type of object file, and the x65 object file format may change throughout development of x65. Go [here](wiki/linking) for more details about [linking](wiki/linking).
+In order to manage more complex projects linking multiple assembled object files is desirable. x65 implements this by saving the state of the assembler as an 'object' file that can be appended into the assembling of another source file with the [INCOBJ](#incobj) directive. To control the final layout of code and data a [SECTION](#section) directive can be used to specify the kind of data that is declared. As a result of the custom object file, fixed address sections (ORG) can be declared within x65 object files. x65 does not support any other type of object file, and the x65 object file format may change throughout development of x65. Go [here](../../wiki/linking) for more details about [linking](../../wiki/linking).
 
 ### Comments
 
