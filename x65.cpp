@@ -69,6 +69,7 @@
 // minor variation of 65C02
 #define NUM_WDC_65C02_SPECIFIC_OPS 18
 
+
 // To simplify some syntax disambiguation the preferred
 // ruleset can be specified on the command line.
 enum AsmSyntax {
@@ -756,6 +757,37 @@ const char* aliases_65816[] = {
 
 static const int num_opcodes_65816 = sizeof(opcodes_65816) / sizeof(opcodes_65816[0]);
 
+unsigned char timing_65816[] = {
+	0x4e, 0x1c, 0x4e, 0x28, 0x3a, 0x26, 0x3a, 0x1c, 0x46, 0x24, 0x44, 0x48, 0x4c, 0x28, 0x5c, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x3a, 0x18, 0x6c, 0x1c, 0x44, 0x28, 0x44, 0x44, 0x4c, 0x28, 0x5e, 0x2a,
+	0x4c, 0x1c, 0x50, 0x28, 0x16, 0x26, 0x3a, 0x1c, 0x48, 0x24, 0x44, 0x4a, 0x28, 0x28, 0x4c, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x18, 0x18, 0x3c, 0x1c, 0x44, 0x28, 0x44, 0x44, 0x28, 0x28, 0x4e, 0x2a,
+	0x4c, 0x1c, 0x42, 0x28, 0x42, 0x16, 0x6a, 0x1c, 0x26, 0x24, 0x44, 0x46, 0x46, 0x28, 0x5c, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x42, 0x18, 0x6c, 0x1c, 0x44, 0x28, 0x76, 0x44, 0x48, 0x28, 0x5e, 0x2a,
+	0x4c, 0x1c, 0x4c, 0x28, 0x16, 0x26, 0x3a, 0x1c, 0x28, 0x24, 0x44, 0x4c, 0x4a, 0x28, 0x4c, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x28, 0x18, 0x3c, 0x1c, 0x44, 0x28, 0x78, 0x44, 0x4c, 0x28, 0x4e, 0x2a,
+	0x46, 0x1c, 0x48, 0x28, 0x86, 0x16, 0x86, 0x1c, 0x44, 0x24, 0x44, 0x46, 0x78, 0x28, 0x78, 0x2a,
+	0x44, 0x1c, 0x1a, 0x2e, 0x88, 0x18, 0x88, 0x1c, 0x44, 0x2a, 0x44, 0x44, 0x28, 0x2a, 0x2a, 0x2a,
+	0x74, 0x1c, 0x74, 0x28, 0x86, 0x16, 0x86, 0x1c, 0x44, 0x24, 0x44, 0x48, 0x78, 0x28, 0x78, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x88, 0x18, 0x88, 0x1c, 0x44, 0x28, 0x44, 0x44, 0x78, 0x28, 0x78, 0x2a,
+	0x74, 0x1c, 0x46, 0x28, 0x86, 0x16, 0x6a, 0x1c, 0x44, 0x24, 0x44, 0x26, 0x78, 0x28, 0x5c, 0x2a,
+	0x44, 0x1a, 0x1a, 0x2e, 0x4c, 0x18, 0x6c, 0x1c, 0x44, 0x28, 0x76, 0x46, 0x4c, 0x28, 0x5e, 0x2a,
+	0x74, 0x3c, 0x46, 0x48, 0x86, 0x36, 0x6a, 0x3c, 0x44, 0x44, 0x44, 0x46, 0x78, 0x48, 0x5c, 0x4a,
+	0x44, 0x3a, 0x3a, 0x4e, 0x4a, 0x38, 0x6c, 0x3c, 0x44, 0x48, 0x78, 0x44, 0x50, 0x48, 0x5e, 0x4a
+};
+
+// m=0, i=0, dp!=0
+unsigned char timing_65816_plus[9][3] = {
+	{ 0, 0, 0 },	// 6502 plus timing check bit 0
+	{ 1, 0, 1 },	// acc 16 bit + dp!=0
+	{ 1, 0, 0 },	// acc 16 bit
+	{ 0, 0, 1 },	// dp != 0
+	{ 0, 0, 0 },	// no plus
+	{ 2, 0, 0 },	// acc 16 bit yields 2+
+	{ 2, 0, 1 },	// acc 16 bit yields 2+ + dp!=0
+	{ 0, 1, 0 },	// idx 16 bit
+	{ 0, 1, 1 }		// idx 16 bit + dp!=0
+};
 
 // 65C02
 // http://6502.org/tutorials/65c02opcodes.html
@@ -798,7 +830,7 @@ struct CPUDetails {
 	{ opcodes_6502, num_opcodes_6502, "6502ill", aliases_6502, timing_6502 },
 	{ opcodes_65C02, num_opcodes_65C02 - NUM_WDC_65C02_SPECIFIC_OPS, "65C02", aliases_65C02, nullptr },
 	{ opcodes_65C02, num_opcodes_65C02, "65C02WDC", aliases_65C02, nullptr },
-	{ opcodes_65816, num_opcodes_65816, "65816", aliases_65816, nullptr },
+	{ opcodes_65816, num_opcodes_65816, "65816", aliases_65816, timing_65816 },
 };
 static const int nCPUs = sizeof(aCPUs) / sizeof(aCPUs[0]);
 
@@ -872,6 +904,7 @@ DirectiveName aDirectiveNames[] {
 	{ "BYTES", AD_BYTES },
 	{ "WORD", AD_WORDS },
 	{ "WORDS", AD_WORDS },
+	{ "LONG", AD_ADRL },
 	{ "DC", AD_DC },
 	{ "TEXT", AD_TEXT },
 	{ "INCLUDE", AD_INCLUDE },
@@ -1295,6 +1328,7 @@ typedef struct {
 	strref read_source;		// current position/length in source file
 	strref next_source;		// next position/length in source file
 	short repeat;			// how many times to repeat this code segment
+	short repeat_total;		// initial number of repeats for this code segment
 	bool scoped_context;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
@@ -1318,6 +1352,7 @@ public:
 		context.read_source = code_seg;
 		context.next_source = code_seg;
 		context.repeat = rept;
+		context.repeat_total = rept;
 		context.scoped_context = false;
 		stack.push_back(context);
 		currContext = &stack[stack.size()-1];
@@ -2590,6 +2625,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 					if (ret == STATUS_OK) return EVOP_VAL;
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
+				if (!pLabel && label.same_str("rept")) { value = contextStack.curr().repeat_total - contextStack.curr().repeat; return EVOP_VAL; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
 			} else
@@ -2619,7 +2655,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 				  if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp;
 					if (exp[0] == '=') { ++exp; return EVOP_GTE; } return EVOP_GT; }
 				  ++exp; return EVOP_HIB;
-		case '<': if (exp.get_len() >= 2 && exp[1] == '<') { exp += 2; return EVOP_SHR; }
+		case '<': if (exp.get_len() >= 2 && exp[1] == '<') { exp += 2; return EVOP_SHL; }
 				  if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp;
 					if (exp[0] == '=') { ++exp; return EVOP_LTE; } return EVOP_LT; }
 				  ++exp; return EVOP_LOB;
@@ -2654,6 +2690,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (ret == STATUS_OK) return EVOP_VAL;
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
+				if (!pLabel && label.same_str("rept")) { value = contextStack.curr().repeat_total - contextStack.curr().repeat; return EVOP_VAL; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
@@ -4945,6 +4982,45 @@ StatusCode Asm::BuildSegment()
 
 // Produce the assembler listing
 #define MAX_DEPTH_CYCLE_COUNTER 64
+
+struct cycleCnt {
+	int base;
+	short plus, a16, x16, dp;
+	void clr() { base = 0; plus = a16 = x16 = dp = 0; }
+	void add(unsigned char c) {
+		if (c != 0xff) {
+			base += (c >> 1) & 7;
+			plus += c & 1;
+			if (c & 0xf0) {
+				int i = c >> 4;
+				if (i <= 8) {
+					a16 += timing_65816_plus[i][0];
+					x16 += timing_65816_plus[i][1];
+					dp += timing_65816_plus[i][2];
+				}
+			}
+		}
+	}
+	int plus_acc() {
+		return plus + a16 + x16 + dp;
+	}
+	void combine(const struct cycleCnt &o) {
+		base += o.base; plus += o.plus; a16 += o.a16; x16 += o.x16; dp += o.dp;
+	}
+	bool complex() const { return a16 != 0 || x16 != 0 || dp != 0; }
+	static int get_base(unsigned char c) {
+		return (c & 0xf) >> 1;
+	}
+	static int sum_plus(unsigned char c) {
+		if (c == 0xff)
+			return 0;
+		int i = c >> 4;
+		if (i)
+			return i <= 8 ? (timing_65816_plus[i][0] + timing_65816_plus[i][1] + timing_65816_plus[i][2]) : 0;
+		return c & 1;
+	}
+};
+
 bool Asm::List(strref filename)
 {
 	FILE *f = stdout;
@@ -4977,11 +5053,9 @@ bool Asm::List(strref filename)
 		}
 	}
 
-	short cycles[MAX_DEPTH_CYCLE_COUNTER][2];
+	struct cycleCnt cycles[MAX_DEPTH_CYCLE_COUNTER];
 	short cycles_depth = 0;
-
-	cycles[0][0] = 0;
-	cycles[0][1] = 0;
+	memset(cycles, 0, sizeof(cycles));
 
 	strref prev_src;
 	int prev_offs = 0;
@@ -5005,7 +5079,7 @@ bool Asm::List(strref filename)
 							if (line_fix[pos] == '\t')
 								line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
 						}
-						out.append_to(' ', aCPUs[cpu].timing ? 36 : 33);
+						out.append_to(' ', aCPUs[cpu].timing ? 40 : 33);
 						out.append(line_fix.get_strref());
 						fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
 						out.clear();
@@ -5024,14 +5098,18 @@ bool Asm::List(strref filename)
 					out.sprintf_append("%02x ", si->output[lst.address + b]);
 			}
 			if (lst.startClock() && cycles_depth<MAX_DEPTH_CYCLE_COUNTER) {
-				cycles_depth++;	cycles[cycles_depth][0] = 0; cycles[cycles_depth][1] = 0;
-				out.append_to(' ', 25); out.sprintf_append("c>%d", cycles_depth);
+				cycles_depth++;	cycles[cycles_depth].clr();
+				out.append_to(' ', 6); out.sprintf_append("c>%d", cycles_depth);
 			}
 			if (lst.stopClock()) {
-				out.append_to(' ', 25); out.sprintf_append("c<%d=%d+%d", cycles_depth, cycles[cycles_depth][0], cycles[cycles_depth][1]);
+				out.append_to(' ', 6);
+				if (cycles[cycles_depth].complex())
+					out.sprintf_append("c<%d = %d + m%d + i%d + d%d", cycles_depth, cycles[cycles_depth].base, cycles[cycles_depth].a16, cycles[cycles_depth].x16, cycles[cycles_depth].dp);
+				else
+					out.sprintf_append("c<%d = %d + %d", cycles_depth, cycles[cycles_depth].base, cycles[cycles_depth].plus_acc());
 				if (cycles_depth) {
-					cycles_depth--; cycles[cycles_depth][0] += cycles[cycles_depth + 1][0];
-					cycles[cycles_depth][1] += cycles[cycles_depth + 1][1];
+					cycles_depth--;
+					cycles[cycles_depth].combine(cycles[cycles_depth + 1]);
 				}
 			}
 			if (lst.size && lst.wasMnemonic()) {
@@ -5064,15 +5142,19 @@ bool Asm::List(strref filename)
 					else
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
 					if (aCPUs[cpu].timing) {
-						cycles[cycles_depth][0] += aCPUs[cpu].timing[*buf] / 2;
-						cycles[cycles_depth][1] += aCPUs[cpu].timing[*buf] & 1;
+						cycles[cycles_depth].add(aCPUs[cpu].timing[*buf]);
 						out.append_to(' ', 33);
-						out.sprintf_append("%x%s", aCPUs[cpu].timing[*buf] / 2, (aCPUs[cpu].timing[*buf] & 1) ? "+" : "");
+						if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf])==1)
+							out.sprintf_append("%d+", cycleCnt::get_base(aCPUs[cpu].timing[*buf]));
+						else if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf]))
+							out.sprintf_append("%d+%d", cycleCnt::get_base(aCPUs[cpu].timing[*buf]), cycleCnt::sum_plus(aCPUs[cpu].timing[*buf]));
+						else
+							out.sprintf_append("%d", cycleCnt::get_base(aCPUs[cpu].timing[*buf]));
 					}
 				}
 			}
 
-			out.append_to(' ', aCPUs[cpu].timing ? 36 : 33);
+			out.append_to(' ', aCPUs[cpu].timing ? 40 : 33);
 			strref line = lst.code.get_skipped(lst.line_offs).get_line();
 			line.clip_trailing_whitespace();
 			strown<128> line_fix(line);
@@ -5354,7 +5436,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 					(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
 					(si->IsMergedSection() ? (1 << ObjFileSection::OFS_MERGED) : 0) |
 					(si->address_assigned ? (1 << ObjFileSection::OFS_FIXED) : 0);
-				if (si->pRelocs && si->pRelocs->size()) {
+				if (si->pRelocs && si->pRelocs->size() && aRelocs) {
 					for (relocList::iterator ri = si->pRelocs->begin(); ri!=si->pRelocs->end(); ++ri) {
 						struct ObjFileReloc &r = aRelocs[reloc++];
 						r.base_value = ri->base_value;
@@ -5552,32 +5634,34 @@ StatusCode Asm::ReadObjectFile(strref filename)
 				struct ObjFileLabel &l = aLabels[li];
 				strref name = l.name.offs >= 0 ? strref(str_pool + l.name.offs) : strref();
 				Label *lbl = GetLabel(name);
-				if (!lbl) {
-					short f = l.flags;
-					int external = f & ObjFileLabel::OFL_XDEF;
-					if (external == ObjFileLabel::OFL_XDEF)
+				short f = l.flags;
+				int external = f & ObjFileLabel::OFL_XDEF;
+				if (external == ObjFileLabel::OFL_XDEF) {
+					if (!lbl)
 						lbl = AddLabel(name.fnv1a());	// insert shared label
-					else {								// insert protected label
-						while ((file_index + external) >= (int)externals.size()) {
-							if (externals.size() == externals.capacity())
-								externals.reserve(externals.size() + 32);
-							externals.push_back(ExtLabels());
-						}
-						unsigned int hash = name.fnv1a();
-						unsigned int index = FindLabelIndex(hash, externals[file_index].labels.getKeys(), externals[file_index].labels.count());
-						externals[file_index].labels.insert(index, hash);
-						lbl = externals[file_index].labels.getValues() + index;
+					else if (!lbl->reference)
+						continue;
+				} else {								// insert protected label
+					while ((file_index + external) >= (int)externals.size()) {
+						if (externals.size() == externals.capacity())
+							externals.reserve(externals.size() + 32);
+						externals.push_back(ExtLabels());
 					}
-					lbl->label_name = name;
-					lbl->pool_name.clear();
-					lbl->value = l.value;
-					lbl->evaluated = !!(f & ObjFileLabel::OFL_EVAL);
-					lbl->constant = !!(f & ObjFileLabel::OFL_CNST);
-					lbl->pc_relative = !!(f & ObjFileLabel::OFL_ADDR);
-					lbl->external = external == ObjFileLabel::OFL_XDEF;
-					lbl->section = l.section >= 0 ? aSctRmp[l.section] : l.section;
-					lbl->mapIndex = l.mapIndex >= 0 ? (l.mapIndex + (int)map.size()) : -1;
+					unsigned int hash = name.fnv1a();
+					unsigned int index = FindLabelIndex(hash, externals[file_index].labels.getKeys(), externals[file_index].labels.count());
+					externals[file_index].labels.insert(index, hash);
+					lbl = externals[file_index].labels.getValues() + index;
 				}
+				lbl->label_name = name;
+				lbl->pool_name.clear();
+				lbl->value = l.value;
+				lbl->evaluated = !!(f & ObjFileLabel::OFL_EVAL);
+				lbl->constant = !!(f & ObjFileLabel::OFL_CNST);
+				lbl->pc_relative = !!(f & ObjFileLabel::OFL_ADDR);
+				lbl->external = external == ObjFileLabel::OFL_XDEF;
+				lbl->section = l.section >= 0 ? aSctRmp[l.section] : l.section;
+				lbl->mapIndex = l.mapIndex >= 0 ? (l.mapIndex + (int)map.size()) : -1;
+				lbl->reference = false;
 			}
 
 			if (file_index==(int)externals.size())

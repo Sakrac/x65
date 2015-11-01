@@ -143,6 +143,7 @@ Directives are assembler commands that control the code generation but that does
 * [**EVAL**](#eval) Log an expression during assembly.
 * [**BYTES**](#bytes) Insert comma separated bytes at this address (same as **BYTE** or **DC.B**)
 * [**WORDS**](#words) Insert comma separated 16 bit values at this address (same as **WORD** or **DC.W**)
+* [**LONG**](#long) Insert comma separated 32 bit values at this address
 * [**TEXT**](#text) Insert text at this address
 * [**INCLUDE**](#include) Include another source file and assemble at this address
 * [**INCBIN**](#incbin) Include a binary file at this address
@@ -310,6 +311,10 @@ RandomBytes:
 <a name="words">**WORDS**
 
 Adds comma separated 16 bit values similar to how **BYTES** work. **word** or **dc.w** are also recognized.
+
+<a name="long">**LONGS**
+
+Adds comma separated 32 bit values similar to how **WORDS** work.
 
 <a name="text">**TEXT**
 
@@ -493,11 +498,9 @@ Example:
 ```
 columns = 40
 rows = 25
-screen_col = $400
-height_buf = $1000
 rept columns {
-	screen_addr = screen_col
-	ldx height_buf
+	screen_addr = $400 + rept		; rept is the repeat counter
+	ldx $1000+rept
 	dest = screen_addr
 	remainder = 3
 	rept (rows+remainder)/4 {
@@ -514,8 +517,6 @@ rept columns {
 			dest = dest + 4*40
 		}
 	}
-	screen_col = screen_col+1
-	height_buf = height_buf+1
 }
 ```
 
@@ -526,6 +527,9 @@ Note that if the -endm command line option is used (macros are not defined with 
 	lsr
 .ENDREPEAT
 ```
+
+The symbol 'REPT' is the current repeat count within a REPT (0 outside of repeat blocks).
+
 
 <a name="incdir">**INCDIR**
 
@@ -821,6 +825,11 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* XREF prevented linking with same name symbol included from .x65 object causing a linker failure
+* << was mistakenly interpreted as shift right
+* REPT is also a value that can be used in expressions as a repeat counter
+* LONG allows for adding 4 byte values like BYTE/WORD
+* Cycle listing for 65816 - required more complex visualization due to more than 1 cycle extra
 * Enabled EXT and CYC directive for merlin, accumulating cycle timing within scope (Hierarchical cycle timing in list file) / CYC...CYC (6502 only for now)
 * First pass cycle timing in listing file for 6502 targets
 * Enums can have comments
