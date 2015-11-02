@@ -1164,7 +1164,7 @@ typedef struct Section {
 		name.clear(); export_append.clear();
 		start_address = address = load_address = 0x0;
 		address_assigned = false; output = nullptr; curr = nullptr;
-		dummySection = false; output_capacity = 0; merged_offset = -1;
+		dummySection = false; output_capacity = 0; merged_offset = -1; merged_section = -1;
 		align_address = 1; if (pRelocs) delete pRelocs;
 		pRelocs = nullptr;
 		if (pListing) delete pListing;
@@ -2014,7 +2014,7 @@ StatusCode Asm::AppendSection(Section &s, Section &curr)
 		s.start_address = section_address;
 		s.address += section_address;
 		s.address_assigned = true;
-		s.merged_section = SectionId();
+		s.merged_section = (int)(&curr - &allSections[0]);
 		s.merged_offset = (int)(section_out - CurrSection().output);
 
 		// Merge in the listing at this point
@@ -5581,7 +5581,6 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			// for now just append to existing assembler data
 
 			// sections
-			int reloc_idx = 0;
 			for (int si = 0; si < hdr.sections; si++) {
 				short f = aSect[si].flags;
 				aSctRmp[si] = (short)allSections.size();
@@ -5655,12 +5654,12 @@ StatusCode Asm::ReadObjectFile(strref filename)
 				lbl->label_name = name;
 				lbl->pool_name.clear();
 				lbl->value = l.value;
-				lbl->evaluated = !!(f & ObjFileLabel::OFL_EVAL);
-				lbl->constant = !!(f & ObjFileLabel::OFL_CNST);
-				lbl->pc_relative = !!(f & ObjFileLabel::OFL_ADDR);
-				lbl->external = external == ObjFileLabel::OFL_XDEF;
 				lbl->section = l.section >= 0 ? aSctRmp[l.section] : l.section;
 				lbl->mapIndex = l.mapIndex >= 0 ? (l.mapIndex + (int)map.size()) : -1;
+				lbl->evaluated = !!(f & ObjFileLabel::OFL_EVAL);
+				lbl->pc_relative = !!(f & ObjFileLabel::OFL_ADDR);
+				lbl->constant = !!(f & ObjFileLabel::OFL_CNST);
+				lbl->external = external == ObjFileLabel::OFL_XDEF;
 				lbl->reference = false;
 			}
 

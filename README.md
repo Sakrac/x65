@@ -825,6 +825,7 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* Link append sections target confusion cleared up (caused crash/link errors/freeze)
 * XREF prevented linking with same name symbol included from .x65 object causing a linker failure
 * << was mistakenly interpreted as shift right
 * REPT is also a value that can be used in expressions as a repeat counter
