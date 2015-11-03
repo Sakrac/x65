@@ -825,6 +825,7 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* rept and symbol reference with forward reference label was not taking section into account
 * Link append sections target confusion cleared up (caused crash/link errors/freeze)
 * XREF prevented linking with same name symbol included from .x65 object causing a linker failure
 * << was mistakenly interpreted as shift right
@@ -852,29 +853,8 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * Added 6502 illegal opcodes (cpu=6502ill)
 * 65816
 * 65C02 enabled through directives ([**PROCESSOR**/**CPU**](#cpu)/[**XC**](#merlin))
-* 65c02 (currently only through command line, not as a directive)
-* Now accepts negative numbers, Merlin LUP and MAC keyword support
-* Merlin syntax fixes (no '!' in labels, don't skip ':' if first character of label), symbol file fix for included object files with resolved labels for relative sections. List output won't disassemble lines that wasn't built from source code.
-* Export full memory of fixed sections instead of a single section
-* Option to source disasm output and option to dump all opcodes as a source file for tests
-* Object file format so sections can be saved for later linking
-* Added relative sections and relocatable references
-* Added Apple II Dos 3.3 Binary Executable output (-a2b)
-* Added more Merlin rules
-* Added directives from older assemblers
-* Added ENUM, sharing some functionality with STRUCT
-* Added INCDIR and command line options
-* [**REPT**](#rept)
-* fixed a flaw in expressions that ignored the next operator after raw hex values if no whitespace
-* expressions now handles high byte/low byte (\>, \<) as RPN tokens and not special cased.
-* structs
-* ifdef / if / elif / else / endif conditional code generation directives
-* Label Pools added
-* Bracket scoping closure ('}') cleans up local variables within that scope (better handling of local variables within macros).
-* Context stack cleanup
-* % in expressions is interpreted as binary value if immediately followed by 0 or 1
-* Add a const directive for labels that shouldn't be allowed to change (currently ignoring const)
-* TEXT directive converts ascii to petscii (respect uppercase or lowercase petscii) (simplistic)
+
+[(older fixes)](../../wiki/fixes)
 
 Revisions:
 * 8 - Fish food / Linking tested and passed with external project (Apple II gs Rastan)

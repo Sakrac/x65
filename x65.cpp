@@ -1252,7 +1252,8 @@ typedef struct {
 	int target;				// offset into output buffer
 	int address;			// current pc
 	int scope;				// scope pc
-	int section;			// which section to apply to.
+	short section;			// which section to apply to.
+	short rept;				// value of rept
 	int file_ref;			// -1 if current or xdef'd otherwise index of file for label
 	strref label;			// valid if this is not a target but another label
 	strref expression;
@@ -2948,6 +2949,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 	le.scope = scope_pc;
 	le.target = target;
 	le.section = (int)(&CurrSection() - &allSections[0]);
+	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
 	le.label.clear();
 	le.expression = expression;
@@ -2964,6 +2966,8 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 	le.scope = scope_pc;
 	le.target = 0;
 	le.label = label;
+	le.section = (int)(&CurrSection() - &allSections[0]);
+	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
 	le.expression = expression;
 	le.source_file.clear();
@@ -3008,8 +3012,11 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 			if (check) {
 				struct EvalContext etx(i->address, i->scope, scope_end,
 									   i->type == LateEval::LET_BRANCH ? SectionId() : -1);
+				SourceContext &ctx = contextStack.curr();
 				etx.file_ref = i->file_ref;
+				int r = ctx.repeat, rt = ctx.repeat_total; ctx.repeat = 0; ctx.repeat_total = i->rept;
 				StatusCode ret = EvalExpression(i->expression, etx, value);
+				ctx.repeat = r; ctx.repeat_total = rt;
 				if (ret == STATUS_OK || ret==STATUS_RELATIVE_SECTION) {
 					// Check if target section merged with another section
 					int trg = i->target;
@@ -3102,6 +3109,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 								return ERROR_LABEL_MISPLACED_INTERNAL;
 							label->value = value;
 							label->evaluated = true;
+							label->section = ret==STATUS_RELATIVE_SECTION ? i->section : -1;
 							if (num_new_labels<MAX_LABELS_EVAL_ALL)
 								new_labels[num_new_labels++] = label->label_name;
 							evaluated_label = true;
@@ -5332,8 +5340,9 @@ struct ObjFileLateEval {
 	struct ObjFileStr label;
 	struct ObjFileStr expression;
 	int address;			// PC relative to section or fixed
+	int target;				// offset into section memory
 	short section;			// section to target
-	short target;			// offset into section memory
+	short rept;				// value of rept for this late eval
 	short scope;			// PC start of scope
 	short type;				// label, byte, branch, word (LateEval::Type)
 };
@@ -5495,6 +5504,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				le.label.offs = _AddStrPool(lei->label, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				le.expression.offs = _AddStrPool(lei->expression, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				le.section = lei->section;
+				le.rept = lei->rept;
 				le.target = (short)lei->target;
 				le.address = lei->address;
 				le.scope = lei->scope;
@@ -5675,12 +5685,15 @@ StatusCode Asm::ReadObjectFile(strref filename)
 						AddLateEval(name, le.address, le.scope, strref(str_pool + le.expression.offs), (LateEval::Type)le.type);
 						LateEval &last = lateEval[lateEval.size()-1];
 						last.section = le.section >= 0 ? aSctRmp[le.section] : le.section;
+						last.rept = le.rept;
 						last.source_file = strref();
 						last.file_ref = file_index;
 					}
 				} else {
 					AddLateEval(le.target, le.address, le.scope, strref(str_pool + le.expression.offs), strref(), (LateEval::Type)le.type);
 					LateEval &last = lateEval[lateEval.size()-1];
+					last.section = le.section >= 0 ? aSctRmp[le.section] : le.section;
+					last.rept = le.rept;
 					last.file_ref = file_index;
 				}
 			}

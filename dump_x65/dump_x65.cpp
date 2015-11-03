@@ -97,8 +97,9 @@ struct ObjFileLateEval {
 	struct ObjFileStr label;
 	struct ObjFileStr expression;
 	int address;			// PC relative to section or fixed
+	int target;				// offset into section memory
 	short section;			// section to target
-	short target;			// offset into section memory
+	short rept;				// value of rept for this late eval
 	short scope;			// PC start of scope
 	short type;				// label, byte, branch, word (LateEval::Type)
 };
