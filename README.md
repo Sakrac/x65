@@ -14,7 +14,7 @@ To keep up with this trend x65 is adding the following features to the mix:
 * [Directives](#directives) support both with and without leading period.
 * Labels don't need to end with colon, but they can.
 * No indentation required for instructions, meaning that labels can't be mnemonics, macros or directives.
-* Conditional assembly with #if/#ifdef/#else etc.
+* Conditional assembly with if/ifdef/else etc.
 * As far as achievable, support the syntax of other 6502 assemblers (Merlin syntax now requires command line argument, -endm adds support for sources using macro/endmacro and repeat/endrepeat combos rather than scoeps).
 
 In summary, if you are familiar with any 6502 assembler syntax you should feel at home with x65. If you're familiar with C programming expressions you should be familiar with '{', '}' scoping and complex expressions.
@@ -152,7 +152,7 @@ Directives are assembler commands that control the code generation but that does
 * [**LABEL**](#label) Decorative directive to assign an expression to a label
 * [**INCSYM**](#incsym) Include a symbol file with an optional set of wanted symbols.
 * [**POOL**](#pool) Add a label pool for temporary address labels
-* [**#IF / #ELSE / #IFDEF / #ELIF / #ENDIF**](#conditional) Conditional assembly
+* [**IF / ELSE / IFDEF / ELIF / ENDIF**](#conditional) Conditional assembly
 * [**STRUCT**](#struct) Hierarchical data structures (dot separated sub structures)
 * [**REPT**](#rept) Repeat a scoped block of code a number of times.
 * [**INCDIR**](#incdir) Add a directory to look for binary and text include files in.
@@ -432,7 +432,15 @@ Function_Name: {
 	rts
 ```
 
-<a name="conditional">**#IF / #ELSE / #IFDEF / #ELIF / #ENDIF**
+The following extensions are recognized:
+
+* [pool name] var (no extension is one byte)
+* [pool name] var.w (2 bytes)
+* [pool name] var.d (2 bytes)
+* [pool name] var.t (3 bytes)
+* [pool name] var.l (4 bytes)
+
+<a name="conditional">**IF / ELSE / IFDEF / ELIF / ENDIF**
 
 Conditional code parsing is very similar to C directive conditional compilation.
 
@@ -441,11 +449,11 @@ Example:
 ```
 DEBUG = 1
 
-#if DEBUG
+if DEBUG
     lda #2
-#else
+else
     lda #0
-#endif
+endif
 ```
 
 <a name="struct">**STRUCT**
@@ -825,6 +833,8 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* % evaluates to the current end of scope instead of whatever scope ends first
+* rept crash fix if not resolved until assembly completed
 * rept and symbol reference with forward reference label was not taking section into account
 * Link append sections target confusion cleared up (caused crash/link errors/freeze)
 * XREF prevented linking with same name symbol included from .x65 object causing a linker failure

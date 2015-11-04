@@ -1252,6 +1252,7 @@ typedef struct {
 	int target;				// offset into output buffer
 	int address;			// current pc
 	int scope;				// scope pc
+	int scope_depth;		// relevant for scope end
 	short section;			// which section to apply to.
 	short rept;				// value of rept
 	int file_ref;			// -1 if current or xdef'd otherwise index of file for label
@@ -1314,11 +1315,14 @@ struct EvalContext {
 	int pc;					// current address at point of eval
 	int scope_pc;			// current scope open at point of eval
 	int scope_end_pc;		// late scope closure after eval
+	int scope_depth;		// scope depth for eval (must match current for scope_end_pc to eval)
 	int relative_section;	// return can be relative to this section
 	int file_ref;			// can access private label from this file or -1
-	EvalContext(int _pc, int _scope, int _close, int _sect) :
-		pc(_pc), scope_pc(_scope), scope_end_pc(_close), relative_section(_sect),
-		file_ref(-1) {}
+	int rept_cnt;			// current repeat counter
+	EvalContext() {}
+	EvalContext(int _pc, int _scope, int _close, int _sect, int _rept_cnt) :
+		pc(_pc), scope_pc(_scope), scope_end_pc(_close), scope_depth(-1),
+		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt) {}
 };
 
 // Source context is current file (include file, etc.) or current macro.
@@ -1343,6 +1347,7 @@ private:
 public:
 	ContextStack() : currContext(nullptr) { stack.reserve(32); }
 	SourceContext& curr() { return *currContext; }
+	const SourceContext& curr() const { return *currContext; }
 	void push(strref src_name, strref src_file, strref code_seg, int rept = 1) {
 		if (currContext)
 			currContext->read_source = currContext->next_source;
@@ -1480,6 +1485,8 @@ public:
 	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
 						  EvalOperator prev_op, short &section, int &value);
 	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
+	void SetEvalCtxDefaults(struct EvalContext &etx);
+	int ReptCnt() const;
 
 	// Access labels
 	Label* GetLabel(strref label);
@@ -2425,8 +2432,8 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 	pEnum->size = 0;		// enums are 0 sized
 	int value = 0;
 
-	struct EvalContext etx(CurrSection().GetPC(),
-						   scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 
 	while (strref line = declaration.line()) {
 		line = line.before_or_full(',');
@@ -2573,6 +2580,23 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 //
 
 
+
+int Asm::ReptCnt() const
+{
+	return contextStack.curr().repeat_total - contextStack.curr().repeat;
+}
+
+void Asm::SetEvalCtxDefaults(struct EvalContext &etx)
+{
+	etx.pc = CurrSection().GetPC();				// current address at point of eval
+	etx.scope_pc = scope_address[scope_depth];	// current scope open at point of eval
+	etx.scope_end_pc = -1;						// late scope closure after eval
+	etx.scope_depth = scope_depth;				// scope depth for eval (must match current for scope_end_pc to eval)
+	etx.relative_section = -1;					// return can be relative to this section
+	etx.file_ref = -1;							// can access private label from this file or -1
+	etx.rept_cnt = ReptCnt();					// current repeat counter
+}
+
 // Get a single token from a merlin expression
 EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value)
 {
@@ -2594,7 +2618,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (expression[1]=='0' || expression[1]=='1') {
 				++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
-			if (etx.scope_end_pc<0) return EVOP_NRY;
+			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
 			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|':
 		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
@@ -2626,7 +2650,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 					if (ret == STATUS_OK) return EVOP_VAL;
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
-				if (!pLabel && label.same_str("rept")) { value = contextStack.curr().repeat_total - contextStack.curr().repeat; return EVOP_VAL; }
+				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
 			} else
@@ -2662,7 +2686,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 				  ++exp; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (exp[1] == '0' || exp[1] == '1') { ++exp; value = exp.abinarytoui_skip(); return EVOP_VAL; }
-			if (etx.scope_end_pc<0) return EVOP_NRY;
+			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
 			++exp; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|': ++exp; return EVOP_OR;
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
@@ -2691,7 +2715,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (ret == STATUS_OK) return EVOP_VAL;
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
-				if (!pLabel && label.same_str("rept")) { value = contextStack.curr().repeat_total - contextStack.curr().repeat; return EVOP_VAL; }
+				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
@@ -2947,6 +2971,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 	LateEval le;
 	le.address = pc;
 	le.scope = scope_pc;
+	le.scope_depth = scope_depth;
 	le.target = target;
 	le.section = (int)(&CurrSection() - &allSections[0]);
 	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
@@ -2964,6 +2989,7 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 	LateEval le;
 	le.address = pc;
 	le.scope = scope_pc;
+	le.scope_depth = scope_depth;
 	le.target = 0;
 	le.label = label;
 	le.section = (int)(&CurrSection() - &allSections[0]);
@@ -3011,12 +3037,10 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 			}
 			if (check) {
 				struct EvalContext etx(i->address, i->scope, scope_end,
-									   i->type == LateEval::LET_BRANCH ? SectionId() : -1);
-				SourceContext &ctx = contextStack.curr();
+						i->type == LateEval::LET_BRANCH ? SectionId() : -1, i->rept);
+				etx.scope_depth = i->scope_depth;
 				etx.file_ref = i->file_ref;
-				int r = ctx.repeat, rt = ctx.repeat_total; ctx.repeat = 0; ctx.repeat_total = i->rept;
 				StatusCode ret = EvalExpression(i->expression, etx, value);
-				ctx.repeat = r; ctx.repeat_total = rt;
 				if (ret == STATUS_OK || ret==STATUS_RELATIVE_SECTION) {
 					// Check if target section merged with another section
 					int trg = i->target;
@@ -3287,7 +3311,8 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	int ranges = 0;
 	int num32 = 0;
 	unsigned short aRng[256];
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	while (strref arg = args.split_token_trim(',')) {
 		strref start = arg[0]=='(' ? arg.scoped_block_skip() : arg.split_token_trim('-');
 		int addr0 = 0, addr1 = 0;
@@ -3332,8 +3357,12 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	strref type = label;
 	label = type.split_token('.');
 	int bytes = 1;
-	if (strref::tolower(type[0])=='w')
-		bytes = 2;
+	switch (strref::tolower(type.get_first())) {
+		case 'l': bytes = 4; break;
+		case 't': bytes = 3; break;
+		case 'd':
+		case 'w': bytes = 2; break;
+	}
 	if (GetLabel(label))
 		return ERROR_POOL_LABEL_ALREADY_DEFINED;
 	unsigned int addr;
@@ -3441,7 +3470,8 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 {
 	line.trim_whitespace();
 	int val = 0;
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	StatusCode status = EvalExpression(line, etx, val);
 	if (status != STATUS_NOT_READY && status != STATUS_OK)
 		return status;
@@ -3629,7 +3659,8 @@ void Asm::ConditionalElse() {
 StatusCode Asm::EvalStatement(strref line, bool &result)
 {
 	int equ = line.find('=');
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	if (equ >= 0) {
 		// (EXP) == (EXP)
 		strref left = line.get_clipped(equ);
@@ -3709,7 +3740,8 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 		}
 		expression.trim_whitespace();
 		int count;
-		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+		struct EvalContext etx;
+		SetEvalCtxDefaults(etx);
 		if (STATUS_OK != EvalExpression(expression, etx, count))
 			return ERROR_REPT_COUNT_EXPRESSION;
 		strref recur;
@@ -3823,7 +3855,8 @@ StatusCode Asm::Directive_Import(strref line)
 			++param;
 			param.skip_whitespace();
 			if (param) {
-				struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+				struct EvalContext etx;
+				SetEvalCtxDefaults(etx);
 				EvalExpression(param.split_token_trim(','), etx, skip);
 				if (param)
 					EvalExpression(param, etx, len);
@@ -3880,7 +3913,8 @@ StatusCode Asm::Directive_ORG(strref line)
 		line.next_word_ws();
 	line.skip_whitespace();
 	
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	StatusCode error = EvalExpression(line, etx, addr);
 	if (error != STATUS_OK)
 		return (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
@@ -3905,7 +3939,8 @@ StatusCode Asm::Directive_LOAD(strref line)
 	if (line[0]=='=' || keyword_equ.is_prefix_word(line))
 		line.next_word_ws();
 
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	StatusCode error = EvalExpression(line, etx, addr);
 	if (error != STATUS_OK)
 		return (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
@@ -3976,7 +4011,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		if (dir!=AD_IF && dir!=AD_IFDEF && dir!=AD_ELSE && dir!=AD_ELIF && dir!=AD_ELSE && dir!=AD_ENDIF)
 			return STATUS_OK;
 	}
-	struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1, -1);
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
 	switch (dir) {
 		case AD_CPU:
 			for (int c = 0; c < nCPUs; c++) {
@@ -4547,8 +4583,10 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	Reloc::Type target_section_type = Reloc::NONE;
 	bool evalLater = false;
 	if (expression) {
-		struct EvalContext etx(CurrSection().GetPC(), scope_address[scope_depth], -1,
-							   !!(validModes & AMM_BRANCH) ? SectionId() : -1);
+		struct EvalContext etx;
+		SetEvalCtxDefaults(etx);
+		if (validModes & (AMM_BRANCH | AMM_BRANCH_L))
+			etx.relative_section = SectionId();
 		error = EvalExpression(expression, etx, value);
 		if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) {
 			evalLater = true;
@@ -4716,7 +4754,9 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				}
 				AddByte(value);
-				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, -1);
+				struct EvalContext etx;
+				SetEvalCtxDefaults(etx);
+				etx.pc = CurrSection().GetPC()-2;
 				line.split_token_trim(',');
 				error = EvalExpression(line, etx, value);
 				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
@@ -4746,7 +4786,10 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
 				}
 				AddByte(value);
-				struct EvalContext etx(CurrSection().GetPC()-2, scope_address[scope_depth], -1, SectionId());
+				struct EvalContext etx;
+				SetEvalCtxDefaults(etx);
+				etx.pc = CurrSection().GetPC()-2;
+				etx.relative_section = SectionId();
 				error = EvalExpression(line, etx, value);
 				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BRANCH);
