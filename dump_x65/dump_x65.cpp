@@ -43,7 +43,7 @@
 //
 
 struct ObjFileHeader {
-	short id;	// 'o6'
+	short id;	// 'x6'
 	short sections;
 	short relocs;
 	short labels;
@@ -76,7 +76,8 @@ struct ObjFileReloc {
 	int base_value;
 	int section_offset;
 	short target_section;
-	short value_type;		// Reloc::Type
+	char bytes;
+	char shift;
 };
 
 struct ObjFileLabel {
@@ -117,6 +118,7 @@ enum ShowFlags {
 	SHOW_LABELS = 4,
 	SHOW_MAP_SYMBOLS = 8,
 	SHOW_LATE_EVAL = 16,
+	SHOW_CODE_RANGE = 32,
 
 	SHOW_DEFAULT = SHOW_SECTIONS
 };
@@ -170,13 +172,14 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 		hdr.relocs * sizeof(struct ObjFileReloc) + hdr.labels * sizeof(struct ObjFileLabel) +
 		hdr.late_evals * sizeof(struct ObjFileLateEval) +
 		hdr.map_symbols * sizeof(struct ObjFileMapSymbol) + hdr.stringdata + hdr.bindata;
-		if (hdr.id == 0x6f36 && sum == size) {
+		if (hdr.id == 0x7836 && sum == size) {
 			struct ObjFileSection *aSect = (struct ObjFileSection*)(&hdr + 1);
 			struct ObjFileReloc *aReloc = (struct ObjFileReloc*)(aSect + hdr.sections);
 			struct ObjFileLabel *aLabels = (struct ObjFileLabel*)(aReloc + hdr.relocs);
 			struct ObjFileLateEval *aLateEval = (struct ObjFileLateEval*)(aLabels + hdr.labels);
 			struct ObjFileMapSymbol *aMapSyms = (struct ObjFileMapSymbol*)(aLateEval + hdr.late_evals);
 			const char *str_orig = (const char*)(aMapSyms + hdr.map_symbols);
+			size_t code_start = sum - hdr.bindata;
 
 			// sections
 			if (show & SHOW_SECTIONS) {
@@ -212,12 +215,13 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 			}
 			
 			if (show & SHOW_RELOCS) {
+				int curRel = 0;
 				for (int si = 0; si < hdr.sections; si++) {
 					printf("section %d relocs: %d\n", si, aSect[si].relocs);
 					for (int r = 0; r < aSect[si].relocs; r++) {
-						struct ObjFileReloc &rs = aReloc[r];
-						printf("Reloc: section %d offset $%x base $%x type %s\n",
-							   rs.target_section, rs.section_offset, rs.target_section, reloc_type[rs.value_type]);
+						struct ObjFileReloc &rs = aReloc[curRel++];
+						printf("Reloc: section %d offset $%x base $%x bytes: %d shift: %d\n",
+							   rs.target_section, rs.section_offset, rs.base_value, rs.bytes, rs.shift);
 					}
 				}
 			}
@@ -265,6 +269,9 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 				}
 			}
 
+			if (show & SHOW_CODE_RANGE)
+				printf("Code block: $%x - $%x (%d bytes)\n", (size_t)code_start, size, size - hdr.bindata);
+
 			// restore previous section
 		} else
 			printf("Not a valid x65 file\n");
@@ -276,29 +283,24 @@ int main(int argc, char **argv)
 {
 	const char *file = nullptr;
 	bool def = true;
-	unsigned int show = SHOW_DEFAULT, prv_show = 0;
+	unsigned int show =  0;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg = argv[a]+1;
-			if (arg.same_str("sections")) {
-				show = prv_show | SHOW_SECTIONS;
-				prv_show = show;
-			} else if (arg.same_str("relocs")) {
-				show = prv_show | SHOW_RELOCS;
-				prv_show = show;
-			} else if (arg.same_str("labels")) {
-				show = prv_show | SHOW_LABELS;
-				prv_show = show;
-			} else if (arg.same_str("map")) {
-				show = prv_show | SHOW_MAP_SYMBOLS;
-				prv_show = show;
-			} else if (arg.same_str("late_eval")) {
-				show = prv_show | SHOW_LATE_EVAL;
-				prv_show = show;
-			} else if (arg.same_str("all")) {
-				show = prv_show | SHOW_SECTIONS | SHOW_RELOCS | SHOW_LABELS | SHOW_MAP_SYMBOLS | SHOW_LATE_EVAL;
-				prv_show = show;
-			}
+			if (arg.same_str("sections"))
+				show = show | SHOW_SECTIONS;
+			else if (arg.same_str("relocs"))
+				show = show | SHOW_RELOCS;
+			else if (arg.same_str("labels"))
+				show = show | SHOW_LABELS;
+			else if (arg.same_str("map"))
+				show = show | SHOW_MAP_SYMBOLS;
+			else if (arg.same_str("late_eval"))
+				show = show | SHOW_LATE_EVAL;
+			else if (arg.same_str("code"))
+				show = show | SHOW_CODE_RANGE;
+			else if (arg.same_str("all"))
+				show = SHOW_SECTIONS | SHOW_RELOCS | SHOW_LABELS | SHOW_MAP_SYMBOLS | SHOW_LATE_EVAL | SHOW_CODE_RANGE;
 		} else if (!file)
 			file = argv[a];
 	}
@@ -309,6 +311,6 @@ int main(int argc, char **argv)
 	}
 
 	if (argc>1) {
-		ReadObjectFile(file, show);
+		ReadObjectFile(file, show ? show : SHOW_DEFAULT);
 	}
 }

@@ -833,6 +833,8 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* Changed the data for relocs to better match Apple II GS OMF format which also changes the object file format.
+* Added a disassembler (disassembler/x65dsasm.s)
 * % evaluates to the current end of scope instead of whatever scope ends first
 * rept crash fix if not resolved until assembly completed
 * rept and symbol reference with forward reference label was not taking section into account

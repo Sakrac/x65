@@ -892,6 +892,7 @@ DirectiveName aDirectiveNames[] {
 	{ "EXPORT", AD_EXPORT },
 	{ "SECTION", AD_SECTION },
 	{ "SEG", AD_SECTION },		// DASM version of SECTION
+	{ "SEGMENT", AD_SECTION },	// CA65 version of SECTION
 	{ "LINK", AD_LINK },
 	{ "XDEF", AD_XDEF },
 	{ "XREF", AD_XREF },
@@ -1091,20 +1092,15 @@ public:
 // be out of scope at link time.
 
 struct Reloc {
-	enum Type {
-		NONE,
-		WORD,
-		LO_BYTE,
-		HI_BYTE
-	};
 	int base_value;
 	int section_offset;		// offset into this section
 	int target_section;		// which section does this reloc target?
-	Type value_type;		// byte or word size
+	char bytes;				// number of bytes to write
+	char shift;				// number of bits to shift to get value
 
-	Reloc() : base_value(0), section_offset(-1), target_section(-1), value_type(NONE) {}
-	Reloc(int base, int offs, int sect, Type t = WORD) :
-		base_value(base), section_offset(offs), target_section(sect), value_type(t) {}
+	Reloc() : base_value(0), section_offset(-1), target_section(-1), bytes(0), shift(0) {}
+	Reloc(int base, int offs, int sect, char num_bytes, char bit_shift) :
+		base_value(base), section_offset(offs), target_section(sect), bytes(num_bytes), shift(bit_shift) {}
 };
 typedef std::vector<struct Reloc> relocList;
 
@@ -1187,7 +1183,7 @@ typedef struct Section {
 	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
 	bool IsMergedSection() const { return merged_offset >= 0; }
-	void AddReloc(int base, int offset, int section, Reloc::Type type = Reloc::WORD);
+	void AddReloc(int base, int offset, int section, char bytes, char shift);// Reloc::Type type = Reloc::WORD);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
 	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr) {
@@ -1414,7 +1410,7 @@ public:
 	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
 	int lastEvalValue;
-	Reloc::Type lastEvalPart;
+	char lastEvalShift;
 
 	strref export_base_name;	// binary output name if available
 	strref last_label;			// most recently defined label for Merlin macro
@@ -1957,20 +1953,13 @@ StatusCode Asm::LinkRelocs(int section_id, int section_address)
 					}
 					unsigned char *trg = trg_sect->output + output_offs + i->section_offset;
 					int value = i->base_value + section_address;
-					if (i->value_type == Reloc::WORD) {
-						if ((trg+1) >= (trg_sect->output + trg_sect->size()))
-							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
-						*trg++ = (unsigned char)value;
-						*trg = (unsigned char)(value >> 8);
-					} else if (i->value_type == Reloc::LO_BYTE) {
-						if (trg >= (trg_sect->output + trg_sect->size()))
-							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
-						*trg = (unsigned char)value;
-					} else if (i->value_type == Reloc::HI_BYTE) {
-						if (trg >= (trg_sect->output + trg_sect->size()))
-							return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
-						*trg = (unsigned char)(value >> 8);
-					}
+					if (i->shift<0)
+						value >>= -i->shift;
+					else if (i->shift)
+						value <<= i->shift;
+					
+					for (int b = 0; b<i->bytes; b++)
+						*trg++ = (unsigned char)(value>>(b*8));
 					i = pList->erase(i);
 					if (i != pList->end())
 						++i;
@@ -2152,13 +2141,13 @@ void Section::AddText(strref line, strref text_prefix) {
 }
 
 // Add a relocation marker to a section
-void Section::AddReloc(int base, int offset, int section, Reloc::Type type)
+void Section::AddReloc(int base, int offset, int section, char bytes, char shift)
 {
 	if (!pRelocs)
 		pRelocs = new relocList;
 	if (pRelocs->size() == pRelocs->capacity())
 		pRelocs->reserve(pRelocs->size() + 32);
-	pRelocs->push_back(Reloc(base, offset, section, type));
+	pRelocs->push_back(Reloc(base, offset, section, bytes, shift));
 }
 
 // Make sure there is room to assemble in
@@ -2740,6 +2729,17 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 // Max number of unresolved sections to evaluate in a single expression
 #define MAX_EVAL_SECTIONS 4
 
+// determine if a scalar can be a shift
+static int mul_as_shift(int scalar)
+{
+	int shift = 0;
+	while (scalar > 1 && (scalar & 1) == 0) {
+		shift++;
+		scalar >>= 1;
+	}
+	return scalar == 1 ? shift : 0;
+}
+
 StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx, int &result)
 {
 	int numValues = 0;
@@ -2838,10 +2838,13 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 	{
 		int valIdx = 0;
 		int ri = 0;		// RPN index (value)
-		int preByteVal = 0; // special case for relative reference to low byte / high byte
+		int prev_val = values[0];
+		int shift_bits = 0; // special case for relative reference to low byte / high byte
 		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
+			shift_bits = 0;
+			prev_val = ri ? values[ri-1] : prev_val;
 			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2)
 				break; // ignore suffix operations that are lacking values
 			switch (op) {
@@ -2887,12 +2890,16 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ri--;
 					for (int i = 0; i<num_sections; i++)
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					shift_bits = mul_as_shift(values[ri]);
+					prev_val = values[ri - 1];
 					values[ri-1] *= values[ri]; break;
 				case EVOP_DIV:	// /
 					ri--;
 					for (int i = 0; i<num_sections; i++)
 						section_counts[i][ri-1] |= section_counts[i][ri];
-					values[ri-1] /= values[ri]; break;
+					shift_bits = -mul_as_shift(values[ri]);
+					prev_val = values[ri - 1];
+					values[ri - 1] /= values[ri]; break;
 				case EVOP_AND:	// &
 					ri--;
 					for (int i = 0; i<num_sections; i++)
@@ -2912,30 +2919,37 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ri--;
 					for (int i = 0; i<num_sections; i++)
 						section_counts[i][ri-1] |= section_counts[i][ri];
-					values[ri-1] <<= values[ri]; break;
+					shift_bits = values[ri];
+					prev_val = values[ri - 1];
+					values[ri - 1] <<= values[ri]; break;
 				case EVOP_SHR:	// >>
 					ri--;
 					for (int i = 0; i<num_sections; i++)
 						section_counts[i][ri-1] |= section_counts[i][ri];
-					values[ri-1] >>= values[ri]; break;
+					shift_bits = -values[ri];
+					prev_val = values[ri - 1];
+					values[ri - 1] >>= values[ri]; break;
 				case EVOP_LOB:	// low byte
-					if (ri) {
-						preByteVal = values[ri - 1];
+					if (ri)
 						values[ri-1] &= 0xff;
-					} break;
+					break;
 				case EVOP_HIB:
 					if (ri) {
-						preByteVal = values[ri - 1];
-						values[ri - 1] = (values[ri - 1] >> 8) & 0xff;
+						shift_bits = -8;
+						values[ri - 1] = values[ri - 1] >> 8;
 					} break;
 				case EVOP_BAB:
-					if (ri)
-						values[ri - 1] = (values[ri - 1] >> 16) & 0xff;
+					if (ri) {
+						shift_bits = -16;
+						values[ri - 1] = (values[ri - 1] >> 16);
+					}
 					break;
 				default:
 					return ERROR_EXPRESSION_OPERATION;
 					break;
 			}
+			if (shift_bits==0 && ri)
+				prev_val = values[ri-1];
 		}
 		int section_index = -1;
 		bool curr_relative = false;
@@ -2954,8 +2968,8 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		result = values[0];
 		if (section_index>=0 && !curr_relative) {
 			lastEvalSection = section_ids[section_index];
-			lastEvalValue = (ops[numOps - 1] == EVOP_LOB || ops[numOps - 1] == EVOP_HIB) ? preByteVal : result;
-			lastEvalPart = ops[numOps - 1] == EVOP_LOB ? Reloc::LO_BYTE : (ops[numOps - 1] == EVOP_HIB ? Reloc::HI_BYTE : Reloc::WORD);
+			lastEvalValue = prev_val;
+			lastEvalShift = shift_bits;
 			return STATUS_RELATIVE_SECTION;
 		}
 	}
@@ -3058,8 +3072,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 								if (i->section<0)
 									resolved = false;
 								else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection,
-															  lastEvalPart==Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift);
 									value = 0;
 								}
 							}
@@ -3073,7 +3086,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 								if (i->section<0)
 									resolved = false;
 								else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, lastEvalPart);
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 2, lastEvalShift);
 									value = 0;
 								}
 							}
@@ -3087,7 +3100,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 								if (i->section<0)
 									resolved = false;
 								else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, lastEvalPart);
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 3, lastEvalShift);
 									value = 0;
 								}
 							}
@@ -3101,7 +3114,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 								if (i->section<0)
 									resolved = false;
 								else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, lastEvalPart);
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 4, lastEvalShift);
 									value = 0;
 								}
 							}
@@ -4122,8 +4135,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
-					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection,
-					lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 1, lastEvalShift);
 				AddByte(value);
 			}
 			break;
@@ -4139,7 +4151,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, LateEval::LET_ABS_REF);
 					else if (error == STATUS_RELATIVE_SECTION) {
-						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
+						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 2, lastEvalShift);
 						value = 0;
 					}
 				}
@@ -4160,7 +4172,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, dir==AD_ADR ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF);
 					else if (error == STATUS_RELATIVE_SECTION) {
-						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
+						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, dir==AD_ADRL ? 4 : 3, lastEvalShift);
 						value = 0;
 					}
 				}
@@ -4197,10 +4209,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					else if (error == STATUS_RELATIVE_SECTION) {
 						value = 0;
 						if (words)
-							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, lastEvalPart);
+							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 2, lastEvalShift);
 						else
-							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection,
-								lastEvalPart == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 1, lastEvalShift);
 					}
 				}
 				AddByte(value);
@@ -4580,7 +4591,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	int value = 0;
 	int target_section = -1;
 	int target_section_offs = -1;
-	Reloc::Type target_section_type = Reloc::NONE;
+	char target_section_shift = 0;
 	bool evalLater = false;
 	if (expression) {
 		struct EvalContext etx;
@@ -4594,7 +4605,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 		} else if (error == STATUS_RELATIVE_SECTION) {
 			target_section = lastEvalSection;
 			target_section_offs = lastEvalValue;
-			target_section_type = lastEvalPart;
+			target_section_shift = lastEvalShift;
 		} else if (error != STATUS_OK)
 			return error;
 	}
@@ -4719,8 +4730,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION)
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-					target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 1, target_section_shift);
 				AddByte(value);
 				break;
 
@@ -4728,8 +4738,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_REF);
 				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
-										   target_section, target_section_type);
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 2, target_section_shift);
 					value = 0;
 				}
 				AddWord(value);
@@ -4739,8 +4748,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_ABS_L_REF);
 				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(),
-										   target_section, target_section_type);
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 3, target_section_shift);
 					value = 0;
 				}
 				AddTriple(value);
@@ -4750,8 +4758,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 1, target_section_shift);
 				}
 				AddByte(value);
 				struct EvalContext etx;
@@ -4781,10 +4788,8 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			case CA_BYTE_BRANCH: {
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
-				else if (error == STATUS_RELATIVE_SECTION) {
-					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section,
-										   target_section_type == Reloc::HI_BYTE ? Reloc::HI_BYTE : Reloc::LO_BYTE);
-				}
+				else if (error == STATUS_RELATIVE_SECTION)
+					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 1, target_section_shift);
 				AddByte(value);
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
@@ -5329,7 +5334,7 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 //
 
 struct ObjFileHeader {
-	short id;	// 'o6'
+	short id;	// 'x6'
 	short sections;
 	short relocs;
 	short labels;
@@ -5362,7 +5367,8 @@ struct ObjFileReloc {
 	int base_value;
 	int section_offset;
 	short target_section;
-	short value_type;		// Reloc::Type
+	char bytes;
+	char shift;
 };
 
 struct ObjFileLabel {
@@ -5437,7 +5443,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 {
 	if (FILE *f = fopen(strown<512>(filename).c_str(), "wb")) {
 		struct ObjFileHeader hdr = { 0 };
-		hdr.id = 0x6f36;
+		hdr.id = 0x7836;
 		hdr.sections = (short)allSections.size();
 		hdr.relocs = 0;
 		hdr.bindata = 0;
@@ -5494,7 +5500,8 @@ StatusCode Asm::WriteObjectFile(strref filename)
 						r.base_value = ri->base_value;
 						r.section_offset = ri->section_offset;
 						r.target_section = ri->target_section;
-						r.value_type = ri->value_type;
+						r.bytes = ri->bytes;
+						r.shift = ri->shift;
 					}
 				}
 			}
@@ -5614,7 +5621,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			hdr.relocs * sizeof(struct ObjFileReloc) + hdr.labels * sizeof(struct ObjFileLabel) +
 			hdr.late_evals * sizeof(struct ObjFileLateEval) +
 			hdr.map_symbols * sizeof(struct ObjFileMapSymbol) + hdr.stringdata + hdr.bindata;
-		if (hdr.id == 0x6f36 && sum == size) {
+		if (hdr.id == 0x7836 && sum == size) {
 			struct ObjFileSection *aSect = (struct ObjFileSection*)(&hdr + 1);
 			struct ObjFileReloc *aReloc = (struct ObjFileReloc*)(aSect + hdr.sections);
 			struct ObjFileLabel *aLabels = (struct ObjFileLabel*)(aReloc + hdr.relocs);
@@ -5666,7 +5673,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			for (int si = 0; si < hdr.sections; si++) {
 				for (int r = 0; r < aSect[si].relocs; r++) {
 					struct ObjFileReloc &rs = aReloc[r];
-					allSections[aSctRmp[si]].AddReloc(rs.base_value, rs.section_offset, aSctRmp[rs.target_section], Reloc::Type(rs.value_type));
+					allSections[aSctRmp[si]].AddReloc(rs.base_value, rs.section_offset, aSctRmp[rs.target_section], rs.bytes, rs.shift);
 				}
 			}
 
@@ -5845,19 +5852,19 @@ int main(int argc, char **argv)
 		puts("Usage:\n"
 			 " x65 filename.s code.prg [options]\n"
 			 "  * -i(path) : Add include path\n"
-			 "  * -D(label)[=<value>] : Define a label with an optional value(otherwise defined as 1)\n"
+			 "  * -D(label)[=value] : Define a label with an optional value (otherwise defined as 1)\n"
 			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
-			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits"
-			 "  * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits"
-			 "  * -obj(file.x65) : generate object file for later linking\n"
+			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits\n"
+			 "  * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits\n"
+			 "  * -obj (file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
 			 "  * -a2b : Apple II Dos 3.3 Binary\n"
-			 "  * -sym(file.sym) : symbol file\n"
+			 "  * -sym (file.sym) : symbol file\n"
 			 "  * -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)\n"
 			 "  * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)\n"
 			 "  * -sect: display sections loaded and built\n"
-			 "  * -vice(file.vs) : export a vice symbol file\n"
+			 "  * -vice (file.vs) : export a vice symbol file\n"
 			 "  * -merlin: use Merlin syntax\n"
 			 "  * -endm : macros end with endm or endmacro instead of scoped('{' - '}')\n");
 		return 0;
