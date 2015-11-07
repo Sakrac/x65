@@ -42,6 +42,14 @@
 //
 //
 
+enum SectionType : char {
+	ST_UNDEFINED,			// not set
+	ST_CODE,				// default type
+	ST_DATA,				// data section (matters for GS/OS OMF)
+	ST_BSS,					// uninitialized data section
+	ST_ZEROPAGE				// ununitialized data section in zero page / direct page
+};
+
 struct ObjFileHeader {
 	short id;	// 'x6'
 	short sections;
@@ -69,7 +77,8 @@ struct ObjFileSection {
 	int output_size;		// assembled binary size
 	int align_address;
 	short relocs;
-	short flags;
+	SectionType type;
+	char flags;
 };
 
 struct ObjFileReloc {
@@ -161,6 +170,14 @@ static const char *reloc_type[] = {
 static const char *late_type[] = {
 	"LABEL", "ABS_REF", "ABS_L_REF", "ABS_4_REF",
 	"BRANCH", "BRANCH_16", "BYTE" };
+static const char *section_type[] = {
+	"UNDEFINED",		// not set
+	"CODE",				// default type
+	"DATA",				// data section (matters for GS/OS OMF)
+	"BSS",				// uninitialized data section
+	"ZEROPAGE"			// ununitialized data section in zero page / direct page
+};
+static const int section_type_str = sizeof(section_type) / sizeof(section_type[0]);
 
 
 void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
@@ -187,28 +204,29 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 				for (int si = 0; si < hdr.sections; si++) {
 					struct ObjFileSection &s = aSect[si];
 					short f = s.flags;
+					const char *tstr = s.type > 0 && s.type < section_type_str ? section_type[s.type] : "error";
 					if (f & (1 << ObjFileSection::OFS_MERGED)) {
-						printf("Section %d: " STRREF_FMT "(Merged)\n",
+						printf("Section %d: \"" STRREF_FMT "\": (Merged)\n",
 							   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)));
 					} else if (f & (1 << ObjFileSection::OFS_DUMMY)) {
 						if (f&(1 << ObjFileSection::OFS_FIXED)) {
-							printf("Section %d: " STRREF_FMT "(Dummy, fixed at $%04x)\n",
-								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), s.start_address);
+							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], fixed at $%04x)\n",
+								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.start_address);
 						} else {
-							printf("Section %d: " STRREF_FMT "(Dummy, relative)\n",
-								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)));
+							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], relative)\n",
+								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr);
 						}
 					} else {
 						if (f&(1 << ObjFileSection::OFS_FIXED)) {
-							printf("Section %d: " STRREF_FMT "(Fixed $%04x, $%x bytes)\n",
-								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), s.start_address, s.output_size);
+							printf("Section %d: \"" STRREF_FMT "\": (Fixed [%s] $%04x, $%x bytes)\n",
+								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.start_address, s.output_size);
 						} else {
-							printf("Section %d: " STRREF_FMT "(Relative, $%x bytes, align to $%x)\n",
-								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), s.output_size, s.align_address);
+							printf("Section %d: \"" STRREF_FMT "\": (Relative [%s], $%x bytes, align to $%x)\n",
+								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.output_size, s.align_address);
 						}
 						strref export_append = PoolStr(s.exp_app, str_orig);
 						if (export_append)
-							printf("  Export as: " STRREF_FMT "\n", STRREF_ARG(export_append));
+							printf("  Export as: \"" STRREF_FMT "\"\n", STRREF_ARG(export_append));
 					}
 					reloc_idx++;
 				}
@@ -270,7 +288,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 			}
 
 			if (show & SHOW_CODE_RANGE)
-				printf("Code block: $%x - $%x (%d bytes)\n", (size_t)code_start, size, size - hdr.bindata);
+				printf("Code block: $%x - $%x (%d bytes)\n", (int)code_start, (int)size, (int)(size - hdr.bindata));
 
 			// restore previous section
 		} else

@@ -1125,6 +1125,14 @@ struct ListLine {
 };
 typedef std::vector<struct ListLine> Listing;
 
+enum SectionType : char {
+	ST_UNDEFINED,			// not set
+	ST_CODE,				// default type
+	ST_DATA,				// data section (matters for GS/OS OMF)
+	ST_BSS,					// uninitialized data section
+	ST_ZEROPAGE				// ununitialized data section in zero page / direct page
+};
+
 // start of data section support
 // Default is a relative section
 // Whenever org or dum with address is encountered => new section
@@ -1155,10 +1163,11 @@ typedef struct Section {
 
 	bool address_assigned;	// address is absolute if assigned
 	bool dummySection;		// true if section does not generate data, only labels
+	SectionType type;		// distinguishing section type for relocatable output
 
 	void reset() {			// explicitly cleaning up sections, not called from Section destructor
 		name.clear(); export_append.clear();
-		start_address = address = load_address = 0x0;
+		start_address = address = load_address = 0x0; type = ST_CODE;
 		address_assigned = false; output = nullptr; curr = nullptr;
 		dummySection = false; output_capacity = 0; merged_offset = -1; merged_section = -1;
 		align_address = 1; if (pRelocs) delete pRelocs;
@@ -1746,22 +1755,52 @@ void Asm::SetSection(strref name, int address)
 	current_section = &allSections[allSections.size()-1];
 }
 
-void Asm::SetSection(strref name)
+void Asm::SetSection(strref line)
 {
 	if (link_all_section)
 		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
+
+	SectionType type = ST_UNDEFINED;
+
+	// SEG.U etc.
+	if (line.get_first() == '.') {
+		++line;
+		switch (strref::tolower(line.get_first())) {
+			case 'u': type = ST_BSS; break;
+			case 'z': type = ST_ZEROPAGE; break;
+			case 'd': type = ST_DATA; break;
+			case 'c': type = ST_CODE; break;
+		}
+	}
+	line.trim_whitespace();
+
 	int align = 1;
-	strref align_str = name.after(',');
-	align_str.trim_whitespace();
-	if (align_str.get_first()=='$') {
-		++align_str;
-		align = align_str.ahextoui();
-	} else
-		align = align_str.atoi();
-	Section newSection(name.before_or_full(','));
+	strref name;
+	while (strref arg = line.split_token_any_trim(",:")) {
+		if (arg.get_first() == '$') { ++arg; align = arg.ahextoui(); }
+		else if (arg.is_number()) align = arg.atoi();
+		else if (arg.get_first() == '"') name = (arg + 1).before_or_full('"');
+		else if (!name) name = arg;
+		else if (arg.same_str("code")) type = ST_CODE;
+		else if (arg.same_str("data")) type = ST_DATA;
+		else if (arg.same_str("bss")) type = ST_BSS;
+		else if (arg.same_str("zp") || arg.same_str("dp") ||
+			arg.same_str("zeropage") || arg.same_str("direct")) type = ST_ZEROPAGE;
+	}
+	if (type == ST_UNDEFINED) {
+		if (name.find("code") >= 0) type = ST_CODE;
+		else if (name.find("data") >= 0) type = ST_DATA;
+		else if (name.find("bss") >= 0) 	type = ST_BSS;
+		else if (name.find("zp") >= 0 || name.find("zeropage") >= 0 || name.find("direct") >= 0)
+			type = ST_ZEROPAGE;
+		else type = ST_CODE;
+	}
+
+	Section newSection(name);
 	newSection.align_address = align;
+	newSection.type = type;
 	allSections.push_back(newSection);
 	current_section = &allSections[allSections.size()-1];
 }
@@ -4049,7 +4088,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return Directive_LOAD(line);
 
 		case AD_SECTION:
-			SetSection(line.get_trimmed_ws());
+			SetSection(line);
 			break;
 
 		case AD_LINK:
@@ -5360,7 +5399,8 @@ struct ObjFileSection {
 	int output_size;		// assembled binary size
 	int align_address;
 	short relocs;
-	short flags;
+	SectionType type;
+	char flags;
 };
 
 struct ObjFileReloc {
@@ -5490,6 +5530,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				s.align_address = si->align_address;
 				s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
 				s.start_address = si->start_address;
+				s.type = si->type;
 				s.flags =
 					(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
 					(si->IsMergedSection() ? (1 << ObjFileSection::OFS_MERGED) : 0) |
@@ -5659,6 +5700,7 @@ StatusCode Asm::ReadObjectFile(strref filename)
 					CurrSection().export_append = aSect[si].exp_app.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref();
 					CurrSection().align_address = aSect[si].align_address;
 					CurrSection().address = CurrSection().start_address + aSect[si].output_size;
+					CurrSection().type = aSect[si].type;
 					if (aSect[si].output_size) {
 						CurrSection().output = (unsigned char*)malloc(aSect[si].output_size);
 						memcpy(CurrSection().output, bin_data, aSect[si].output_size);
