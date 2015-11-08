@@ -194,7 +194,7 @@ Data:
 	byte 1,2,3,4
 ```
 
-Starts a relative section. Relative sections require a name and sections that share the same name will be linked sequentially. The labels will be evaluated at link time.
+Starts a relative code section. Relative sections require a name and sections that share the same name will be linked sequentially. The labels will be evaluated at link time.
 
 Sections can be aligned by adding a comma separated argument:
 
@@ -212,6 +212,37 @@ Sections can be names and assigned a fixed address by immediately following with
 If there is any code or data between the SECTION and ORG directives the ORG directive will begin a new section.
 
 The primary purpose of relative sections (sections that are not assembled at a fixed address) is to generate object files (.x65) that can be referenced from a linking source file by using **INCOBJ** and assigned an address at that point using the **LINK** directive. Object files can mix and match relative and fixed address sections and only the relative sections need to be linked using the **LINK** directive.
+
+Sections can be named anything and still be assigned a section type:
+
+```
+    section Gameplay, Code			; code section named Gameplay, unaligned
+	...
+	section GameBinary, Data, $100	; data section named GameBinary, aligned
+	...
+	section Work, Zeropage			; Zeropage or Direct page section
+	...
+	section FixedZP, Zeropage
+	org $a0							; Make zero page section as a fixed address
+```
+
+Section types include:
+
+* Code: binary code
+* Data: binary data
+* BSS: uninitialized memory, for fixed address projects the 
+* Zeropage: uninitialized memory restricted to the range $00 - $ff
+
+Additional section directive styles include:
+
+```
+	SEG segname
+	SEG.U segname
+	SEGMENT "segname": segtype
+	.SEGMENT "segname"
+```
+
+For creating relocatable files (OMF) certain sections can not be fixed address.
 
 <a name="xdef">**XDEF**
 
@@ -891,6 +922,7 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 * irp (indefinite repeat)
 
 **FIXED**
+* Linking of zero page / direct page sections
 * Added section types, should cover most intuitive formats (seg.type; segment name; segment "name": type; etc. etc.)
 * Changed the data for relocs to better match Apple II GS OMF format which also changes the object file format.
 * Added a disassembler (disassembler/x65dsasm.s)

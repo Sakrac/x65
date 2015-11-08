@@ -135,6 +135,7 @@ enum StatusCode {
 	ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE,
 	ERROR_CPU_NOT_SUPPORTED,
 	ERROR_CANT_APPEND_SECTION_TO_TARGET,
+	ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE,
 
 	STATUSCODE_COUNT
 };
@@ -196,6 +197,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Unexpected target offset for reloc or late evaluation",
 	"CPU is not supported",
 	"Can't append sections",
+	"Zero page / Direct page section out of range",
 };
 
 // Assembler directives
@@ -1461,6 +1463,7 @@ public:
 	Section& CurrSection() { return *current_section; }
 	unsigned char* BuildExport(strref append, int &file_size, int &addr);
 	int GetExportNames(strref *aNames, int maxNames);
+	StatusCode LinkZP();
 	int SectionId() { return int(current_section - &allSections[0]); }
 	void AddByte(int b) { CurrSection().AddByte(b); }
 	void AddWord(int w) { CurrSection().AddWord(w); }
@@ -1869,11 +1872,11 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 	while (!has_relative_section && !has_fixed_section) {
 		int section_id = 0;
 		for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-			if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+			if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
 				if (!i->IsMergedSection()) {
 					if (i->IsRelativeSection())
 						has_relative_section = true;
-					else if (i->start_address >= 0x200 && i->size() > 0) {
+					else if (i->start_address >= 0x100 && i->size() > 0) {
 						has_fixed_section = true;
 						if (i->start_address < start_address)
 							start_address = i->start_address;
@@ -1896,7 +1899,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 				last_fixed_section = SectionId();
 			}
 			for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-				if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+				if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
 					if (i->IsRelativeSection()) {
 						StatusCode status = AppendSection(*i, allSections[last_fixed_section]);
 						if (status != STATUS_OK)
@@ -1951,6 +1954,96 @@ int Asm::GetExportNames(strref *aNames, int maxNames)
 	}
 	return count;
 }
+
+// Collect all unassigned ZP sections and link them
+StatusCode Asm::LinkZP()
+{
+	unsigned char min_addr = 0xff, max_addr = 0x00;
+	int num_addr = 0;
+	bool has_assigned = false, has_unassigned = false;
+	int first_unassigned = -1;
+
+	// determine if any zeropage section has been asseigned
+	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
+		if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
+			if (s->address_assigned) {
+				has_assigned = true;
+				if (s->start_address < min_addr)
+					min_addr = s->start_address;
+				else if (s->address > max_addr)
+					max_addr = s->address;
+			} else {
+				has_unassigned = true;
+				first_unassigned = first_unassigned >=0 ? first_unassigned : (int)(&*s - &allSections[0]);
+			}
+			num_addr += s->address - s->start_address;
+		}
+	}
+
+	if (num_addr > 0x100)
+		return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
+
+	// no unassigned zp section, nothing to fix
+	if (!has_unassigned)
+		return STATUS_OK;
+
+	// no section assigned => fit together at end
+	if (!has_assigned) {
+		int address = 0x100 - num_addr;
+		for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
+			if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
+				s->start_address = address;
+				s->address += address;
+				s->address_assigned = true;
+				int section_id = (int)(&*s - &allSections[0]);
+				LinkLabelsToAddress(section_id, s->start_address);
+				StatusCode ret = LinkRelocs(section_id, s->start_address);
+				if (ret >= FIRST_ERROR)
+					return ret;
+				address += s->address - s->start_address;
+			}
+		}
+	} else {	// find first fit neighbouring an address assigned zero page section
+		for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
+			if (s->type == ST_ZEROPAGE && !s->IsMergedSection() && !s->address_assigned) {
+				int size = s->address - s->start_address;
+				bool found = false;
+				// find any assigned address section and try to place before or after
+				for (std::vector<Section>::iterator sa = allSections.begin(); sa != allSections.end(); ++sa) {
+					if (sa->type == ST_ZEROPAGE && !sa->IsMergedSection() && sa->address_assigned) {
+						for (int e = 0; e < 2; ++e) {
+							int start = e ? sa->start_address - size : sa->address;
+							int end = start + size;
+							if (start >= 0 && end <= 0x100) {
+								for (std::vector<Section>::iterator sc = allSections.begin(); !found && sc != allSections.end(); ++sc) {
+									found = true;
+									if (&*sa != &*sc && sc->type == ST_ZEROPAGE && !sc->IsMergedSection() && sc->address_assigned) {
+										if (start <= sc->address && sc->start_address <= end)
+											found = false;
+									}
+								}
+							}
+							if (found) {
+								s->start_address = start;
+								s->address += end;
+								s->address_assigned = true;
+								int section_id = (int)(&*s - &allSections[0]);
+								LinkLabelsToAddress(section_id, s->start_address);
+								StatusCode ret = LinkRelocs(section_id, s->start_address);
+								if (ret >= FIRST_ERROR)
+									return ret;
+							}
+						}
+					}
+				}
+				if (!found)
+					return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
+			}
+		}
+	}
+	return STATUS_OK;
+}
+
 
 // Apply labels assigned to addresses in a relative section a fixed address
 void Asm::LinkLabelsToAddress(int section_id, int section_address)
@@ -2086,9 +2179,12 @@ StatusCode Asm::LinkSections(strref name) {
 
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if ((!name || i->name.same_str_case(name)) && i->IsRelativeSection() && !i->IsMergedSection()) {
-			StatusCode status = AppendSection(*i, CurrSection());
-			if (status != STATUS_OK)
-				return status;
+			// Zero page sections can only be linked with zero page sections
+			if (i->type != ST_ZEROPAGE || CurrSection().type == ST_ZEROPAGE) {
+				StatusCode status = AppendSection(*i, CurrSection());
+				if (status != STATUS_OK)
+					return status;
+			}
 		}
 	}
 	return STATUS_OK;
@@ -2097,6 +2193,8 @@ StatusCode Asm::LinkSections(strref name) {
 // Section based output capacity
 // Make sure there is room to assemble in
 void Section::CheckOutputCapacity(unsigned int addSize) {
+	if (dummySection || type == ST_ZEROPAGE || type == ST_BSS)
+		return;
 	size_t currSize = curr - output;
 	if ((addSize + currSize) >= output_capacity) {
 		size_t newSize = currSize * 2;
@@ -2114,7 +2212,7 @@ void Section::CheckOutputCapacity(unsigned int addSize) {
 
 // Add one byte to a section
 void Section::AddByte(int b) {
-	if (!dummySection) {
+	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		CheckOutputCapacity(1);
 		*curr++ = (unsigned char)b;
 	}
@@ -2123,7 +2221,7 @@ void Section::AddByte(int b) {
 
 // Add a 16 bit word to a section
 void Section::AddWord(int w) {
-	if (!dummySection) {
+	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		CheckOutputCapacity(2);
 		*curr++ = (unsigned char)(w&0xff);
 		*curr++ = (unsigned char)(w>>8);
@@ -2133,7 +2231,7 @@ void Section::AddWord(int w) {
 
 // Add a 24 bit word to a section
 void Section::AddTriple(int l) {
-	if (!dummySection) {
+	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		CheckOutputCapacity(3);
 		*curr++ = (unsigned char)(l&0xff);
 		*curr++ = (unsigned char)(l>>8);
@@ -2143,7 +2241,7 @@ void Section::AddTriple(int l) {
 }
 // Add arbitrary length data to a section
 void Section::AddBin(unsigned const char *p, int size) {
-	if (!dummySection) {
+	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		CheckOutputCapacity(size);
 		memcpy(curr, p, size);
 		curr += size;
@@ -3974,6 +4072,8 @@ StatusCode Asm::Directive_ORG(strref line)
 
 	// Section immediately followed by ORG reassigns that section to be fixed
 	if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
+		if (CurrSection().type == ST_ZEROPAGE && addr >= 0x100)
+			return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
 		CurrSection().start_address = addr;
 		CurrSection().load_address = addr;
 		CurrSection().address = addr;
@@ -4506,8 +4606,11 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			if (value > 0) {
 				for (int n = 0; n < value; n++)
 					AddByte(fill);
-			} else if (value)
+			} else if (value) {
 				CurrSection().AddAddress(value);
+				if (CurrSection().type == ST_ZEROPAGE && CurrSection().address > 0x100)
+					return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
+			}
 			break;
 		}
 	}
@@ -4650,7 +4753,8 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	}
 
 	// check if address is in zero page range and should use a ZP mode instead of absolute
-	if (!evalLater && value>=0 && value<0x100 && error != STATUS_RELATIVE_SECTION) {
+	if (!evalLater && value>=0 && value<0x100 && (error != STATUS_RELATIVE_SECTION ||
+		(target_section>=0 && allSections[target_section].type==ST_ZEROPAGE))) {
 		switch (addrMode) {
 			case AMB_ABS:
 				if (validModes & AMM_ZP)
@@ -5026,6 +5130,8 @@ StatusCode Asm::BuildLine(strref line)
 
 		if (line.same_str_case(line_start))
 			error = ERROR_UNABLE_TO_PROCESS;
+		else if (CurrSection().type == ST_ZEROPAGE && CurrSection().address > 0x100)
+			error = ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
 
 		if (error > STATUS_XREF_DEPENDENT)
 			PrintError(line_start, error);
@@ -5939,6 +6045,11 @@ int main(int argc, char **argv)
 					if (ext)
 						binout.clip(ext.get_len() + 1);
 					strref aAppendNames[MAX_EXPORT_FILES];
+					StatusCode err = assembler.LinkZP();	// link zero page sections
+					if (err > FIRST_ERROR) {
+						assembler.PrintError(strref(), err);
+						return_value = 1;
+					}
 					int numExportFiles = assembler.GetExportNames(aAppendNames, MAX_EXPORT_FILES);
 					for (int e = 0; e < numExportFiles; e++) {
 						strown<512> file(binout);
