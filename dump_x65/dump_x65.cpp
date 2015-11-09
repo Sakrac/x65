@@ -74,8 +74,11 @@ struct ObjFileSection {
 	struct ObjFileStr name;
 	struct ObjFileStr exp_app;
 	int start_address;
+	int end_address;
 	int output_size;		// assembled binary size
 	int align_address;
+	short next_group;		// next section of group
+	short first_group;		// first section of group
 	short relocs;
 	SectionType type;
 	char flags;
@@ -196,7 +199,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 			struct ObjFileLateEval *aLateEval = (struct ObjFileLateEval*)(aLabels + hdr.labels);
 			struct ObjFileMapSymbol *aMapSyms = (struct ObjFileMapSymbol*)(aLateEval + hdr.late_evals);
 			const char *str_orig = (const char*)(aMapSyms + hdr.map_symbols);
-			size_t code_start = sum - hdr.bindata;
+			size_t code_start = sum - hdr.bindata, code_curr = code_start;
 
 			// sections
 			if (show & SHOW_SECTIONS) {
@@ -206,28 +209,36 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 					short f = s.flags;
 					const char *tstr = s.type > 0 && s.type < section_type_str ? section_type[s.type] : "error";
 					if (f & (1 << ObjFileSection::OFS_MERGED)) {
-						printf("Section %d: \"" STRREF_FMT "\": (Merged)\n",
+						printf("Section %d: \"" STRREF_FMT "\": (Merged)",
 							   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)));
 					} else if (f & (1 << ObjFileSection::OFS_DUMMY)) {
 						if (f&(1 << ObjFileSection::OFS_FIXED)) {
-							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], fixed at $%04x)\n",
+							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], fixed at $%04x)",
 								   reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.start_address);
 						} else {
-							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], relative)\n",
+							printf("Section %d: \"" STRREF_FMT "\": (Dummy [%s], relative)",
 								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr);
 						}
 					} else {
 						if (f&(1 << ObjFileSection::OFS_FIXED)) {
-							printf("Section %d: \"" STRREF_FMT "\": (Fixed [%s] $%04x, $%x bytes)\n",
-								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.start_address, s.output_size);
+							printf("Section %d: \"" STRREF_FMT "\": (Fixed [%s] $%04x, $%x bytes)",
+								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.start_address, s.end_address - s.start_address);
 						} else {
-							printf("Section %d: \"" STRREF_FMT "\": (Relative [%s], $%x bytes, align to $%x)\n",
-								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.output_size, s.align_address);
+							printf("Section %d: \"" STRREF_FMT "\": (Relative [%s], $%x bytes, align to $%x)",
+								reloc_idx, STRREF_ARG(PoolStr(s.name, str_orig)), tstr, s.end_address - s.start_address, s.align_address);
 						}
 						strref export_append = PoolStr(s.exp_app, str_orig);
 						if (export_append)
-							printf("  Export as: \"" STRREF_FMT "\"\n", STRREF_ARG(export_append));
+							printf("  Export as: \"" STRREF_FMT "\"", STRREF_ARG(export_append));
 					}
+					if (s.first_group >= 0)
+						printf(" grouped with section %d", s.first_group);
+					if (s.next_group >= 0)
+						printf(" next in group: %d", s.next_group);
+					if ((show & SHOW_CODE_RANGE) && s.output_size)
+						printf(" code: $%x-$%x", code_curr, code_curr + s.output_size);
+					code_curr += s.output_size;
+					printf("\n");
 					reloc_idx++;
 				}
 			}
@@ -258,7 +269,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 					strref name = PoolStr(l.name, str_orig);
 					short f = l.flags;
 					int external = f & ObjFileLabel::OFL_XDEF;
-					printf("Label: " STRREF_FMT " %s", STRREF_ARG(name), external==ObjFileLabel::OFL_XDEF ? "external" : "protected");
+					printf("Label: " STRREF_FMT " %s base $%x", STRREF_ARG(name), external==ObjFileLabel::OFL_XDEF ? "external" : "protected", l.value);
 					if (external!=ObjFileLabel::OFL_XDEF)
 						printf(" file %d", external);
 					if (f & ObjFileLabel::OFL_CNST)

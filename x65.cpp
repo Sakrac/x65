@@ -84,6 +84,7 @@ enum StatusCode {
 	STATUS_NOT_READY,	// label could not be evaluated at this time
 	STATUS_XREF_DEPENDENT,	// evaluated but relied on an XREF label to do so
 	STATUS_NOT_STRUCT,	// return is not a struct.
+	STATUS_EXPORT_NO_CODE_OR_DATA_SECTION,
 	FIRST_ERROR,
 	ERROR_UNDEFINED_CODE = FIRST_ERROR,
 	ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION,
@@ -136,6 +137,9 @@ enum StatusCode {
 	ERROR_CPU_NOT_SUPPORTED,
 	ERROR_CANT_APPEND_SECTION_TO_TARGET,
 	ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE,
+	ERROR_NOT_A_SECTION,
+	ERROR_CANT_REASSIGN_FIXED_SECTION,
+	ERROR_CANT_LINK_ZP_AND_NON_ZP,
 
 	STATUSCODE_COUNT
 };
@@ -147,6 +151,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"not ready",
 	"XREF dependent result",
 	"name is not a struct",
+	"Exporting binary without code or data section",
 	"Undefined code",
 	"Unexpected character in expression",
 	"Too many values in expression",
@@ -198,6 +203,9 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"CPU is not supported",
 	"Can't append sections",
 	"Zero page / Direct page section out of range",
+	"Attempting to assign an address to a non-existent section",
+	"Attempting to assign an address to a fixed address section",
+	"Can not link a zero page section with a non-zp section",
 };
 
 // Assembler directives
@@ -878,7 +886,14 @@ static const char* aAddrModeFmt[] = {
 	"%s [$%04x]",			// 14
 	"%s $%02x,$%02x",		// 15
 };
-
+static const char *str_section_type[] = {
+	"UNDEFINED",		// not set
+	"CODE",				// default type
+	"DATA",				// data section (matters for GS/OS OMF)
+	"BSS",				// uninitialized data section
+	"ZEROPAGE"			// ununitialized data section in zero page / direct page
+};
+static const int num_section_type_str = sizeof(str_section_type) / sizeof(str_section_type[0]);
 
 typedef struct {
 	const char *name;
@@ -903,6 +918,7 @@ DirectiveName aDirectiveNames[] {
 	{ "MACRO", AD_MACRO },
 	{ "EVAL", AD_EVAL },
 	{ "PRINT", AD_EVAL },
+	{ "ECHO", AD_EVAL },		// DASM version of EVAL/PRINT
 	{ "BYTE", AD_BYTES },
 	{ "BYTES", AD_BYTES },
 	{ "WORD", AD_WORDS },
@@ -1127,7 +1143,7 @@ struct ListLine {
 };
 typedef std::vector<struct ListLine> Listing;
 
-enum SectionType : char {
+enum SectionType : char {	// enum order indicates fixed address linking priority
 	ST_UNDEFINED,			// not set
 	ST_CODE,				// default type
 	ST_DATA,				// data section (matters for GS/OS OMF)
@@ -1143,6 +1159,7 @@ typedef struct Section {
 	// section name, same named section => append
 	strref name;			// name of section for comparison
 	strref export_append;	// append this name to export of file
+	strref include_from;	// which file did this section originate from?
 
 	// generated address status
 	int load_address;		// if assigned a load address
@@ -1163,16 +1180,21 @@ typedef struct Section {
 	relocList *pRelocs;		// link time resolve (not all sections need this)
 	Listing *pListing;		// if list output
 
+	// grouped sections
+	int next_group;			// next section of a group of relative sections or -1
+	int first_group;		// >=0 if another section is grouped with this section
+
 	bool address_assigned;	// address is absolute if assigned
 	bool dummySection;		// true if section does not generate data, only labels
 	SectionType type;		// distinguishing section type for relocatable output
 
 	void reset() {			// explicitly cleaning up sections, not called from Section destructor
-		name.clear(); export_append.clear();
+		name.clear(); export_append.clear(); include_from.clear();
 		start_address = address = load_address = 0x0; type = ST_CODE;
 		address_assigned = false; output = nullptr; curr = nullptr;
 		dummySection = false; output_capacity = 0; merged_offset = -1; merged_section = -1;
 		align_address = 1; if (pRelocs) delete pRelocs;
+		next_group = first_group = -1;
 		pRelocs = nullptr;
 		if (pListing) delete pListing;
 		pListing = nullptr;
@@ -1180,6 +1202,7 @@ typedef struct Section {
 
 	void Cleanup() { if (output) free(output); reset(); }
 	bool empty() const { return merged_offset<0 && curr==output; }
+	bool unused() const { return address == start_address;  }
 
 	int DataOffset() const { return int(curr - output); }
 	size_t size() const { return curr - output; }
@@ -1194,7 +1217,7 @@ typedef struct Section {
 	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
 	bool IsMergedSection() const { return merged_offset >= 0; }
-	void AddReloc(int base, int offset, int section, char bytes, char shift);// Reloc::Type type = Reloc::WORD);
+	void AddReloc(int base, int offset, int section, char bytes, char shift);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
 	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr) {
@@ -1452,10 +1475,11 @@ public:
 	// Operations on current section
 	void SetSection(strref name, int address);	// fixed address section
 	void SetSection(strref name);				// relative address section
+	void LinkLabelsToAddress(int section_id, int section_new, int section_address);
+	StatusCode LinkRelocs(int section_id, int section_new, int section_address);
+	StatusCode AssignAddressToSection(int section_id, int address);
 	StatusCode AppendSection(Section &relSection, Section &trgSection);
 	StatusCode LinkSections(strref name);		// link relative address sections with this name here
-	void LinkLabelsToAddress(int section_id, int section_address);
-	StatusCode LinkRelocs(int section_id, int section_address);
 	void DummySection(int address);				// non-data section (fixed)
 	void DummySection();						// non-data section (relative)
 	void EndSection();							// pop current section
@@ -1535,6 +1559,7 @@ public:
 	StatusCode Directive_LNK(strref line);
 	StatusCode Directive_XDEF(strref line);
 	StatusCode Directive_XREF(strref label);
+	StatusCode Directive_DC(strref line, int width, strref source_file);
 
 	// Assembler steps
 	StatusCode GetAddressMode(strref line, bool flipXY, unsigned int validModes,
@@ -1762,7 +1787,9 @@ void Asm::SetSection(strref line)
 {
 	if (link_all_section)
 		LinkAllToSection();
-	if (allSections.size()==allSections.capacity())
+	else if (allSections.size() && CurrSection().unused())
+		allSections.erase(allSections.begin() + SectionId());
+	if (allSections.size() == allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 
 	SectionType type = ST_UNDEFINED;
@@ -1867,6 +1894,9 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 	bool has_relative_section = false;
 	bool has_fixed_section = false;
 	int last_fixed_section = -1;
+	int first_link_section = -1;
+
+	std::vector<Section*> FixedExport;
 
 	// find address range
 	while (!has_relative_section && !has_fixed_section) {
@@ -1874,10 +1904,26 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 		for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 			if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
 				if (!i->IsMergedSection()) {
-					if (i->IsRelativeSection())
+					if (i->IsRelativeSection()) {
+						// priritize code over data, local code over included code for initial binary segment
+						if ((i->type == ST_CODE || i->type == ST_DATA) && i->first_group < 0 &&
+							(first_link_section < 0 || (i->type == ST_CODE && 
+							(allSections[first_link_section].type == ST_DATA ||
+							(!i->include_from && allSections[first_link_section].include_from)))))
+							first_link_section = (int)(&*i - &allSections[0]);
 						has_relative_section = true;
-					else if (i->start_address >= 0x100 && i->size() > 0) {
+					} else if (i->start_address >= 0x100 && i->size() > 0) {
 						has_fixed_section = true;
+						bool inserted = false;
+						for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
+							if ((*f)->start_address > i->start_address) {
+								FixedExport.insert(f, &*i);
+								inserted = true;
+								break;
+							}
+						}
+						if (!inserted)
+							FixedExport.push_back(&*i);
 						if (i->start_address < start_address)
 							start_address = i->start_address;
 						if ((i->start_address + (int)i->size()) > end_address) {
@@ -1893,38 +1939,91 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 			return nullptr;
 		if (has_relative_section) {
 			if (!has_fixed_section) {
+				// there is not a fixed section so go through and assign addresses to all sections
+				// starting with the first reasonable section
 				start_address = 0x1000;
-				SetSection(strref(), start_address);
-				CurrSection().export_append = append;
-				last_fixed_section = SectionId();
+				if (first_link_section < 0)
+					return nullptr;
+				while (first_link_section >= 0) {
+					FixedExport.push_back(&allSections[first_link_section]);
+					AssignAddressToSection(first_link_section, start_address);
+					start_address = allSections[first_link_section].address;
+					first_link_section = allSections[first_link_section].next_group;
+				}
 			}
-			for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-				if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
-					if (i->IsRelativeSection()) {
-						StatusCode status = AppendSection(*i, allSections[last_fixed_section]);
-						if (status != STATUS_OK)
-							return nullptr;
-						Section &s = allSections[last_fixed_section];
-						end_address = s.start_address +
-							(int)allSections[last_fixed_section].size();
+
+			// First link code sections, then data sections, then BSS sections
+			for (int sectype = ST_CODE; sectype <= ST_BSS; sectype++) {
+				// there are fixed sections so fit all relative sections after or inbetween fixed sections in export group
+				for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+					if (sectype == i->type && ((!append && !i->export_append) || append.same_str_case(i->export_append))) {
+						int id = (int)(&*i - &allSections[0]);
+						if (i->IsRelativeSection() && i->first_group < 0) {
+							// try to fit this section inbetween existing sections if possible
+
+							int insert_after = (int)FixedExport.size()-1;
+							for (int f = 0; f < insert_after; f++) {
+								int start_block = FixedExport[f]->address;
+								int end_block = FixedExport[f + 1]->start_address;
+								if ((end_block - start_block) >= (i->address - i->start_address)) {
+									int addr = start_block;
+									int sec = id;
+									while (sec >= 0) {
+										Section &s = allSections[sec];
+										addr += s.align_address <= 1 ? 0 :
+											(s.align_address - (addr % s.align_address)) % s.align_address;
+										addr += s.address - s.start_address;
+										sec = s.next_group;
+									}
+									if (addr <= end_block) {
+										insert_after = f;
+										break;
+									}
+								}
+							}
+							int sec = id;
+							start_address = FixedExport[insert_after]->address;
+							while (sec >= 0) {
+								insert_after++;
+								if (insert_after<(int)FixedExport.size())
+									FixedExport.insert(FixedExport.begin() + insert_after, &allSections[sec]);
+								else
+									FixedExport.push_back(&allSections[sec]);
+								AssignAddressToSection(sec, start_address);
+								start_address = allSections[sec].address;
+								sec = allSections[sec].next_group;
+							}
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// check if valid
-	if (end_address <= start_address)
-		return nullptr;
-
 	// get memory for output buffer
+	start_address = FixedExport[0]->start_address;
+	int last_data_export = (int)(FixedExport.size() - 1);
+	while (last_data_export>0 && FixedExport[last_data_export]->type == ST_BSS)
+		last_data_export--;
+	end_address = FixedExport[last_data_export]->address;
 	unsigned char *output = (unsigned char*)calloc(1, end_address - start_address);
 
 	// copy over in order
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-		if ((!append && !i->export_append) || append.same_str_case(i->export_append)) {
+		if ((!append && !i->export_append) || append.same_str_case(i->export_append) && i->type != ST_ZEROPAGE) {
 			if (i->merged_offset == -1 && i->start_address >= 0x200 && i->size() > 0)
 				memcpy(output + i->start_address - start_address, i->output, i->size());
+		}
+	}
+
+	printf("Linker export + \"" STRREF_FMT "\" summary:\n", STRREF_ARG(append));
+	for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
+		if ((*f)->include_from) {
+			printf("* $%04x-$%04x: " STRREF_FMT " (%d) included from " STRREF_FMT "\n", (*f)->start_address,
+				(*f)->address, STRREF_ARG((*f)->name), (int)(*f - &allSections[0]), STRREF_ARG((*f)->include_from));
+		} else {
+			printf("* $%04x-$%04x: " STRREF_FMT " (%d)\n", (*f)->start_address,
+				(*f)->address, STRREF_ARG((*f)->name), (int)(*f - &allSections[0]));
 		}
 	}
 
@@ -1987,20 +2086,15 @@ StatusCode Asm::LinkZP()
 	if (!has_unassigned)
 		return STATUS_OK;
 
+	StatusCode status = STATUS_OK;
+
 	// no section assigned => fit together at end
 	if (!has_assigned) {
 		int address = 0x100 - num_addr;
-		for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
+		for (std::vector<Section>::iterator s = allSections.begin(); status==STATUS_OK && s != allSections.end(); ++s) {
 			if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
-				s->start_address = address;
-				s->address += address;
-				s->address_assigned = true;
-				int section_id = (int)(&*s - &allSections[0]);
-				LinkLabelsToAddress(section_id, s->start_address);
-				StatusCode ret = LinkRelocs(section_id, s->start_address);
-				if (ret >= FIRST_ERROR)
-					return ret;
-				address += s->address - s->start_address;
+				status = AssignAddressToSection((int)(&*s - &allSections[0]), address);
+				address = s->address;
 			}
 		}
 	} else {	// find first fit neighbouring an address assigned zero page section
@@ -2013,6 +2107,9 @@ StatusCode Asm::LinkZP()
 					if (sa->type == ST_ZEROPAGE && !sa->IsMergedSection() && sa->address_assigned) {
 						for (int e = 0; e < 2; ++e) {
 							int start = e ? sa->start_address - size : sa->address;
+							int align_size = s->align_address <= 1 ? 0 :
+								(s->align_address - (start % s->align_address)) % s->align_address;
+							start += align_size;
 							int end = start + size;
 							if (start >= 0 && end <= 0x100) {
 								for (std::vector<Section>::iterator sc = allSections.begin(); !found && sc != allSections.end(); ++sc) {
@@ -2023,16 +2120,8 @@ StatusCode Asm::LinkZP()
 									}
 								}
 							}
-							if (found) {
-								s->start_address = start;
-								s->address += end;
-								s->address_assigned = true;
-								int section_id = (int)(&*s - &allSections[0]);
-								LinkLabelsToAddress(section_id, s->start_address);
-								StatusCode ret = LinkRelocs(section_id, s->start_address);
-								if (ret >= FIRST_ERROR)
-									return ret;
-							}
+							if (found)
+								AssignAddressToSection((int)(&*s - &allSections[0]), start);
 						}
 					}
 				}
@@ -2041,23 +2130,23 @@ StatusCode Asm::LinkZP()
 			}
 		}
 	}
-	return STATUS_OK;
+	return status;
 }
 
 
-// Apply labels assigned to addresses in a relative section a fixed address
-void Asm::LinkLabelsToAddress(int section_id, int section_address)
+// Apply labels assigned to addresses in a relative section a fixed address or as part of another section
+void Asm::LinkLabelsToAddress(int section_id, int section_new, int section_address)
 {
 	Label *pLabels = labels.getValues();
 	int numLabels = labels.count();
 	for (int l = 0; l < numLabels; l++) {
 		if (pLabels->section == section_id) {
 			pLabels->value += section_address;
-			pLabels->section = -1;
+			pLabels->section = section_new;
 			if (pLabels->mapIndex>=0 && pLabels->mapIndex<(int)map.size()) {
 				struct MapSymbol &msym = map[pLabels->mapIndex];
 				msym.value = pLabels->value;
-				msym.section = -1;
+				msym.section = section_new;
 			}
 			CheckLateEval(pLabels->label_name);
 		}
@@ -2067,7 +2156,7 @@ void Asm::LinkLabelsToAddress(int section_id, int section_address)
 
 // go through relocs in all sections to see if any targets this section
 // relocate section to address!
-StatusCode Asm::LinkRelocs(int section_id, int section_address)
+StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 {
 	for (std::vector<Section>::iterator j = allSections.begin(); j != allSections.end(); ++j) {
 		Section &s2 = *j;
@@ -2082,19 +2171,24 @@ StatusCode Asm::LinkRelocs(int section_id, int section_address)
 					while (trg_sect->merged_offset>=0) {
 						output_offs += trg_sect->merged_offset;
 						trg_sect = &allSections[trg_sect->merged_section];
+						i->target_section = section_new;
+						i->section_offset += section_address;
 					}
-					unsigned char *trg = trg_sect->output + output_offs + i->section_offset;
-					int value = i->base_value + section_address;
-					if (i->shift<0)
-						value >>= -i->shift;
-					else if (i->shift)
-						value <<= i->shift;
-					
-					for (int b = 0; b<i->bytes; b++)
-						*trg++ = (unsigned char)(value>>(b*8));
-					i = pList->erase(i);
-					if (i != pList->end())
-						++i;
+					// only finalize the target value if fixed address
+					if (section_new == -1 || allSections[section_new].address_assigned) {
+						unsigned char *trg = trg_sect->output + output_offs + i->section_offset;
+						int value = i->base_value + section_address;
+						if (i->shift < 0)
+							value >>= -i->shift;
+						else if (i->shift)
+							value <<= i->shift;
+
+						for (int b = 0; b < i->bytes; b++)
+							*trg++ = (unsigned char)(value >> (b * 8));
+						i = pList->erase(i);
+						if (i != pList->end())
+							++i;
+					}
 				}
 			}
 			if (pList->empty()) {
@@ -2107,9 +2201,31 @@ StatusCode Asm::LinkRelocs(int section_id, int section_address)
 }
 
 // Append one section to the end of another
+StatusCode Asm::AssignAddressToSection(int section_id, int address)
+{
+	if (section_id < 0 || section_id >= (int)allSections.size())
+		return ERROR_NOT_A_SECTION;
+	Section &s = allSections[section_id];
+	if (s.address_assigned)
+		return ERROR_CANT_REASSIGN_FIXED_SECTION;
+
+	// fix up the alignment of the address
+	int align_size = s.align_address <= 1 ? 0 :
+		(s.align_address - (address % s.align_address)) % s.align_address;
+	address += align_size;
+
+	s.start_address = address;
+	s.address += address;
+	s.address_assigned = true;
+	LinkLabelsToAddress(section_id, -1, s.start_address);
+	return LinkRelocs(section_id, -1, s.start_address);
+}
+
+// Append one section to the end of another
 StatusCode Asm::AppendSection(Section &s, Section &curr)
 {
 	int section_id = int(&s - &allSections[0]);
+	int section_new = (int)(&curr - &allSections[0]);
 	if (s.IsRelativeSection() && !s.IsMergedSection()) {
 		int section_size = (int)s.size();
 
@@ -2142,8 +2258,8 @@ StatusCode Asm::AppendSection(Section &s, Section &curr)
 		// Update address range and mark section as merged
 		s.start_address = section_address;
 		s.address += section_address;
-		s.address_assigned = true;
-		s.merged_section = (int)(&curr - &allSections[0]);
+		s.address_assigned = curr.address_assigned;
+		s.merged_section = section_new;
 		s.merged_offset = (int)(section_out - CurrSection().output);
 
 		// Merge in the listing at this point
@@ -2161,30 +2277,47 @@ StatusCode Asm::AppendSection(Section &s, Section &curr)
 			s.pListing = nullptr;
 		}
 
-
 		// All labels in this section can now be assigned
-		LinkLabelsToAddress(section_id, section_address);
+		LinkLabelsToAddress(section_id, curr.address_assigned ? -1 : section_new, section_address);
 
-		return LinkRelocs(section_id, section_address);
+		return LinkRelocs(section_id, section_new, section_address);
 	}
 	return ERROR_CANT_APPEND_SECTION_TO_TARGET;
 }
 
 // Link sections with a specific name at this point
+// Relative sections will just be appeneded to a grouping list
+// Fixed address sections will be merged together
 StatusCode Asm::LinkSections(strref name) {
-	if (CurrSection().IsRelativeSection())
-		return ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION;
 	if (CurrSection().IsDummySection())
 		return ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION;
 
+	int last_section_group = CurrSection().next_group;
+	while (last_section_group > -1 && allSections[last_section_group].next_group > -1)
+		last_section_group = allSections[last_section_group].next_group;
+
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if ((!name || i->name.same_str_case(name)) && i->IsRelativeSection() && !i->IsMergedSection()) {
+			// it is ok to link other sections with the same name to this section
+			if (&*i == &CurrSection())
+				continue;
 			// Zero page sections can only be linked with zero page sections
 			if (i->type != ST_ZEROPAGE || CurrSection().type == ST_ZEROPAGE) {
-				StatusCode status = AppendSection(*i, CurrSection());
-				if (status != STATUS_OK)
-					return status;
-			}
+				if (CurrSection().IsRelativeSection()) {
+					if (i->first_group < 0) {
+						int prev = last_section_group >= 0 ? last_section_group : SectionId();
+						int curr = (int)(&*i - &allSections[0]);
+						allSections[prev].next_group = curr;
+						i->first_group = SectionId();
+						last_section_group = curr;
+					}
+				} else {
+					StatusCode status = AppendSection(*i, CurrSection());
+					if (status != STATUS_OK)
+						return status;
+				}
+			} else
+				return ERROR_CANT_LINK_ZP_AND_NON_ZP;
 		}
 	}
 	return STATUS_OK;
@@ -4074,11 +4207,7 @@ StatusCode Asm::Directive_ORG(strref line)
 	if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
 		if (CurrSection().type == ST_ZEROPAGE && addr >= 0x100)
 			return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
-		CurrSection().start_address = addr;
-		CurrSection().load_address = addr;
-		CurrSection().address = addr;
-		CurrSection().address_assigned = true;
-		LinkLabelsToAddress(SectionId(), addr);	// in case any labels were defined prior to org & data
+		AssignAddressToSection(SectionId(), addr);
 	} else
 		SetSection(strref(), addr);
 	return STATUS_OK;
@@ -4151,6 +4280,36 @@ StatusCode Asm::Directive_XREF(strref label)
 		pLabelXREF->external = false;
 		pLabelXREF->constant = false;
 		pLabelXREF->reference = true;
+	}
+	return STATUS_OK;
+}
+
+// dc.b, dc.w, dc.t, dc.l, ADR, ADRL, bytes, words, long
+StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
+{
+	struct EvalContext etx;
+	SetEvalCtxDefaults(etx);
+	line.trim_whitespace();
+	while (strref exp_dc = line.split_token_trim(',')) {
+		int value = 0;
+		if (!CurrSection().IsDummySection()) {
+			if (syntax == SYNTAX_MERLIN && exp_dc.get_first() == '#')	// MERLIN allows for an immediate declaration on data
+				++exp_dc;
+			StatusCode error = EvalExpression(exp_dc, etx, value);
+			if (error > STATUS_XREF_DEPENDENT)
+				break;
+			else if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
+				AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file,
+				width == 1 ? LateEval::LET_BYTE : (width == 2 ? LateEval::LET_ABS_REF : (width == 3 ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF)));
+			else if (error == STATUS_RELATIVE_SECTION) {
+				value = 0;
+				CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, width, lastEvalShift);
+			}
+		}
+		unsigned char bytes[4] = {
+			(unsigned char)value, (unsigned char)(value >> 8),
+			(unsigned char)(value >> 16), (unsigned char)(value >> 24) };
+		AddBin(bytes, width);
 	}
 	return STATUS_OK;
 }
@@ -4262,102 +4421,32 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 		}
 		case AD_BYTES:		// bytes: add bytes by comma separated values/expressions
-			if (syntax==SYNTAX_MERLIN && line.get_first()=='#')	// MERLIN allows for an immediate declaration on data
-				++line;
-			while (strref exp = line.split_token_trim(',')) {
-				int value;
-				if (syntax==SYNTAX_MERLIN && exp.get_first()=='#')	// MERLIN allows for an immediate declaration on data
-					++exp;
-				error = EvalExpression(exp, etx, value);
-				if (error>STATUS_XREF_DEPENDENT)
-					break;
-				else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp, source_file, LateEval::LET_BYTE);
-				else if (error == STATUS_RELATIVE_SECTION)
-					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 1, lastEvalShift);
-				AddByte(value);
-			}
-			break;
+			return Directive_DC(line, 1, source_file);
+
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
-			while (strref exp_w = line.split_token_trim(',')) {
-				int value = 0;
-				if (!CurrSection().IsDummySection()) {
-					if (syntax==SYNTAX_MERLIN && exp_w.get_first()=='#')	// MERLIN allows for an immediate declaration on data
-						++exp_w;
-					error = EvalExpression(exp_w, etx, value);
-					if (error>STATUS_XREF_DEPENDENT)
-						break;
-					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, LateEval::LET_ABS_REF);
-					else if (error == STATUS_RELATIVE_SECTION) {
-						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 2, lastEvalShift);
-						value = 0;
-					}
-				}
-				AddWord(value);
-			}
-			break;
+			return Directive_DC(line, 2, source_file);
 			
 		case AD_ADR:		// ADR: MERLIN store 3 byte word
-		case AD_ADRL: {		// ADRL: MERLIN store 4 byte word
-			while (strref exp_w = line.split_token_trim(',')) {
-				int value = 0;
-				if (!CurrSection().IsDummySection()) {
-					if (syntax==SYNTAX_MERLIN && exp_w.get_first()=='#')	// MERLIN allows for an immediate declaration on data
-						++exp_w;
-					error = EvalExpression(exp_w, etx, value);
-					if (error>STATUS_XREF_DEPENDENT)
-						break;
-					else if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-						AddLateEval(CurrSection().DataOffset(), CurrSection().DataOffset(), scope_address[scope_depth], exp_w, source_file, dir==AD_ADR ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF);
-					else if (error == STATUS_RELATIVE_SECTION) {
-						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, dir==AD_ADRL ? 4 : 3, lastEvalShift);
-						value = 0;
-					}
-				}
-				unsigned char bytes[4] = {
-					(unsigned char)value, (unsigned char)(value>>8),
-					(unsigned char)(value>>16), (unsigned char)(value>>24) };
-				AddBin(bytes, dir==AD_ADRL ? 4 : 3);
-			}
-			break;
-		}
+			return Directive_DC(line, 3, source_file);
+
+		case AD_ADRL:		// ADRL: MERLIN store 4 byte word
+			return Directive_DC(line, 4, source_file);
 
 		case AD_DC: {
-			bool words = false;
+			int width = 1;
 			if (line[0]=='.') {
 				++line;
-				if (line[0]=='b' || line[0]=='B') {
-				} else if (line[0]=='w' || line[0]=='W')
-					words = true;
-				else
-					return ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT;
-				++line;
-				line.skip_whitespace();
-			}
-			while (strref exp_dc = line.split_token_trim(',')) {
-				int value = 0;
-				if (!CurrSection().IsDummySection()) {
-					if (syntax==SYNTAX_MERLIN && exp_dc.get_first()=='#')	// MERLIN allows for an immediate declaration on data
-						++exp_dc;
-					error = EvalExpression(exp_dc, etx, value);
-					if (error > STATUS_XREF_DEPENDENT)
-						break;
-					else if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-						AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file, words ? LateEval::LET_ABS_REF : LateEval::LET_BYTE);
-					else if (error == STATUS_RELATIVE_SECTION) {
-						value = 0;
-						if (words)
-							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 2, lastEvalShift);
-						else
-							CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, 1, lastEvalShift);
-					}
+				switch (strref::tolower(line.get_first())) {
+					case 'b': width = 1; break;
+					case 'w': width = 2; break;
+					case 't': width = 3; break;
+					case 'l': width = 4; break;
+					default:
+						return ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT;
 				}
-				AddByte(value);
-				if (words)
-					AddByte(value>>8);
+				++line;
 			}
-			break;
+			return Directive_DC(line, width, source_file);
 		}
 			
 		case AD_HEX: {
@@ -5261,6 +5350,13 @@ bool Asm::List(strref filename)
 	strref prev_src;
 	int prev_offs = 0;
 	for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
+		if (si->address_assigned)
+			fprintf(f, "Section " STRREF_FMT " (%d, %s): $%04x-$%04x\n", STRREF_ARG(si->name),
+				(int)(&*si - &allSections[0]), str_section_type[si->type], si->start_address, si->address);
+		else
+			fprintf(f, "Section " STRREF_FMT " (%d, %s) (relocatable)\n", STRREF_ARG(si->name),
+				(int)(&*si - &allSections[0]), str_section_type[si->type]);
+
 		if (!si->pListing)
 			continue;
 		for (Listing::iterator li = si->pListing->begin(); li != si->pListing->end(); ++li) {
@@ -5502,8 +5598,11 @@ struct ObjFileSection {
 	struct ObjFileStr name;
 	struct ObjFileStr exp_app;
 	int start_address;
+	int end_address;		// address size
 	int output_size;		// assembled binary size
 	int align_address;
+	short next_group;		// next section of group
+	short first_group;		// first section of group
 	short relocs;
 	SectionType type;
 	char flags;
@@ -5634,8 +5733,11 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				s.exp_app.offs = _AddStrPool(si->export_append, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				s.output_size = (short)si->size();
 				s.align_address = si->align_address;
+				s.next_group = si->next_group;
+				s.first_group = si->first_group;
 				s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
 				s.start_address = si->start_address;
+				s.end_address = si->address;
 				s.type = si->type;
 				s.flags =
 					(si->IsDummySection() ? (1 << ObjFileSection::OFS_DUMMY) : 0) |
@@ -5790,39 +5892,53 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			// sections
 			for (int si = 0; si < hdr.sections; si++) {
 				short f = aSect[si].flags;
-				aSctRmp[si] = (short)allSections.size();
 				if (f & (1 << ObjFileSection::OFS_MERGED))
 					continue;
 				if (f & (1 << ObjFileSection::OFS_DUMMY)) {
-					if (f&(1 << ObjFileSection::OFS_FIXED))
+					if (f&(1 << ObjFileSection::OFS_FIXED)) {
 						DummySection(aSect[si].start_address);
-					else
+						CurrSection().AddBin(nullptr, aSect[si].end_address - aSect[si].start_address);
+					} else {
 						DummySection();
+						CurrSection().AddBin(nullptr, aSect[si].end_address - aSect[si].start_address);
+					}
 				} else {
 					if (f&(1 << ObjFileSection::OFS_FIXED))
 						SetSection(aSect[si].name.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref(), aSect[si].start_address);
 					else
 						SetSection(aSect[si].name.offs >= 0 ? strref(str_pool + aSect[si].name.offs) : strref());
-					CurrSection().export_append = aSect[si].exp_app.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref();
-					CurrSection().align_address = aSect[si].align_address;
-					CurrSection().address = CurrSection().start_address + aSect[si].output_size;
-					CurrSection().type = aSect[si].type;
+					Section &s = CurrSection();
+					s.include_from = filename;
+					s.export_append = aSect[si].exp_app.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref();
+					s.align_address = aSect[si].align_address;
+					s.address = aSect[si].end_address;
+					s.type = aSect[si].type;
 					if (aSect[si].output_size) {
-						CurrSection().output = (unsigned char*)malloc(aSect[si].output_size);
-						memcpy(CurrSection().output, bin_data, aSect[si].output_size);
-						CurrSection().curr = CurrSection().output + aSect[si].output_size;
-						CurrSection().output_capacity = aSect[si].output_size;
+						s.output = (unsigned char*)malloc(aSect[si].output_size);
+						memcpy(s.output, bin_data, aSect[si].output_size);
+						s.curr = s.output + aSect[si].output_size;
+						s.output_capacity = aSect[si].output_size;
 
 						bin_data += aSect[si].output_size;
 					}
 				}
+				aSctRmp[si] = (short)allSections.size()-1;
 			}
 
+			// fix up groups and relocs
+			int curr_reloc = 0;
 			for (int si = 0; si < hdr.sections; si++) {
-				for (int r = 0; r < aSect[si].relocs; r++) {
+				Section &s = allSections[aSctRmp[si]];
+				if (aSect[si].first_group >= 0)
+					s.first_group = aSctRmp[aSect[si].first_group];
+				if (aSect[si].next_group >= 0)
+					s.first_group = aSctRmp[aSect[si].next_group];
+				for (int ri = 0; ri < aSect[si].relocs; ri++) {
+					int r = ri + curr_reloc;
 					struct ObjFileReloc &rs = aReloc[r];
 					allSections[aSctRmp[si]].AddReloc(rs.base_value, rs.section_offset, aSctRmp[rs.target_section], rs.bytes, rs.shift);
 				}
+				curr_reloc += aSect[si].relocs;
 			}
 
 			for (int mi = 0; mi < hdr.map_symbols; mi++) {
