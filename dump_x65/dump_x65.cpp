@@ -168,8 +168,6 @@ enum LEType {			// When an expression is evaluated late, determine how to encode
 	LET_BYTE,			// calculate a byte and store at this address
 };
 
-static const char *reloc_type[] = {
-	"NONE", "WORD", "LO_BYTE", "HI_BYTE" };
 static const char *late_type[] = {
 	"LABEL", "ABS_REF", "ABS_L_REF", "ABS_4_REF",
 	"BRANCH", "BRANCH_16", "BYTE" };
@@ -236,7 +234,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 					if (s.next_group >= 0)
 						printf(" next in group: %d", s.next_group);
 					if ((show & SHOW_CODE_RANGE) && s.output_size)
-						printf(" code: $%x-$%x", code_curr, code_curr + s.output_size);
+						printf(" code: $%x-$%x", (int)code_curr, (int)(code_curr + s.output_size));
 					code_curr += s.output_size;
 					printf("\n");
 					reloc_idx++;
@@ -311,7 +309,6 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 int main(int argc, char **argv)
 {
 	const char *file = nullptr;
-	bool def = true;
 	unsigned int show =  0;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {

@@ -1421,6 +1421,7 @@ public:
 	CPUIndex cpu, list_cpu;
 	OPLookup aInstructions[MAX_OPCODES_DIRECTIVES];
 	int num_instructions;
+	int default_org;
 
 	// context for macros / include files
 	ContextStack contextStack;
@@ -1620,6 +1621,7 @@ void Asm::Cleanup() {
 	SetSection(strref("default"));
 	current_section = &allSections[0];
 	syntax = SYNTAX_SANE;
+	default_org = 0x1000;
 	scope_depth = 0;
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
@@ -1893,7 +1895,6 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 
 	bool has_relative_section = false;
 	bool has_fixed_section = false;
-	int last_fixed_section = -1;
 	int first_link_section = -1;
 
 	std::vector<Section*> FixedExport;
@@ -1928,7 +1929,6 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 							start_address = i->start_address;
 						if ((i->start_address + (int)i->size()) > end_address) {
 							end_address = i->start_address + (int)i->size();
-							last_fixed_section = section_id;
 						}
 					}
 				}
@@ -1941,7 +1941,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 			if (!has_fixed_section) {
 				// there is not a fixed section so go through and assign addresses to all sections
 				// starting with the first reasonable section
-				start_address = 0x1000;
+				start_address = default_org;
 				if (first_link_section < 0)
 					return nullptr;
 				while (first_link_section >= 0) {
@@ -2010,7 +2010,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 
 	// copy over in order
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
-		if ((!append && !i->export_append) || append.same_str_case(i->export_append) && i->type != ST_ZEROPAGE) {
+		if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
 			if (i->merged_offset == -1 && i->start_address >= 0x200 && i->size() > 0)
 				memcpy(output + i->start_address - start_address, i->output, i->size());
 		}
@@ -2171,8 +2171,6 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 					while (trg_sect->merged_offset>=0) {
 						output_offs += trg_sect->merged_offset;
 						trg_sect = &allSections[trg_sect->merged_section];
-						i->target_section = section_new;
-						i->section_offset += section_address;
 					}
 					// only finalize the target value if fixed address
 					if (section_new == -1 || allSections[section_new].address_assigned) {
@@ -2603,10 +2601,12 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			strovl macexp(buffer, mac_size);
 			macexp.copy(macro_src);
 			arg = arg_list;
-			for (int t=1; t<t_max; t++) {
-				tag.sprintf("]%d", t);
-				strref a = arg.split_token_trim(';');
-				macexp.replace_bookend(tag.get_strref(), a, label_end_char_range_merlin);
+			if (tag) {
+				for (int t=1; t<t_max; t++) {
+					tag.sprintf("]%d", t);
+					strref a = arg.split_token_trim(';');
+					macexp.replace_bookend(tag.get_strref(), a, label_end_char_range_merlin);
+				}
 			}
 			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
 			if (scope_depth>=(MAX_SCOPE_DEPTH-1))
@@ -3756,7 +3756,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	StatusCode status = EvalExpression(line, etx, val);
-	if (status != STATUS_NOT_READY && status != STATUS_OK)
+	if (status != STATUS_NOT_READY && status != STATUS_OK && status != STATUS_RELATIVE_SECTION)
 		return status;
 
 	Label *pLabel = GetLabel(label);
@@ -3768,8 +3768,8 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
-	pLabel->evaluated = status==STATUS_OK;
-	pLabel->section = -1;	// assigned labels are section-less
+	pLabel->evaluated = status==STATUS_OK || status == STATUS_RELATIVE_SECTION;
+	pLabel->section = status == STATUS_RELATIVE_SECTION ? lastEvalSection : -1;	// assigned labels are section-less
 	pLabel->value = val;
 	pLabel->mapIndex = -1;
 	pLabel->pc_relative = false;
@@ -5352,7 +5352,8 @@ bool Asm::List(strref filename)
 	for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
 		if (si->address_assigned)
 			fprintf(f, "Section " STRREF_FMT " (%d, %s): $%04x-$%04x\n", STRREF_ARG(si->name),
-				(int)(&*si - &allSections[0]), str_section_type[si->type], si->start_address, si->address);
+					(int)(&*si - &allSections[0]), si->type>=0 && si->type<num_section_type_str ?
+					str_section_type[si->type] : "???", si->start_address, si->address);
 		else
 			fprintf(f, "Section " STRREF_FMT " (%d, %s) (relocatable)\n", STRREF_ARG(si->name),
 				(int)(&*si - &allSections[0]), str_section_type[si->type]);
@@ -5539,6 +5540,8 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 	if (link_all_section)
 		LinkAllToSection();
 	if (error == STATUS_OK) {
+		if (!obj_target)
+			LinkZP();
 		error = CheckLateEval();
 		if (error > STATUS_XREF_DEPENDENT) {
 			strown<512> errorText;
@@ -6031,6 +6034,7 @@ int main(int argc, char **argv)
 	const strref cpu("cpu");
 	const strref acc("acc");
 	const strref xy("xy");
+	const strref org("org");
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -6075,6 +6079,10 @@ int main(int argc, char **argv)
 			} else if (arg.has_prefix(allinstr) && (arg.get_len() == allinstr.get_len() || arg[allinstr.get_len()] == '=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
+			} else if (arg.has_prefix(org)) {
+				arg = arg.after('=');
+				if (arg && arg.get_first() == '$') assembler.default_org = (arg + 1).ahextoui();
+				else if (arg.is_number()) assembler.default_org = arg.atoi();
 			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
 				assembler.accumulator_16bit = arg.after('=').atoi() == 16;
 			} else if (arg.has_prefix(xy) && arg[xy.get_len()] == '=') {
@@ -6120,6 +6128,7 @@ int main(int argc, char **argv)
 			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
 			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits\n"
 			 "  * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits\n"
+			 "  * -org = $2000 or - org = 4096: set the default start address of fixed address code\n"
 			 "  * -obj (file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
@@ -6147,9 +6156,9 @@ int main(int argc, char **argv)
 
 			assembler.Assemble(strref(buffer, strl_t(size)), srcname, obj_out_file != nullptr);
 
-			if (assembler.error_encountered)
+			/*if (assembler.error_encountered)
 				return_value = 1;
-			else {
+			else*/ {
 				// export object file
 				if (obj_out_file)
 					assembler.WriteObjectFile(obj_out_file);

@@ -64,6 +64,7 @@ x65 filename.s code.prg [options]
 * -cpu=6502/6502ill/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
 * -acc=8/16: start assembling with accumulator immediate mode instruction size 8 or 16 bits
 * -xy=8/16: start assembling with index register immediate mode instruction size 8 or 16 bits
+* -org=$2000 or -org=4096: set the default start address of fixed address code
 * -obj (file.x65): generate object file for later linking
 * -bin: Raw binary
 * -c64: Include load address (default)
@@ -921,11 +922,12 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 
 **TODO**
 * Rather than keeping track of merged section for fixed address linking, just append the user linked section to the current section and empty the old section.
-* -org command line argument to override the built-in assumption of org $1000, to avoid ever having to use the ORG directive inlined in code.
 * OMF export for Apple II GS/OS executables
 * irp (indefinite repeat)
 
 **FIXED**
+* Fixed linker merged section reloc confusion.
+* -org command line argument to override the built-in assumption of org $1000, to avoid ever having to use the ORG directive inlined in code.
 * dump_x65 now shows the code offset of each section into the .x65 file which can be copied and pasted into the disassembler in case the object file assembler output needs to be inspected.
 * A linker export summary is shown when building binary fixed address, this shows how the linker re-arranged the sections in memory. The section addresses are also included in the .lst file even if the section didn't generate any listing information, such as included object files.
 * BSS sections are handled similar to CODE and DATA sections but will not write out BSS bytes at end of binary data. This should complete the section handling necessary to build a relocatable executable.
