@@ -1202,7 +1202,7 @@ typedef struct Section {
 
 	void Cleanup() { if (output) free(output); reset(); }
 	bool empty() const { return merged_offset<0 && curr==output; }
-	bool unused() const { return address == start_address;  }
+	bool unused() const { return !address_assigned && address == start_address; }
 
 	int DataOffset() const { return int(curr - output); }
 	size_t size() const { return curr - output; }
@@ -1213,7 +1213,7 @@ typedef struct Section {
 	void SetLoadAddress(int addr) { load_address = addr; }
 	int GetLoadAddress() const { return load_address; }
 
-	void SetDummySection(bool enable) { dummySection = enable; }
+	void SetDummySection(bool enable) { dummySection = enable; type = ST_BSS;  }
 	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
 	bool IsMergedSection() const { return merged_offset >= 0; }
@@ -1456,7 +1456,6 @@ public:
 	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
-	bool link_all_section;		// link all known relative sections to this section at end
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -1479,13 +1478,12 @@ public:
 	void LinkLabelsToAddress(int section_id, int section_new, int section_address);
 	StatusCode LinkRelocs(int section_id, int section_new, int section_address);
 	StatusCode AssignAddressToSection(int section_id, int address);
-	StatusCode AppendSection(Section &relSection, Section &trgSection);
 	StatusCode LinkSections(strref name);		// link relative address sections with this name here
 	void DummySection(int address);				// non-data section (fixed)
 	void DummySection();						// non-data section (relative)
 	void EndSection();							// pop current section
-	void LinkAllToSection();					// link all loaded relative sections to this section at end
 	Section& CurrSection() { return *current_section; }
+	void AssignAddressToGroup();				// Merlin LNK support
 	unsigned char* BuildExport(strref append, int &file_size, int &addr);
 	int GetExportNames(strref *aNames, int maxNames);
 	StatusCode LinkZP();
@@ -1497,7 +1495,7 @@ public:
 
 	// Object file handling
 	StatusCode WriteObjectFile(strref filename);	// write x65 object file
-	StatusCode ReadObjectFile(strref filename);		// read x65 object file
+	StatusCode ReadObjectFile(strref filename, int link_to_section = -1);		// read x65 object file
 
 	// Scope management
 	StatusCode EnterScope();
@@ -1616,7 +1614,6 @@ void Asm::Cleanup() {
 	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti !=externals.end(); ++exti)
 		exti->labels.clear();
 	externals.clear();
-	link_all_section = false;
 	// this section is relocatable but is assigned address $1000 if exporting without directives
 	SetSection(strref("default"));
 	current_section = &allSections[0];
@@ -1774,8 +1771,6 @@ void Asm::SetSection(strref name, int address)
 			}
 		}
 	}
-	if (link_all_section)
-		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 	Section newSection(name, address);
@@ -1787,9 +1782,7 @@ void Asm::SetSection(strref name, int address)
 
 void Asm::SetSection(strref line)
 {
-	if (link_all_section)
-		LinkAllToSection();
-	else if (allSections.size() && CurrSection().unused())
+	if (allSections.size() && CurrSection().unused())
 		allSections.erase(allSections.begin() + SectionId());
 	if (allSections.size() == allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
@@ -1837,30 +1830,8 @@ void Asm::SetSection(strref line)
 	current_section = &allSections[allSections.size()-1];
 }
 
-// Merlin linking includes one file at a time ignoring the section naming
-// so just wait until the end of the current section to link all unlinked
-// sections.
-void Asm::LinkAllToSection() {
-	if (CurrSection().IsDummySection())
-		return;
-	bool gotRelSect = true;
-	while (gotRelSect) {
-		gotRelSect = false;
-		for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
-			if (s->IsRelativeSection()) {
-				LinkSections(s->name);
-				gotRelSect = true;
-				break;
-			}
-		}
-	}
-	link_all_section = false;
-}
-
 // Fixed address dummy section
 void Asm::DummySection(int address) {
-	if (link_all_section)
-		LinkAllToSection();
 	if (allSections.size()==allSections.capacity())
 		allSections.reserve(allSections.size() + 16);
 	Section newSection(strref(), address);
@@ -1875,11 +1846,75 @@ void Asm::DummySection() {
 }
 
 void Asm::EndSection() {
-	if (link_all_section)
-		LinkAllToSection();
 	int section = (int)(current_section - &allSections[0]);
 	if (section)
 		current_section = &allSections[section-1];
+}
+
+// Iterate through the current group of sections and assign addresses if this section is fixed
+// This is to handle the special linking of Merlin where sections are brought together pre-export
+void Asm::AssignAddressToGroup()
+{
+	Section &curr = CurrSection();
+	if (!curr.address_assigned)
+		return;
+
+	// Put in all the sections cared about into either the fixed sections or the relative sections
+	std::vector<Section*> FixedExport;
+	std::vector<Section*> RelativeExport;
+	int seg = SectionId();
+	while (seg>=0) {
+		Section &s = allSections[seg];
+		if (s.address_assigned && s.type != ST_ZEROPAGE && s.start_address >= curr.start_address) {
+			bool inserted = false;
+			for (std::vector<Section*>::iterator i = FixedExport.begin(); i!=FixedExport.end(); ++i) {
+				if (s.start_address < (*i)->start_address) {
+					FixedExport.insert(i, &s);
+					inserted = true;
+					break;
+				}
+			}
+			if (!inserted)
+				FixedExport.push_back(&s);
+		} else if (!s.address_assigned && s.type != ST_ZEROPAGE) {
+			RelativeExport.push_back(&s);
+			s.export_append = curr.export_append;
+		}
+		seg = allSections[seg].next_group;
+	}
+
+	// in this case each block should be added individually in order of code / data / bss
+	for (int type = ST_CODE; type <= ST_BSS; type++) {
+		std::vector<Section*>::iterator i = RelativeExport.begin();
+		while (i!=RelativeExport.end()) {
+			Section *pSec = *i;
+			if (pSec->type == type) {
+				int bytes = pSec->address - pSec->start_address;
+				size_t insert_after = FixedExport.size()-1;
+				for (size_t p = 0; p<insert_after; p++) {
+					int end_prev = FixedExport[p]->address;
+					int start_next = FixedExport[p+1]->start_address;
+					int avail = start_next - end_prev;
+					if (avail >= bytes) {
+						int addr = end_prev;
+						addr += pSec->align_address <= 1 ? 0 :
+							(pSec->align_address - (addr % pSec->align_address)) % pSec->align_address;
+						if ((addr + bytes) <= start_next) {
+							insert_after = p;
+							break;
+						}
+					}
+				}
+				int address = FixedExport[insert_after]->address;
+				address += pSec->align_address <= 1 ? 0 :
+					(pSec->align_address - (address % pSec->align_address)) % pSec->align_address;
+				AssignAddressToSection((int)(pSec - &allSections[0]), address);
+				FixedExport.insert((FixedExport.begin() + insert_after + 1), pSec);
+				i = RelativeExport.erase(i);
+			} else
+				++i;
+		}
+	}
 }
 
 // list all export append names
@@ -1906,7 +1941,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 			if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
 				if (!i->IsMergedSection()) {
 					if (i->IsRelativeSection()) {
-						// priritize code over data, local code over included code for initial binary segment
+						// prioritize code over data, local code over included code for initial binary segment
 						if ((i->type == ST_CODE || i->type == ST_DATA) && i->first_group < 0 &&
 							(first_link_section < 0 || (i->type == ST_CODE && 
 							(allSections[first_link_section].type == ST_DATA ||
@@ -1959,7 +1994,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 					if (sectype == i->type && ((!append && !i->export_append) || append.same_str_case(i->export_append))) {
 						int id = (int)(&*i - &allSections[0]);
 						if (i->IsRelativeSection() && i->first_group < 0) {
-							// try to fit this section inbetween existing sections if possible
+							// try to fit this section in between existing sections if possible
 
 							int insert_after = (int)FixedExport.size()-1;
 							for (int f = 0; f < insert_after; f++) {
@@ -2219,70 +2254,6 @@ StatusCode Asm::AssignAddressToSection(int section_id, int address)
 	return LinkRelocs(section_id, -1, s.start_address);
 }
 
-// Append one section to the end of another
-StatusCode Asm::AppendSection(Section &s, Section &curr)
-{
-	int section_id = int(&s - &allSections[0]);
-	int section_new = (int)(&curr - &allSections[0]);
-	if (s.IsRelativeSection() && !s.IsMergedSection()) {
-		int section_size = (int)s.size();
-
-		int section_address = curr.GetPC();
-
-		// calculate space for alignment
-		int align_size = s.align_address <= 1 ? 0 :
-			(s.align_address-(section_address % s.align_address)) % s.align_address;
-
-		// Get base addresses
-		curr.CheckOutputCapacity(section_size + align_size);
-
-		// add 0's
-		for (int a = 0; a<align_size; a++)
-			curr.AddByte(0);
-
-		section_address += align_size;
-
-		curr.CheckOutputCapacity((int)s.size());
-		unsigned char *section_out = curr.curr;
-		if (s.output)
-			memcpy(section_out, s.output, s.size());
-		curr.address += (int)s.size();
-		curr.curr += s.size();
-		free(s.output);
-		s.output = 0;
-		s.curr = 0;
-		s.output_capacity = 0;
-
-		// Update address range and mark section as merged
-		s.start_address = section_address;
-		s.address += section_address;
-		s.address_assigned = curr.address_assigned;
-		s.merged_section = section_new;
-		s.merged_offset = (int)(section_out - CurrSection().output);
-
-		// Merge in the listing at this point
-		if (s.pListing) {
-			if (!curr.pListing)
-				curr.pListing = new Listing;
-			if ((curr.pListing->size() + s.pListing->size()) > curr.pListing->capacity())
-				curr.pListing->reserve(curr.pListing->size() + s.pListing->size() + 256);
-			for (Listing::iterator si = s.pListing->begin(); si != s.pListing->end(); ++si) {
-				struct ListLine lst = *si;
-				lst.address += s.merged_offset;
-				curr.pListing->push_back(lst);
-			}
-			delete s.pListing;
-			s.pListing = nullptr;
-		}
-
-		// All labels in this section can now be assigned
-		LinkLabelsToAddress(section_id, curr.address_assigned ? -1 : section_new, section_address);
-
-		return LinkRelocs(section_id, section_new, section_address);
-	}
-	return ERROR_CANT_APPEND_SECTION_TO_TARGET;
-}
-
 // Link sections with a specific name at this point
 // Relative sections will just be appeneded to a grouping list
 // Fixed address sections will be merged together
@@ -2301,18 +2272,15 @@ StatusCode Asm::LinkSections(strref name) {
 				continue;
 			// Zero page sections can only be linked with zero page sections
 			if (i->type != ST_ZEROPAGE || CurrSection().type == ST_ZEROPAGE) {
-				if (CurrSection().IsRelativeSection()) {
+				i->export_append = CurrSection().export_append;
+				if (!i->address_assigned) {
 					if (i->first_group < 0) {
 						int prev = last_section_group >= 0 ? last_section_group : SectionId();
 						int curr = (int)(&*i - &allSections[0]);
 						allSections[prev].next_group = curr;
-						i->first_group = SectionId();
+						i->first_group = CurrSection().first_group ? CurrSection().first_group : SectionId();
 						last_section_group = curr;
 					}
-				} else {
-					StatusCode status = AppendSection(*i, CurrSection());
-					if (status != STATUS_OK)
-						return status;
 				}
 			} else
 				return ERROR_CANT_LINK_ZP_AND_NON_ZP;
@@ -4204,7 +4172,7 @@ StatusCode Asm::Directive_ORG(strref line)
 			ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 
 	// Section immediately followed by ORG reassigns that section to be fixed
-	if (CurrSection().size()==0 && !CurrSection().IsDummySection()) {
+	if (CurrSection().size()==0 && !CurrSection().IsDummySection() && !CurrSection().address_assigned) {
 		if (CurrSection().type == ST_ZEROPAGE && addr >= 0x100)
 			return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
 		AssignAddressToSection(SectionId(), addr);
@@ -4237,9 +4205,10 @@ StatusCode Asm::Directive_LNK(strref line)
 	strref file = line.between('"', '"');
 	if (!file)		// MERLIN: No quotes around include filenames
 		file = line.split_range(filename_end_char_range);
-	StatusCode error = ReadObjectFile(file);
-	if (!error && !CurrSection().IsRelativeSection())
-		link_all_section = true;
+	int section_id = SectionId();
+	StatusCode error = ReadObjectFile(file, SectionId());
+	// restore current section
+	current_section = &allSections[section_id];
 	return error;
 }
 
@@ -4491,6 +4460,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				line.skip(export_base_name.get_len());
 			if (line)
 				CurrSection().export_append = line.split_label();
+			AssignAddressToGroup();
 			break;
 			
 		case AD_XC:			// XC: MERLIN version of setting CPU
@@ -5537,8 +5507,6 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 		} else
 			contextStack.curr().restart();
 	}
-	if (link_all_section)
-		LinkAllToSection();
 	if (error == STATUS_OK) {
 		if (!obj_target)
 			LinkZP();
@@ -5859,7 +5827,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 	return STATUS_OK;
 }
 
-StatusCode Asm::ReadObjectFile(strref filename)
+StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 {
 	size_t size;
 	strown<512> file;
@@ -5889,6 +5857,9 @@ StatusCode Asm::ReadObjectFile(strref filename)
 			int prevSection = SectionId();
 
 			short *aSctRmp = (short*)malloc(hdr.sections * sizeof(short));
+			int last_linked_section = link_to_section;
+			while (last_linked_section>=0 && allSections[last_linked_section].next_group >= 0)
+				last_linked_section = allSections[last_linked_section].next_group;
 
 			// for now just append to existing assembler data
 
@@ -5923,6 +5894,11 @@ StatusCode Asm::ReadObjectFile(strref filename)
 						s.output_capacity = aSect[si].output_size;
 
 						bin_data += aSect[si].output_size;
+					}
+					if (last_linked_section>=0) {
+						allSections[last_linked_section].next_group = SectionId();
+						s.first_group = allSections[last_linked_section].first_group >=0 ? allSections[last_linked_section].first_group : last_linked_section;
+						last_linked_section = SectionId();
 					}
 				}
 				aSctRmp[si] = (short)allSections.size()-1;

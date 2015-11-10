@@ -921,11 +921,12 @@ FindFirstSpace
 Fish food! Assembler has all important features and switching to make a 6502 project for more testing. Currently the assembler is in a limited release. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
-* Rather than keeping track of merged section for fixed address linking, just append the user linked section to the current section and empty the old section.
 * OMF export for Apple II GS/OS executables
 * irp (indefinite repeat)
 
 **FIXED**
+* Removed the concept of linking by merging sections and instead keeping the sections separate and individually assigned memory addresses so they won't overlap.
+* Fixed up Merlin LNK directive to work with new linker
 * Fixed linker merged section reloc confusion.
 * -org command line argument to override the built-in assumption of org $1000, to avoid ever having to use the ORG directive inlined in code.
 * dump_x65 now shows the code offset of each section into the .x65 file which can be copied and pasted into the disassembler in case the object file assembler output needs to be inspected.
