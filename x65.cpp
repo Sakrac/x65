@@ -5941,12 +5941,15 @@ static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, 
 
 StatusCode Asm::WriteObjectFile(strref filename)
 {
+	if (allSections.size()==0)
+		return ERROR_NOT_A_SECTION;
 	if (FILE *f = fopen(strown<512>(filename).c_str(), "wb")) {
 		struct ObjFileHeader hdr = { 0 };
 		hdr.id = 0x7836;
 		hdr.sections = (short)allSections.size();
 		hdr.relocs = 0;
 		hdr.bindata = 0;
+		
 		for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
 			if (s->type != ST_REMOVED) {
 				if (s->pRelocs)
@@ -5965,6 +5968,11 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				hdr.labels++;
 		}
 
+		short *aRemapSects = hdr.sections ? (short*)malloc(sizeof(short) * hdr.sections) : nullptr;
+		if (!aRemapSects) {
+			fclose(f);
+			return ERROR_OUT_OF_MEMORY;
+		}
 
 		// include space for external protected labels
 		for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el)
@@ -5982,9 +5990,6 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		struct ObjFileMapSymbol *aMapSyms = hdr.map_symbols ? (struct ObjFileMapSymbol*)calloc(hdr.map_symbols, sizeof(struct ObjFileMapSymbol)) : nullptr;
 		int sect = 0, reloc = 0, labs = 0, late = 0, map_sym = 0;
 
-		short *aRemapSects = (short*)malloc(sizeof(short) * hdr.sections);
-		if (!aRemapSects)
-			return ERROR_OUT_OF_MEMORY;
 		memset(aRemapSects, 0xff, sizeof(short) * hdr.sections);
 
 		// discard the removed sections by making a table of skipped indices
@@ -5992,7 +5997,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 			if (si->type != ST_REMOVED)
 				aRemapSects[&*si-&allSections[0]] = sect++;
 		}
-
+		
 		sect = 0;
 		// write out sections and relocs
 		if (hdr.sections) {
@@ -6378,8 +6383,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	std::vector<int> SegLookup;	// inverse of SegNum
 	SegNum.reserve(allSections.size());
 	SegLookup.reserve(allSections.size());
-	int reloc_max = 0;
-	int num_valid_seg = 0;
+	int reloc_max = 1;
 
 	// OMF super instructions work by incremental addresses, sort relocs to simplify output
 	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
@@ -6397,14 +6401,18 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	for (std::vector<int>::iterator i = SegNum.begin(); i != SegNum.end(); ++i)
 		SegLookup[*i] = (int)(&*i - &SegNum[0]);
 
+	unsigned char *instructions = (unsigned char*)malloc(reloc_max * 16);
+	if (!instructions)
+		return ERROR_OUT_OF_MEMORY;
+	
 	// open a file for writing
 	FILE *f = fopen(strown<512>(filename).c_str(), "wb");
-	if (!f)
+	if (!f) {
+		free(instructions);
 		return ERROR_CANT_WRITE_TO_FILE;
+	}
 
 	// consume all the relocs
-	unsigned char *instructions = (unsigned char*)malloc(reloc_max * 16);
-	unsigned char zeroes[256] = { 0 };
 	struct OMFSegHdr hdr = { 0 };	// initialize segment header
 	hdr.NumLen[0] = 4;		// numbers are 4 bytes under GS OS
 	hdr.Version[0] = 2;		// version is 2 for GS OS
@@ -6465,8 +6473,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 					} else
 						++r;
 				}
-				if (inst_curr == (instruction_offs + 6)) inst_curr = instruction_offs;	// rewind - no records
-				else {
+				if (inst_curr > (instruction_offs + 6)) {
 					_writeNBytes(instructions + len_offs, 4, inst_curr - instruction_offs - 5);
 					instruction_offs = inst_curr;
 				}
@@ -6521,8 +6528,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 		if (instruction_offs > 5)
 			fwrite(instructions + 5, instruction_offs - 5, 1, f); // reloc instructions
 	}
-	// print a list of super instructions for each section
-
+	free(instructions);
 	fclose(f);
 	return STATUS_OK;
 }
@@ -6595,8 +6601,10 @@ int main(int argc, char **argv)
 				allinstr_file = arg.after('=');
 			} else if (arg.has_prefix(org)) {
 				arg = arg.after('=');
-				if (arg && arg.get_first() == '$') assembler.default_org = (arg + 1).ahextoui();
-				else if (arg.is_number()) assembler.default_org = arg.atoi();
+				if (arg && arg.get_first() == '$' && arg.get_len()>1)
+					assembler.default_org = (arg + 1).ahextoui();
+				else if (arg.is_number())
+					assembler.default_org = arg.atoi();
 			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
 				assembler.accumulator_16bit = arg.after('=').atoi() == 16;
 			} else if (arg.has_prefix(xy) && arg[xy.get_len()] == '=') {
