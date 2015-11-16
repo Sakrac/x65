@@ -8,6 +8,7 @@ To keep up with this trend x65 is adding the following features to the mix:
 
 * Full expression evaluation everywhere values are used: [Expressions](#expressions)
 * Basic relative sections and linking.
+* Apple II GS executable output
 * C style scoping within '{' and '}': [Scopes](#scopes)
 * Reassignment of labels. This means there is no error if you declare the same label twice, but on the other hand you can do things like label = label + 2.
 * [Local labels](#labels) can be defined in a number of ways, such as leading period (.label) or leading at-sign (@label) or terminating dollar sign (label$).
@@ -59,23 +60,26 @@ x65 [-DLabel] [-iIncDir] (source.s) (dest.prg) [-lst[=file.lst]] [-opcodes[=file
 
 **Usage**
 x65 filename.s code.prg [options]
-* -i(path): Add include path
-* -D(label)[=(value)]: Define a label with an optional value (otherwise defined as 1)
-* -cpu=6502/6502ill/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
-* -acc=8/16: start assembling with accumulator immediate mode instruction size 8 or 16 bits
-* -xy=8/16: start assembling with index register immediate mode instruction size 8 or 16 bits
-* -org=$2000 or -org=4096: set the default start address of fixed address code
-* -obj (file.x65): generate object file for later linking
-* -bin: Raw binary
-* -c64: Include load address (default)
-* -a2b: Apple II Dos 3.3 Binary
-* -sym (file.sym): symbol file
-* -merlin: use Merlin syntax
-* -lst / -lst=(file.lst): generate disassembly/cycle/source text from result (file or stdout)
-* -opcodes / -opcodes=(file.s): dump all available opcodes for current CPU (file or stdout)
+* -i(path) : Add include path
+* -D(label)[=value] : Define a label with an optional value (otherwise defined as 1)
+* -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
+* -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
+* -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
+* -org = $2000 or - org = 4096: set the default start address of fixed address code
+* -obj : generate object file for later linking instead of executable binary (.x65)
+* -bin : Raw binary (no load address or size included before code)
+* -c64 : Include load address (default, default org is $1000)
+* -a2b : Apple II Dos 3.3 Binary (changes default org to $803, adds load addr+size)
+* -a2p : Apple II ProDos Binary (changed default org to $2000, sets to binary)
+* -a2o : Apple II GS OS executable (writes relocatable executable binary)
+* -mrg : Force merge all sections (use with -a2o)
+* -sym (file.sym) : symbol file
+* -lst / -lst = (file.lst) : generate disassembly text from result(file or stdout)
+* -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)
 * -sect: display sections loaded and built
-* -vice (file.vs): export a vice symbol file
-* -endm: macro and rept end with endm/endr or endmacro/endrepeat instead of scoped ('{' - '}')
+* -vice (file.vs) : export a vice symbol file
+* -merlin: use Merlin syntax
+* -endm : macros end with endm or endmacro instead of scoped ('{' - '}')
 
 ### Code
 
@@ -83,7 +87,12 @@ Code is any valid mnemonic/opcode and addressing mode. At the moment only one op
 
 ### Linking
 
-In order to manage more complex projects linking multiple assembled object files is desirable. x65 implements this by saving the state of the assembler as an 'object' file that can be appended into the assembling of another source file with the [INCOBJ](#incobj) directive. To control the final layout of code and data a [SECTION](#section) directive can be used to specify the kind of data that is declared. As a result of the custom object file, fixed address sections (ORG) can be declared within x65 object files. x65 does not support any other type of object file, and the x65 object file format may change throughout development of x65. Go [here](../../wiki/linking) for more details about [linking](../../wiki/linking).
+In order to manage more complex projects linking multiple assembled object files is desirable and x65 builds object files that can be included in a final linking step.
+Simply build code with or without a fixed address and the -obj filename.x65 command line argument, then use INCOBJ filename.x65 in a final linking source. The linking source can be assigned a fixed address for most targets or exported as a relocatable executable for Apple II GS.
+
+### Relocatable executable
+
+For Apple II GS OS executable. This output requires 65816 instructions to handle the larger memory and the entry point for code needs to be implemented correctly. Using the -mrg option merges all sections together so that 16 bit addressing is safe, otherwise different code or data segments could be loaded in different banks and 3 byte referencing is required. An important note is that I have not been significantly exposed to Apple II GS or 65816 so this feature is only guaranteed as far as being able to ensure the correctness without actually building a running piece of code.
 
 ### Comments
 
@@ -915,16 +924,29 @@ FindFirstSpace
   }
   rts
 ```
+### Acknowledgments
+
+This project would not be completed without the direct or indirect support of great people, some which I can currently remember:
+
+* Marc dePeo, helping me uncover the strange and unique world of Merlin’s assembler syntax (and working together with me on True Crime NY gameplay code and more)
+* Che Lalic, explaining the murky bits of 65816 (and a Ninja on SNES NBA Hangtime and other projects)
+* John Brooks, sharing the Rastan Apple II source code so I could test 65816 and figure out a number of issues with my initial linker, and encouraging the implementation of Apple II GS OS executable file format / OMF export (and helping out with Playstation All-Stars)
+* [Brutal Deluxe](http://www.brutaldeluxe.fr) for releasing the excellent OMF Analyzer tool and the source, which was a significant help generating Apple II GS OS executables.
+* The C64 demo scene for sharing a great deal of 6502 programming resources and overall inspiration.
+* Jordan Mechner, sharing the Prince of Persia Apple II source code so I could test out a significant part of the assembler and the Merlin syntax mode
+* Bill Budge, sharing the Pinball Construction Set Apple II source code, although at the point I tried it, all of it just assembled without any assembler issues at all.
 
 ### Development Status
 
-Fish food! Assembler has all important features and switching to make a 6502 project for more testing. Currently the assembler is in a limited release. Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
+Looking for help testing various features of the assembler, I have a large number of tests that pass without fail but there are so many ways for assemblers to break.
+Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.
 
 **TODO**
-* OMF export for Apple II GS/OS executables
 * irp (indefinite repeat)
 
 **FIXED**
+* OMF export for Apple II GS/OS executables
+* More DASM directives supported (ERR, DV, DS.B, DS.W, DS.L)
 * Removed the concept of linking by merging sections and instead keeping the sections separate and individually assigned memory addresses so they won't overlap.
 * Fixed up Merlin LNK directive to work with new linker
 * Fixed linker merged section reloc confusion.
@@ -951,6 +973,7 @@ Fish food! Assembler has all important features and switching to make a 6502 pro
 [(older fixes)](../../wiki/fixes)
 
 Revisions:
+* 9 - Apple II GS OS executable
 * 8 - Fish food / Linking tested and passed with external project (Apple II gs Rastan)
 * 7 - 65816 support
 * 6 - 65C02 support
