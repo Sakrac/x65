@@ -928,7 +928,7 @@ FindFirstSpace
 
 This project would not be completed without the direct or indirect support of great people, some which I can currently remember:
 
-* Marc dePeo, helping me uncover the strange and unique world of Merlin’s assembler syntax (and working together with me on True Crime NY gameplay code and more)
+* Marc dePeo, helping me uncover the strange and unique world of Merlin's assembler syntax (and working together with me on True Crime NY gameplay code and more)
 * Che Lalic, explaining the murky bits of 65816 (and a Ninja on SNES NBA Hangtime and other projects)
 * John Brooks, sharing the Rastan Apple II source code so I could test 65816 and figure out a number of issues with my initial linker, and encouraging the implementation of Apple II GS OS executable file format / OMF export (and helping out with Playstation All-Stars)
 * [Brutal Deluxe](http://www.brutaldeluxe.fr) for releasing the excellent OMF Analyzer tool and the source, which was a significant help generating Apple II GS OS executables.
