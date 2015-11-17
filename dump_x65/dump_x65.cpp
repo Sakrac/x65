@@ -332,7 +332,7 @@ int main(int argc, char **argv)
 	}
 
 	if (!file) {
-		printf("Usage:\ndump_x65 filename [-sections] [-relocs] [-labels] [-map] [-late_eval[\n");
+		printf("Usage:\ndump_x65 filename [-sections] [-relocs] [-labels] [-map] [-late_eval] [-code]\n");
 		return 0;
 	}
 

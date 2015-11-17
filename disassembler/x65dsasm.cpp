@@ -38,6 +38,7 @@
 #include "struse.h"					// https://github.com/Sakrac/struse/blob/master/struse.h
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 
 static const char* aAddrModeFmt[] = {
 	"%s ($%02x,x)",			// 00
@@ -71,6 +72,40 @@ static const char* aAddrModeFmt[] = {
 
 	"%s $%04x",				// 1a
 	"%s $%04x",				// 1b
+};
+
+static const char* aAddrModeFmtSrc[] = {
+	"%s (%s,x)",			// 00
+	"%s %s",				// 01
+	"%s #%s",				// 02
+	"%s %s",				// 03
+	"%s (%s),y",			// 04
+	"%s %s,x",				// 05
+	"%s %s,y",				// 06
+	"%s %s,x",				// 07
+	"%s (%s)",				// 08
+	"%s A",					// 09
+	"%s ",					// 0a
+	"%s (%s)",				// 0b
+	"%s (%s,x)",			// 0c
+	"%s $%02x, %s",			// 0d
+	"%s [%s]",				// 0e
+	"%s [%s],y",			// 0f
+	"%s %s",				// 10
+	"%s %s,x",				// 11
+	"%s %s,s",				// 12
+	"%s (%s,s),y",			// 13
+	"%s [%s]",				// 14
+	"%s $%02x,%s",			// 15
+
+	"%s %s,y",				// 16
+	"%s (%s,y)",			// 17
+
+	"%s #%s",				// 18
+	"%s #%s",				// 19
+
+	"%s %s",				// 1a
+	"%s %s",				// 1b
 };
 
 enum AddressModes {
@@ -902,26 +937,52 @@ struct dismnm a65816_ops[256] = {
 	{ "sbc", AM_ABS_L_X, 0x03 },
 };
 
+enum RefType {
+	RT_NONE,
+	RT_BRANCH,	// bne, etc.
+	RT_JUMP,	// jmp
+	RT_JSR,		// jsr
+	RT_DATA,	// lda $...
 
-void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes)
+	RT_COUNT
+};
+
+const char *aRefNames[RT_COUNT] = { "???", "branch", "jump", "subroutine", "data" };
+
+struct RefLink {
+	int instr_addr;
+	RefType type;
+};
+
+struct RefAddr {
+	int address;					// address
+	std::vector<RefLink> *pRefs;	// what is referencing this address
+
+	RefAddr() : address(-1), pRefs(nullptr) {}
+	RefAddr(int addr) : address(addr), pRefs(nullptr) {}
+};
+
+static const strref _jsr("jsr");
+static const strref _jmp("jmp");
+
+std::vector<RefAddr> refs;
+
+static int _sortRefs(const void *A, const void *B)
 {
-	FILE *f = stdout;
-	bool opened = false;
-	if (filename) {
-		f = fopen(strown<512>(filename).c_str(), "w");
-		if (!f)
-			return;
-		opened = true;
-	}
+	return ((const RefLink*)A)->instr_addr - ((const RefLink*)B)->instr_addr;
+}
 
-	strref prev_src;
-	int prev_offs = 0;
+void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes)
+{
+	int start_addr = addr;
+	int end_addr = addr + (int)bytes;
+	refs.push_back(RefAddr(start_addr));
+	refs[0].pRefs = new std::vector<RefLink>();
 
-	strown<256> out;
 	while (bytes) {
 		unsigned char op = *mem++;
+		int curr = addr;
 		bytes--;
-		out.sprintf("$%04x ", addr);
 		addr++;
 
 		int arg_size = opcodes[op].arg_size;;
@@ -934,65 +995,310 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				arg_size = ind_16 ? 2 : 1;
 				break;
 		}
-		addr += arg_size;
 
-		if (arg_size > bytes)
-			return;
-		bytes -= arg_size;
+		int reference = -1;
+		RefType type = RT_NONE;
 
-		out.sprintf_append("%02x ", op);
-		for (int n = 0; n < arg_size; n++)
-			out.sprintf_append("%02x ", mem[n]);
-
-		out.append_to(' ', 18);
-
-		const char *fmt = aAddrModeFmt[mode];
-		switch (mode) {
-			case AM_ABS:		// 3 $1234
-			case AM_ABS_Y:		// 6 $1234,y
-			case AM_ABS_X:		// 7 $1234,x
-			case AM_REL:		// 8 ($1234)
-			case AM_REL_X:		// c ($1234,x)
-			case AM_REL_L:		// 14 [$1234]
-				out.sprintf_append(fmt, opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8);
-				break;
-
-			case AM_ABS_L:		// 10 $bahilo
-			case AM_ABS_L_X:	// 11 $123456,x
-				out.sprintf_append(fmt, opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8 | ((int)mem[2])<<16);
-				break;
-
-			case AM_IMM_DBL_A:	// 18 #$12/#$1234
-			case AM_IMM_DBL_I:	// 19 #$12/#$1234
-				if (arg_size==2)
-					out.sprintf_append("%s #$%04x", opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8);
-				else
-					out.sprintf_append(fmt, opcodes[op].name, mem[0]);
-				break;
-
-			case AM_BRANCH:		// beq $1234
-				out.sprintf_append(fmt, opcodes[op].name, addr + (char)mem[0]);
-				break;
-
-			case AM_BRANCH_L:	// brl $1234
-				out.sprintf_append(fmt, opcodes[op].name, addr + ((short)(char)mem[0] + (((short)(char)mem[1])<<8)));
-				break;
-
-			case AM_ZP_ABS:		// d $12, *+$12
-				out.sprintf_append(fmt, opcodes[op].name, mem[0], addr + (char)mem[1]);
-				break;
-
-			default:
-				out.sprintf_append(fmt, opcodes[op].name, mem[0], mem[1]);
-				break;
+		if (mode == AM_BRANCH) {
+			reference = curr + 2 + (char)*mem;
+			type = RT_BRANCH;
+		} else if (mode == AM_BRANCH_L) {
+			reference = curr + 2 + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
+			type = RT_BRANCH;
+		} else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L) {
+			reference = (unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
+			if (_jsr.same_str(opcodes[op].name))
+				type = RT_JSR;
+			else if (_jmp.same_str(opcodes[op].name))
+				type = RT_JUMP;
+			else
+				type = RT_DATA;
 		}
 
+		if (reference >= start_addr && reference <= end_addr && type != RT_NONE) {
+			bool found = false;
+			for (std::vector<RefAddr>::iterator i = refs.begin(); i != refs.end(); ++i) {
+				if (i->address == reference) {
+					struct RefLink ref = { curr, type };
+					i->pRefs->push_back(ref);
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				refs.push_back(RefAddr(reference));
+				struct RefAddr &last = refs[refs.size()-1];
+				struct RefLink ref = { curr, type };
+				last.pRefs = new std::vector<RefLink>();
+				last.pRefs->push_back(ref);
+			}
+		}
+
+		addr += arg_size;
 		mem += arg_size;
-		out.append('\n');
-		fputs(out.c_str(), f);
+		if (arg_size > (int)bytes)
+			break;
+		bytes -= arg_size;
+	}
+	if (refs.size())
+		qsort(&refs[0], refs.size(), sizeof(RefAddr), _sortRefs);
+}
+
+static const char spacing[] = "                ";
+void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src)
+{
+	FILE *f = stdout;
+	bool opened = false;
+	if (filename) {
+		f = fopen(strown<512>(filename).c_str(), "w");
+		if (!f)
+			return;
+		opened = true;
+	}
+
+	const char *spc = src ? "" : spacing;
+
+	strref prev_src;
+	int prev_offs = 0;
+	int end_addr = addr + (int)bytes;
+
+	refs.clear();
+	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes);
+
+	int curr_label_index = 0;
+	bool values_data = false;
+	bool separator = false;
+
+	strown<256> out;
+	while (bytes) {
+
+		// update label index?
+		while (curr_label_index < (int)(refs.size()-1) && addr >= refs[curr_label_index+1].address) {
+			curr_label_index++;
+			struct RefAddr &ref = refs[curr_label_index];
+			if ((values_data || separator) && ref.pRefs && ref.pRefs->size() && (*ref.pRefs)[0].type == RT_DATA) {
+				values_data = true;
+				for (int j = 1; values_data && j<ref.pRefs->size(); j++) {
+					values_data = (*ref.pRefs)[0].type == RT_DATA;
+				}
+			} else
+				values_data = false;
+		}
+		// Determine if current address is referenced from somewhere
+		if (addr == refs[curr_label_index].address) {
+			struct RefAddr &ref = refs[curr_label_index];
+			if (ref.pRefs) {
+				for (size_t j = 0; j<ref.pRefs->size(); ++j) {
+					if (src) {
+						struct RefLink &lnk = (*ref.pRefs)[j];
+						int lbl = -1;
+						int prv_addr = 0;
+						int ref_addr = lnk.instr_addr;
+						for (size_t k = 0; k<refs.size(); k++) {
+							if (refs[k].address>ref_addr)
+								break;
+							lbl = (int)k;
+							prv_addr = refs[k].address;
+						}
+						out.sprintf("%s; Referenced from Label_%d + $%x (%s)\n", spc, lbl, ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
+					} else
+						out.sprintf("%s; Referenced from $%04x (%s)\n", spc, (*ref.pRefs)[j].instr_addr, aRefNames[(*ref.pRefs)[j].type]);
+					fputs(out.c_str(), f);
+				}
+			}
+			out.sprintf("%sLabel_%d:\n", spc, curr_label_index);
+			fputs(out.c_str(), f);
+		}
+		if (src && values_data) {
+			out.clear();
+			int left = end_addr - addr;
+			if (curr_label_index < (int)(refs.size()-2))
+				left = refs[curr_label_index+1].address - addr;
+			for (int i = 0; i<left; i++) {
+				if (!(i&0xf)) {
+					if (i) {
+						out.append("\n");
+						fputs(out.c_str(), f);
+					}
+					out.append("  dc.b ");
+				}
+				out.sprintf_append("$%02x", *mem++);
+				if ((i&0xf)!=0xf && i<(left-1))
+					out.append(", ");
+				addr++;
+				bytes--;
+			}
+			if (left&0xf) {
+				out.append("\n");
+				fputs(out.c_str(), f);
+			}
+		} else {
+			int curr_addr = addr;
+			unsigned char op = *mem++;
+			bytes--;
+			out.clear();
+			if (!src)
+				out.sprintf("$%04x ", addr);
+			addr++;
+
+
+			if (opcodes == a65816_ops) {
+				if (op == 0xe2) {	// sep
+					if ((*mem)&0x20) acc_16 = false;
+					if ((*mem)&0x10) ind_16 = false;
+				} else if (op == 0xc2) { // rep
+					if ((*mem)&0x20) acc_16 = true;
+					if ((*mem)&0x10) ind_16 = true;
+				}
+			}
+
+			int arg_size = opcodes[op].arg_size;;
+			int mode = opcodes[op].addrMode;
+			switch (mode) {
+				case AM_IMM_DBL_A:
+					arg_size = acc_16 ? 2 : 1;
+					break;
+				case AM_IMM_DBL_I:
+					arg_size = ind_16 ? 2 : 1;
+					break;
+			}
+			addr += arg_size;
+
+			if (arg_size > (int)bytes)
+				return;
+			bytes -= arg_size;
+
+			if (!src) {
+				out.sprintf_append("%02x ", op);
+				for (int n = 0; n < arg_size; n++)
+					out.sprintf_append("%02x ", mem[n]);
+			}
+
+			out.append_to(' ', src ? 2 : 18);
+
+			int reference = -1;
+			separator = false;
+			if (op == 0x60) {	// rts
+				separator = true;
+				for (size_t i = 0; i<refs.size(); i++) {
+					std::vector<RefLink> &pRefs = *refs[i].pRefs;
+					if (refs[i].address<=curr_addr) {
+						for (size_t j = 0; j<pRefs.size() && separator; ++j) {
+							if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr>curr_addr)
+								separator = false;
+						}
+					} else {
+						for (size_t j = 0; j<pRefs.size() && separator; ++j) {
+							if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr<curr_addr)
+								separator = false;
+						}
+					}
+				}
+			}
+
+			if (mode == AM_BRANCH)
+				reference = addr + (char)*mem;
+			else if (mode == AM_BRANCH_L)
+				reference = addr + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
+			else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L)
+				reference = (int)mem[0] | ((int)mem[1])<<8;
+
+			strown<64> lblname;
+			if (reference>=0) {
+				for (size_t i = 0; i<refs.size(); ++i) {
+					if (reference == refs[i].address) {
+						lblname.sprintf("Label_%d", i);
+						break;
+					}
+				}
+			}
+
+			const char *fmt = (src && lblname) ? aAddrModeFmtSrc[mode] : aAddrModeFmt[mode];
+			switch (mode) {
+				case AM_ABS:		// 3 $1234
+				case AM_ABS_Y:		// 6 $1234,y
+				case AM_ABS_X:		// 7 $1234,x
+				case AM_REL:		// 8 ($1234)
+				case AM_REL_X:		// c ($1234,x)
+				case AM_REL_L:		// 14 [$1234]
+					reference = (int)mem[0] | ((int)mem[1])<<8;
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+					else
+						out.sprintf_append(fmt, opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8);
+					break;
+
+				case AM_ABS_L:		// 10 $bahilo
+				case AM_ABS_L_X:	// 11 $123456,x
+					reference = (int)mem[0] | ((int)mem[1])<<8 | ((int)mem[2])<<16;
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname);
+					else
+						out.sprintf_append(fmt, opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8 | ((int)mem[2])<<16);
+					break;
+
+				case AM_IMM_DBL_A:	// 18 #$12/#$1234
+				case AM_IMM_DBL_I:	// 19 #$12/#$1234
+					if (arg_size==2) {
+						if (src && lblname)
+							out.sprintf_append("%s #%s", opcodes[op].name, lblname.c_str());
+						else
+							out.sprintf_append("%s #$%04x", opcodes[op].name, (int)mem[0] | ((int)mem[1])<<8);
+					} else {
+						if (src && lblname)
+							out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+						else
+							out.sprintf_append(fmt, opcodes[op].name, mem[0]);
+					}
+					break;
+
+				case AM_BRANCH:		// beq $1234
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+					else
+						out.sprintf_append(fmt, opcodes[op].name, addr + (char)mem[0]);
+					break;
+
+				case AM_BRANCH_L:	// brl $1234
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+					else
+						out.sprintf_append(fmt, opcodes[op].name, addr + ((short)(char)mem[0] + (((short)(char)mem[1])<<8)));
+					break;
+
+				case AM_ZP_ABS:		// d $12, *+$12
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+					else
+						out.sprintf_append(fmt, opcodes[op].name, mem[0], addr + (char)mem[1]);
+					break;
+
+				default:
+					out.sprintf_append(fmt, opcodes[op].name, mem[0], mem[1]);
+					break;
+			}
+			if (!src && lblname)
+				out.sprintf_append(" ; %s", lblname.c_str());
+
+			mem += arg_size;
+			out.append('\n');
+			fputs(out.c_str(), f);
+			if (separator) {
+				fputs("\n", f);
+				fputs(spc, f);
+				fputs("; -------------------------------- ;\n\n", f);
+			}
+		}
 	}
 	if (opened)
 		fclose(f);
+
+	for (int i = (int)refs.size()-1; i>=0; --i) {
+		if (refs[i].pRefs)
+			delete refs[i].pRefs;
+		refs.erase(refs.begin() + i);
+	}
+
 }
 
 
@@ -1003,10 +1309,11 @@ int main(int argc, char **argv)
 	int skip = 0;
 	int end = 0;
 	int addr = 0x1000;
-	bool acc_16 = false;
-	bool ind_16 = false;
+	bool acc_16 = true;
+	bool ind_16 = true;
+	bool src = false;
 
-	const dismnm *opcodes = a65816_ops;
+	const dismnm *opcodes = a6502_ops;
 
 	for (int i = 1; i < argc; i++) {
 		strref arg(argv[i]);
@@ -1022,7 +1329,9 @@ int main(int argc, char **argv)
 			}
 		} else {
 			strref var = arg.split_token('=');
-			if (!arg) {
+			if (var.same_str("src"))
+				src = true;
+			else if (!arg) {
 				if (!bin)
 					bin = argv[i];
 				else if (!out)
@@ -1062,10 +1371,18 @@ int main(int argc, char **argv)
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
 					bytes = size_t(end - skip);
-				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes);
+				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src);
 			}
 			free(mem);
 		}
+	} else {
+		puts("Usage:\nx65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816] [mx=0-3] [src]\n"
+			 " * binary: file which contains some 65xx series instructions\n"
+			 " * disasm.txt: output file (default is stdout)\n"
+			 " * $skip-$end: first byte offset to disassemble to last byte offset to disassemble\n"
+			 " * addr: disassemble as if loaded at addr\n"
+			 " * cpu: set which cpu to disassemble for (default is 6502)\n"
+			 " * mx: set the mx flags which control accumulator and index register size\n");
 	}
 	return 0;
 }
