@@ -858,8 +858,9 @@ public:
 	int sprintf_at(strl_t pos, const char *format, ...) { va_list args; va_start(args, format);
 		int l = vsnprintf_s(charstr()+pos, cap()-pos, _TRUNCATE, format, args);
         if (l+pos>len()) set_len(l+pos); va_end(args); return l; }
-	int sprintf_append(const char *format, ...) { va_list args; va_start(args, format);
-		int l = vsnprintf_s(end(), cap()-len(), _TRUNCATE, format, args); va_end(args); add_len_int(l); return l; }
+	int sprintf_append(const char *format, ...) { va_list args; va_start(args, format); int l = 0;
+		if (len()<cap()) { l = vsnprintf_s(end(), cap()-len(), _TRUNCATE, format, args); va_end(args);
+			add_len_int(l);	} return l; }
 #else
 	int sprintf(const char *format, ...) { va_list args; va_start(args, format);
 		set_len_int(vsnprintf(charstr(), cap(), format, args)); va_end(args); return len(); }

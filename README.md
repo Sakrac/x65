@@ -254,6 +254,12 @@ Additional section directive styles include:
 
 For creating relocatable files (OMF) certain sections can not be fixed address.
 
+Special sections for Apple II GS executables:
+
+Sections named DirectPage_Stack and of a BSS type (default) determine the size of the direct page + stack for the executable. If multiple sections match this rule the size will be the sum of all the sections with this name.
+
+Zeropage sections will be linked to a fixed address (default at the highest direct page addresses) prior to exporting the relocatable code. Zeropage sections in x65 is intended to allocate ranges of the zero page / direct page which is a bit confusing with OMF that has the concept of the direct page + stack segment.
+
 <a name="xdef">**XDEF**
 
 Used in files assembled to object files to share a label globally. All labels that are not xdef'd are still processed but protected so that other objects can use the same label name without colliding. **XDEF <labelname>** must be specified before the label is defined, such as at the top of the file.
@@ -945,6 +951,7 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Resolved the DirectPage_Stack section vs. Zeropage section for Apple II GS/OS executables.
 * OMF export for Apple II GS/OS executables
 * More DASM directives supported (ERR, DV, DS.B, DS.W, DS.L)
 * Removed the concept of linking by merging sections and instead keeping the sections separate and individually assigned memory addresses so they won't overlap.

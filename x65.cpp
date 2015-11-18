@@ -1841,7 +1841,7 @@ void Asm::SetSection(strref line)
 	if (type == ST_UNDEFINED) {
 		if (name.find("code") >= 0) type = ST_CODE;
 		else if (name.find("data") >= 0) type = ST_DATA;
-		else if (name.find("bss") >= 0) 	type = ST_BSS;
+		else if (name.find("bss" >= 0 || name.same_str("directpage_stack"))) type = ST_BSS;
 		else if (name.find("zp") >= 0 || name.find("zeropage") >= 0 || name.find("direct") >= 0)
 			type = ST_ZEROPAGE;
 		else type = ST_CODE;
@@ -6370,14 +6370,33 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 
 	// collapse all section together that share the same name
 	StatusCode status = MergeSectionsByName(first_section);
+	if (status != STATUS_OK)
+		return status;
+
+	// Zero page section for x65 implies addresses, OMF direct-page/stack seg implies size of direct page + stack
+	// so resolve the zero page sections first
+	status = LinkZP();
+	if (status != STATUS_OK)
+		return status;
 
 	// full collapse means that all sections gets merged into one
 	// code+data section and one bss section which will be appended
-	if (full_collapse)
+	if (full_collapse) {
 		status = MergeAllSections(first_section);
+		if (status != STATUS_OK)
+			return status;
+	}
 
-	if (status != STATUS_OK)
-		return status;
+	// determine if there is a direct page stack
+	int DP_Stack_Size = 0;	// 0 => default size (don't include)
+	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
+		if (s->type == ST_ZEROPAGE)
+			s->type = ST_REMOVED;
+		if (s->type == ST_BSS && s->name.same_str("directpage_stack")) {
+			DP_Stack_Size += s->addr_size();
+			s->type = ST_REMOVED;
+		}
+	}
 
 	std::vector<int> SegNum;	// order of valid segments
 	std::vector<int> SegLookup;	// inverse of SegNum
@@ -6419,13 +6438,14 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	hdr.BankSize[2] = 1;	// 64k banks
 	_writeNBytes(hdr.DispNameOffset, 2, sizeof(hdr));	// start of file name (10 chars)
 
+	strref fileBase = export_base_name;
+	char segfile[10];
+	memset(segfile, ' ', 10);
+	memcpy(segfile, fileBase.get(), fileBase.get_len() > 10 ? 10 : fileBase.get_len());
+
 	for (std::vector<int>::iterator i = SegNum.begin(); i != SegNum.end(); ++i) {
 		Section &s = allSections[*i];
 		strref segName = s.name ? s.name : (s.type == ST_CODE ? strref("CODE") : strref("DATA"));
-		strref fileBase = export_base_name;
-		char segfile[10];
-		memset(segfile, ' ', 10);
-		memcpy(segfile, fileBase.get(), fileBase.get_len() > 10 ? 10 : fileBase.get_len());
 
 		// support zero bytes at end of block
 		int num_zeroes_at_end = s.addr_size() - s.size();
@@ -6527,6 +6547,25 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 		}
 		if (instruction_offs > 5)
 			fwrite(instructions + 5, instruction_offs - 5, 1, f); // reloc instructions
+	}
+	// if there is a size of the direct page & stack, write it
+	if (DP_Stack_Size) {
+		strref segName("DPStack");
+		char lenSegName = segName.get_len();
+		_writeNBytes(hdr.SegNum, 2, (int)SegNum.size()+1);
+		_writeNBytes(hdr.Kind, 2, 0x12);
+		_writeNBytes(hdr.DispDataOffset, 2, sizeof(hdr) + 10 + 1 + segName.get_len());
+		_writeNBytes(hdr.Length, 4, DP_Stack_Size);
+		_writeNBytes(hdr.ResSpc, 4, DP_Stack_Size);
+		_writeNBytes(hdr.Align, 4, 256);
+		int segSize = sizeof(hdr) + 10 + 1 + segName.get_len() + 1;
+		_writeNBytes(hdr.SegTotal, 4, segSize);
+		instructions[0] = 0;
+		fwrite(&hdr, sizeof(hdr), 1, f);
+		fwrite(segfile, 10, 1, f);
+		fwrite(&lenSegName, 1, 1, f);
+		fwrite(segName.get(), segName.get_len(), 1, f);
+		fwrite(instructions, 1, 1, f); // end instruction
 	}
 	free(instructions);
 	fclose(f);

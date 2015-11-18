@@ -9,14 +9,16 @@ Typical command line ([*] = optional):
 **Usage**
 
 ```
-x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816] [mx=0-3] [src]
+x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816] [mx=0-3] [src] [prg]
 ```
 
 * binary: file which contains some 65xx series instructions
 * disasm.txt: output file (default is stdout)
 * $skip-$end: first byte offset to disassemble to last byte offset to disassemble
 * addr: disassemble as if loaded at addr
+* prg: file is a c64 program file starting with the load address
 * cpu: set which cpu to disassemble for (default is 6502)
+* src: export near assemblable source with guesstimated data blocks
 * mx: set the mx flags which control accumulator and index register size
 
 

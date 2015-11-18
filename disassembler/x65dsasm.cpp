@@ -940,6 +940,7 @@ struct dismnm a65816_ops[256] = {
 enum RefType {
 	RT_NONE,
 	RT_BRANCH,	// bne, etc.
+	RT_BRA_L,	// brl
 	RT_JUMP,	// jmp
 	RT_JSR,		// jsr
 	RT_DATA,	// lda $...
@@ -947,7 +948,7 @@ enum RefType {
 	RT_COUNT
 };
 
-const char *aRefNames[RT_COUNT] = { "???", "branch", "jump", "subroutine", "data" };
+const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data" };
 
 struct RefLink {
 	int instr_addr;
@@ -955,15 +956,13 @@ struct RefLink {
 };
 
 struct RefAddr {
-	int address;					// address
+	int address:30;					// address
+	int data:2;						// 1 if data, 0 if code
 	std::vector<RefLink> *pRefs;	// what is referencing this address
 
-	RefAddr() : address(-1), pRefs(nullptr) {}
-	RefAddr(int addr) : address(addr), pRefs(nullptr) {}
+	RefAddr() : address(-1), data(0), pRefs(nullptr) {}
+	RefAddr(int addr) : address(addr), data(0), pRefs(nullptr) {}
 };
-
-static const strref _jsr("jsr");
-static const strref _jmp("jmp");
 
 std::vector<RefAddr> refs;
 
@@ -979,11 +978,24 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	refs.push_back(RefAddr(start_addr));
 	refs[0].pRefs = new std::vector<RefLink>();
 
+	unsigned char *mem_orig = mem;
+	size_t bytes_orig = bytes;
+	int addr_orig = addr;
+
 	while (bytes) {
 		unsigned char op = *mem++;
 		int curr = addr;
 		bytes--;
 		addr++;
+		if (opcodes == a65816_ops) {
+			if (op == 0xe2) {	// sep
+				if ((*mem)&0x20) acc_16 = false;
+				if ((*mem)&0x10) ind_16 = false;
+			} else if (op == 0xc2) { // rep
+				if ((*mem)&0x20) acc_16 = true;
+				if ((*mem)&0x10) ind_16 = true;
+			}
+		}
 
 		int arg_size = opcodes[op].arg_size;;
 		int mode = opcodes[op].addrMode;
@@ -1004,12 +1016,12 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			type = RT_BRANCH;
 		} else if (mode == AM_BRANCH_L) {
 			reference = curr + 2 + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
-			type = RT_BRANCH;
+			type = RT_BRA_L;
 		} else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L) {
 			reference = (unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
-			if (_jsr.same_str(opcodes[op].name))
+			if (op == 0x20 || op == 0xfc || op == 0x22)	// jsr opcodes
 				type = RT_JSR;
-			else if (_jmp.same_str(opcodes[op].name))
+			else if (op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc)	// jmp opcodes
 				type = RT_JUMP;
 			else
 				type = RT_DATA;
@@ -1040,8 +1052,115 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			break;
 		bytes -= arg_size;
 	}
+
+	// sort the order of the labels by address
 	if (refs.size())
 		qsort(&refs[0], refs.size(), sizeof(RefAddr), _sortRefs);
+
+	// validate the label addresses
+	mem = mem_orig;
+	bytes = bytes_orig;
+	addr = addr_orig;
+	int curr_label = 0;
+	int prev_addr = -1;
+	while (bytes && curr_label<refs.size()) {
+		unsigned char op = *mem++;
+		int curr = addr;
+		bytes--;
+		addr++;
+		if (opcodes == a65816_ops) {
+			if (op == 0xe2) {	// sep
+				if ((*mem)&0x20) acc_16 = false;
+				if ((*mem)&0x10) ind_16 = false;
+			} else if (op == 0xc2) { // rep
+				if ((*mem)&0x20) acc_16 = true;
+				if ((*mem)&0x10) ind_16 = true;
+			}
+		}
+
+		int arg_size = opcodes[op].arg_size;;
+		int mode = opcodes[op].addrMode;
+		switch (mode) {
+			case AM_IMM_DBL_A:
+				arg_size = acc_16 ? 2 : 1;
+				break;
+			case AM_IMM_DBL_I:
+				arg_size = ind_16 ? 2 : 1;
+				break;
+		}
+		addr += arg_size;
+		bytes -= arg_size;
+		mem += arg_size;
+		if (curr == refs[curr_label].address)
+			curr_label++;
+		else if (curr > refs[curr_label].address && prev_addr>=0) {
+			refs[curr_label].address = prev_addr;
+			curr_label++;
+		}
+		prev_addr = curr;
+	}
+
+	// mark segments as code or data
+	mem = mem_orig;
+	bytes = bytes_orig;
+	addr = addr_orig;
+	bool separator = false;
+	bool was_data = false;
+	curr_label = 0;
+	while (bytes && curr_label<refs.size()) {
+		unsigned char op = *mem++;
+		int curr = addr;
+		bytes--;
+		addr++;
+
+		int arg_size = opcodes[op].arg_size;;
+		int mode = opcodes[op].addrMode;
+		switch (mode) {
+			case AM_IMM_DBL_A:
+				arg_size = acc_16 ? 2 : 1;
+				break;
+			case AM_IMM_DBL_I:
+				arg_size = ind_16 ? 2 : 1;
+				break;
+		}
+		addr += arg_size;
+		bytes -= arg_size;
+		mem += arg_size;
+		while (curr_label<refs.size() && curr == refs[curr_label].address) {
+			struct RefAddr &ref = refs[curr_label];
+			if ((was_data || separator) && ref.pRefs && ref.pRefs->size() && (*ref.pRefs)[0].type == RT_DATA) {
+				was_data = true;
+				for (int j = 1; was_data && j<ref.pRefs->size(); j++)
+					was_data = (*ref.pRefs)[0].type == RT_DATA;
+			} else
+				was_data = false;
+			refs[curr_label].data = was_data;
+			curr_label++;
+		}
+
+		separator = false;
+		if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+			separator = true;
+			for (size_t i = 0; i<refs.size(); i++) {	// check no branch crossing
+				std::vector<RefLink> &pRefs = *refs[i].pRefs;
+				if (refs[i].address<=curr) {
+					for (size_t j = 0; j<pRefs.size() && separator; ++j) {
+						if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr>curr) {
+							separator = false;
+							break;
+						}
+					}
+				} else {
+					for (size_t j = 0; j<pRefs.size() && separator; ++j) {
+						if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr<curr) {
+							separator = false;
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 static const char spacing[] = "                ";
@@ -1060,32 +1179,20 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 	strref prev_src;
 	int prev_offs = 0;
+	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
 
 	refs.clear();
 	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes);
 
 	int curr_label_index = 0;
-	bool values_data = false;
 	bool separator = false;
-
+	bool is_data = false;
 	strown<256> out;
 	while (bytes) {
 
-		// update label index?
-		while (curr_label_index < (int)(refs.size()-1) && addr >= refs[curr_label_index+1].address) {
-			curr_label_index++;
-			struct RefAddr &ref = refs[curr_label_index];
-			if ((values_data || separator) && ref.pRefs && ref.pRefs->size() && (*ref.pRefs)[0].type == RT_DATA) {
-				values_data = true;
-				for (int j = 1; values_data && j<ref.pRefs->size(); j++) {
-					values_data = (*ref.pRefs)[0].type == RT_DATA;
-				}
-			} else
-				values_data = false;
-		}
 		// Determine if current address is referenced from somewhere
-		if (addr == refs[curr_label_index].address) {
+		while (curr_label_index<refs.size() && addr == refs[curr_label_index].address) {
 			struct RefAddr &ref = refs[curr_label_index];
 			if (ref.pRefs) {
 				for (size_t j = 0; j<ref.pRefs->size(); ++j) {
@@ -1106,21 +1213,23 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 					fputs(out.c_str(), f);
 				}
 			}
-			out.sprintf("%sLabel_%d:\n", spc, curr_label_index);
+			out.sprintf("%sLabel_%d: ; $%04x\n", spc, curr_label_index, addr);
 			fputs(out.c_str(), f);
+			is_data = !!refs[curr_label_index].data;
+			curr_label_index++;
 		}
-		if (src && values_data) {
+		if (src && is_data) {
 			out.clear();
 			int left = end_addr - addr;
-			if (curr_label_index < (int)(refs.size()-2))
-				left = refs[curr_label_index+1].address - addr;
+			if (curr_label_index < (int)refs.size())
+				left = refs[curr_label_index].address - addr;
 			for (int i = 0; i<left; i++) {
 				if (!(i&0xf)) {
 					if (i) {
 						out.append("\n");
 						fputs(out.c_str(), f);
 					}
-					out.append("  dc.b ");
+					out.copy("  dc.b ");
 				}
 				out.sprintf_append("$%02x", *mem++);
 				if ((i&0xf)!=0xf && i<(left-1))
@@ -1140,7 +1249,6 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			if (!src)
 				out.sprintf("$%04x ", addr);
 			addr++;
-
 
 			if (opcodes == a65816_ops) {
 				if (op == 0xe2) {	// sep
@@ -1178,7 +1286,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 			int reference = -1;
 			separator = false;
-			if (op == 0x60) {	// rts
+			if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
 				for (size_t i = 0; i<refs.size(); i++) {
 					std::vector<RefLink> &pRefs = *refs[i].pRefs;
@@ -1204,11 +1312,15 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				reference = (int)mem[0] | ((int)mem[1])<<8;
 
 			strown<64> lblname;
-			if (reference>=0) {
+			if (reference>=start_addr && reference<=end_addr) {
 				for (size_t i = 0; i<refs.size(); ++i) {
-					if (reference == refs[i].address) {
-						lblname.sprintf("Label_%d", i);
-						break;
+					if (reference >= refs[i].address) {
+						if (i==(refs.size()-1) || reference<refs[i+1].address) {
+							lblname.sprintf("Label_%d", i);
+							if (reference > refs[i].address)
+								lblname.sprintf_append(" + $%x", reference - refs[i].address);
+							break;
+						}
 					}
 				}
 			}
@@ -1279,6 +1391,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			}
 			if (!src && lblname)
 				out.sprintf_append(" ; %s", lblname.c_str());
+			else if (src && lblname)
+				out.sprintf_append(" ; $%4x", reference);
 
 			mem += arg_size;
 			out.append('\n');
@@ -1286,7 +1400,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			if (separator) {
 				fputs("\n", f);
 				fputs(spc, f);
-				fputs("; -------------------------------- ;\n\n", f);
+				fprintf(f, "; ------------- $%04x ------------- ;\n\n", addr);
 			}
 		}
 	}
@@ -1312,6 +1426,7 @@ int main(int argc, char **argv)
 	bool acc_16 = true;
 	bool ind_16 = true;
 	bool src = false;
+	bool prg = false;
 
 	const dismnm *opcodes = a6502_ops;
 
@@ -1331,6 +1446,8 @@ int main(int argc, char **argv)
 			strref var = arg.split_token('=');
 			if (var.same_str("src"))
 				src = true;
+			else if (var.same_str("prg"))
+				prg = true;
 			else if (!arg) {
 				if (!bin)
 					bin = argv[i];
@@ -1367,6 +1484,12 @@ int main(int argc, char **argv)
 		if (unsigned char *mem = (unsigned char*)malloc(size)) {
 			fread(mem, size, 1, f);
 			fclose(f);
+			if (prg) {
+				addr = mem[0] + ((int)mem[1]<<8);
+				skip += 2;
+				if (end)
+					end += 2;
+			}
 			if (size > (size_t)skip && (end == 0 || end > skip)) {
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
@@ -1381,7 +1504,9 @@ int main(int argc, char **argv)
 			 " * disasm.txt: output file (default is stdout)\n"
 			 " * $skip-$end: first byte offset to disassemble to last byte offset to disassemble\n"
 			 " * addr: disassemble as if loaded at addr\n"
+			 " * prg: file is a c64 program file starting with the load address\n"
 			 " * cpu: set which cpu to disassemble for (default is 6502)\n"
+			 " * src: export near assemblable source with guesstimated data blocks\n"
 			 " * mx: set the mx flags which control accumulator and index register size\n");
 	}
 	return 0;
