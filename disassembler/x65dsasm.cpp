@@ -944,7 +944,6 @@ enum RefType {
 	RT_JUMP,	// jmp
 	RT_JSR,		// jsr
 	RT_DATA,	// lda $...
-
 	RT_COUNT
 };
 
@@ -1063,6 +1062,10 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	addr = addr_orig;
 	int curr_label = 0;
 	int prev_addr = -1;
+	bool was_data = false;
+	refs[curr_label].data = 0;
+	bool separator = false;
+	int prev_op = 0xff;
 	while (bytes && curr_label<refs.size()) {
 		unsigned char op = *mem++;
 		int curr = addr;
@@ -1088,78 +1091,115 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				arg_size = ind_16 ? 2 : 1;
 				break;
 		}
+		if (arg_size > bytes)
+			break;	// ended on partial instruction
 		addr += arg_size;
 		bytes -= arg_size;
 		mem += arg_size;
-		if (curr == refs[curr_label].address)
+
+		if (curr == refs[curr_label].address) {
+			std::vector<RefLink> &pRefs = *refs[curr_label].pRefs;
+			if (curr_label < (int)refs.size()) {
+				bool prev_data = was_data;
+				was_data = separator && !(!was_data && op==0x4c && prev_op==0x4c);
+				for (size_t j = 0; j<pRefs.size(); ++j) {
+					RefType type = pRefs[j].type;
+					if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
+						separator = false;
+						was_data = false;
+						prev_data = false;
+						break;
+					}
+				}
+
+				if (!was_data && prev_data) {
+					bool only_data_ref = pRefs.size() ? true : false;
+					for (size_t j = 0; j<pRefs.size(); ++j) {
+						RefType type = pRefs[j].type;
+						int ref_addr = pRefs[j].instr_addr;
+						if (type != RT_DATA && (type != RT_BRANCH || ref_addr<addr)) {
+							only_data_ref = false;
+							if (type != RT_BRANCH)
+								separator = false;
+						}
+					}
+					was_data = only_data_ref;
+				}
+				refs[curr_label].data = was_data;
+				if (was_data) {
+					int start = curr;
+					int end = (curr_label+1)<(int)refs.size() ? refs[curr_label+1].address : (int)(addr + bytes);
+					for (int k = 0; k<(int)refs.size(); ++k) {
+						std::vector<RefLink> &pRefs = *refs[k].pRefs;
+						std::vector<RefLink>::iterator r = pRefs.begin();
+						while (r != pRefs.end()) {
+							if (r->instr_addr>=start && r->instr_addr<end)
+								r = pRefs.erase(r);
+							else
+								++r;
+						}
+					}
+				}
+			}
 			curr_label++;
+		}
 		else if (curr > refs[curr_label].address && prev_addr>=0) {
 			refs[curr_label].address = prev_addr;
-			curr_label++;
-		}
-		prev_addr = curr;
-	}
-
-	// mark segments as code or data
-	mem = mem_orig;
-	bytes = bytes_orig;
-	addr = addr_orig;
-	bool separator = false;
-	bool was_data = false;
-	curr_label = 0;
-	while (bytes && curr_label<refs.size()) {
-		unsigned char op = *mem++;
-		int curr = addr;
-		bytes--;
-		addr++;
-
-		int arg_size = opcodes[op].arg_size;;
-		int mode = opcodes[op].addrMode;
-		switch (mode) {
-			case AM_IMM_DBL_A:
-				arg_size = acc_16 ? 2 : 1;
-				break;
-			case AM_IMM_DBL_I:
-				arg_size = ind_16 ? 2 : 1;
-				break;
-		}
-		addr += arg_size;
-		bytes -= arg_size;
-		mem += arg_size;
-		while (curr_label<refs.size() && curr == refs[curr_label].address) {
-			struct RefAddr &ref = refs[curr_label];
-			if ((was_data || separator) && ref.pRefs && ref.pRefs->size() && (*ref.pRefs)[0].type == RT_DATA) {
-				was_data = true;
-				for (int j = 1; was_data && j<ref.pRefs->size(); j++)
-					was_data = (*ref.pRefs)[0].type == RT_DATA;
-			} else
-				was_data = false;
 			refs[curr_label].data = was_data;
 			curr_label++;
 		}
 
-		separator = false;
-		if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
-			separator = true;
-			for (size_t i = 0; i<refs.size(); i++) {	// check no branch crossing
-				std::vector<RefLink> &pRefs = *refs[i].pRefs;
-				if (refs[i].address<=curr) {
-					for (size_t j = 0; j<pRefs.size() && separator; ++j) {
-						if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr>curr) {
-							separator = false;
-							break;
-						}
-					}
-				} else {
-					for (size_t j = 0; j<pRefs.size() && separator; ++j) {
-						if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr<curr) {
-							separator = false;
-							break;
+		// after a separator if there is no jmp, jsr, brl begin data block
+		if (!was_data) {
+			if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c ||
+				op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+				separator = true;
+				for (size_t i = curr_label+1; i<refs.size() && (refs[i].address-curr)<0x7e; i++) {	// check no branch crossing
+					if (refs[i].address<=curr) {
+						std::vector<RefLink> &pRefs = *refs[i].pRefs;
+						for (size_t j = 0; j<pRefs.size() && separator; ++j) {
+							if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr>curr) {
+								separator = false;
+								break;
+							}
 						}
 					}
 				}
 			}
 		}
+
+		prev_op = op;
+		prev_addr = curr;
+	}
+
+
+	int last = (int)refs.size()-1;
+	while (last>1 && refs[last-1].data) {
+		int start_addr = refs[last].address;
+		for (int k = 0; k<(int)refs.size(); ++k) {
+			std::vector<RefLink> &pRefs = *refs[k].pRefs;
+			std::vector<RefLink>::iterator r = pRefs.begin();
+			while (r != pRefs.end()) {
+				if (r->instr_addr>=start_addr && r->instr_addr<end_addr)
+					r = pRefs.erase(r);
+				else
+					++r;
+			}
+		}
+		last--;
+		if (last<=1 || !refs[last].data)
+			break;
+	}
+
+	std::vector<RefAddr>::iterator k = refs.begin();
+	if (k != refs.end())
+		++k;	// don't delete the initial label
+	while (k!=refs.end()) {
+		if (k->pRefs && k->pRefs->size()==0) {
+			delete k->pRefs;
+			k = refs.erase(k);
+		} else
+			++k;
 	}
 }
 
@@ -1189,10 +1229,11 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	bool separator = false;
 	bool is_data = false;
 	strown<256> out;
+	int prev_op = 255;
 	while (bytes) {
-
+		bool data_to_code = false;
 		// Determine if current address is referenced from somewhere
-		while (curr_label_index<refs.size() && addr == refs[curr_label_index].address) {
+		while (curr_label_index<refs.size() && addr >= refs[curr_label_index].address) {
 			struct RefAddr &ref = refs[curr_label_index];
 			if (ref.pRefs) {
 				for (size_t j = 0; j<ref.pRefs->size(); ++j) {
@@ -1216,13 +1257,18 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			out.sprintf("%sLabel_%d: ; $%04x\n", spc, curr_label_index, addr);
 			fputs(out.c_str(), f);
 			is_data = !!refs[curr_label_index].data;
+			data_to_code = !is_data;
+			separator = false;
 			curr_label_index++;
+			if (curr_label_index < (int)refs.size() && refs[curr_label_index].data)
+				data_to_code = false;
 		}
-		if (src && is_data) {
+		if (src && (is_data || separator)) {
 			out.clear();
 			int left = end_addr - addr;
-			if (curr_label_index < (int)refs.size())
+			if (curr_label_index<(int)refs.size())
 				left = refs[curr_label_index].address - addr;
+			is_data = true;
 			for (int i = 0; i<left; i++) {
 				if (!(i&0xf)) {
 					if (i) {
@@ -1241,6 +1287,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				out.append("\n");
 				fputs(out.c_str(), f);
 			}
+			separator = false;
+			prev_op = 255;
 		} else {
 			int curr_addr = addr;
 			unsigned char op = *mem++;
@@ -1286,7 +1334,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 			int reference = -1;
 			separator = false;
-			if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+			if (op == 0x60 || op == 0x40 || op == 0x68 || (op == 0x4c && mem[arg_size] != 0x4c) ||
+				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
 				for (size_t i = 0; i<refs.size(); i++) {
 					std::vector<RefLink> &pRefs = *refs[i].pRefs;
@@ -1397,11 +1446,12 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			mem += arg_size;
 			out.append('\n');
 			fputs(out.c_str(), f);
-			if (separator) {
-				fputs("\n", f);
-				fputs(spc, f);
-				fprintf(f, "; ------------- $%04x ------------- ;\n\n", addr);
-			}
+			prev_op = op;
+		}
+		if (separator || ((curr_label_index)<refs.size() && refs[curr_label_index].address==addr && is_data && !refs[curr_label_index].data)) {
+			fputs("\n", f);
+			fputs(spc, f);
+			fprintf(f, "; ------------- $%04x ------------- ;\n\n", addr);
 		}
 	}
 	if (opened)
