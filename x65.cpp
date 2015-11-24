@@ -923,6 +923,7 @@ DirectiveName aDirectiveNames[] {
 	{ "INCOBJ", AD_INCOBJ },
 	{ "ALIGN", AD_ALIGN },
 	{ "MACRO", AD_MACRO },
+	{ "MAC", AD_MACRO },		// MERLIN
 	{ "EVAL", AD_EVAL },
 	{ "PRINT", AD_EVAL },
 	{ "ECHO", AD_EVAL },		// DASM version of EVAL/PRINT
@@ -942,11 +943,6 @@ DirectiveName aDirectiveNames[] {
 	{ "INCSYM", AD_INCSYM },
 	{ "LABPOOL", AD_LABPOOL },
 	{ "POOL", AD_LABPOOL },
-	{ "#IF", AD_IF },
-	{ "#IFDEF", AD_IFDEF },
-	{ "#ELSE", AD_ELSE },
-	{ "#ELIF", AD_ELIF },
-	{ "#ENDIF", AD_ENDIF },
 	{ "IF", AD_IF },
 	{ "IFDEF", AD_IFDEF },
 	{ "ELSE", AD_ELSE },
@@ -995,7 +991,6 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "LST", AD_LST },			// MERLIN
 	{ "LSTDO", AD_LST },		// MERLIN
 	{ "LUP", AD_REPT },			// MERLIN
-	{ "MAC", AD_MACRO },		// MERLIN
 	{ "SAV", AD_SAV },			// MERLIN
 	{ "DSK", AD_SAV },			// MERLIN
 	{ "LNK", AD_LNK },			// MERLIN
@@ -1639,7 +1634,7 @@ void Asm::Cleanup() {
 		exti->labels.clear();
 	externals.clear();
 	// this section is relocatable but is assigned address $1000 if exporting without directives
-	SetSection(strref("default"));
+	SetSection(strref("default,code"));
 	current_section = &allSections[0];
 	syntax = SYNTAX_SANE;
 	default_org = 0x1000;
@@ -5373,7 +5368,8 @@ StatusCode Asm::BuildLine(strref line)
 						++line;	// bad character?
 						break;
 				}
-			}
+			} else
+				line.clear();
 		} else {
 			// ignore leading period for instructions and directives - not for labels
 			strref label = operation;
@@ -5642,7 +5638,7 @@ bool Asm::List(strref filename)
 				out.sprintf_append("$%04x ", lst.address + si->start_address);
 
 			int s = lst.wasMnemonic() ? (lst.size < 4 ? lst.size : 4) : (lst.size < 8 ? lst.size : 8);
-			if (si->output && si->output_capacity >= (lst.address + s)) {
+			if (si->output && si->output_capacity >= size_t(lst.address + s)) {
 				for (int b = 0; b < s; ++b)
 					out.sprintf_append("%02x ", si->output[lst.address + b]);
 			}

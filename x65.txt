@@ -1,0 +1,703 @@
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+x65 Assembler
+-------------
+
+
+x65 is an open source 6502 series assembler that supports object files,
+linking, fixed address assembling and a relocatable executable.
+
+Assemblers have existed for a long time and what they do is well documented,
+x65 tries to accomodate most expectations of syntax from Kick Assembler (a
+Java 6502 assembler) to Merlin (an Apple II assembler).
+
+For debugging, dump_x65 is a tool that will show all content of x65 object
+files, and x65dsasm is a disassembler intended to review the assembled
+result. 
+
+
+Noteworthy features:
+
+* Full expression evaluation everywhere values are used.
+* Basic relative sections and linking in addition to fixed address.
+* C style scoping within '{' and '}'
+* Conditional assembly with if/ifdef/else etc.
+* Directives support both with and without leading period.
+* Local labels can be defined in a number of ways, such as leading
+  period (.label) or leading at-sign (@label) or terminating
+  dollar sign (label$).
+* Reassignment of symbols. This means there is no error if you declare
+  the same label twice, but on the other hand you can do things like
+  label = label + 2.
+* No indentation required for instructions, meaning that labels can't
+  be mnemonics, macros or directives.
+* As far as achievable, support the syntax of other 6502 assemblers
+  (Merlin syntax now requires command line argument, -endm adds support
+  for sources using macro/endmacro and repeat/endrepeat combos rather
+  than scoeps).
+* Apple II GS executable output.
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+License
+-------
+
+
+Created by Carl-Henrik Skårstedt on 9/23/15.
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl-Henrik Skårstedt
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+and associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Details, source and documentation at https://github.com/Sakrac/x65.
+
+"struse.h" can be found at https://github.com/Sakrac/struse,
+only the header file is required.
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Document Updates
+----------------
+
+Nov 23 2015 - Initial pass of x65 documentation
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Command line arguments
+----------------------
+
+
+x65 source target [options]
+
+Where "options" include
+
+ * -i(path) : Add include path
+ * -D(label)[=value] : Define a label with an optional value
+    (otherwise defined as 1)
+ * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
+ * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
+ * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
+ * -org = $2000 or - org = 4096: set the default start address of
+    fixed address code
+ * -obj (file.x65) : generate object file for later linking
+ * -bin : Raw binary
+ * -c64 : Include load address (default)
+ * -a2b : Apple II Dos 3.3 Binary
+ * -a2p : Apple II ProDos Binary
+ * -a2o : Apple II GS OS executable (relocatable)
+ * -mrg : Force merge all sections (use with -a2o)
+ * -sym (file.sym) : symbol file
+ * -lst / -lst = (file.lst) : generate disassembly text from
+    result (file or stdout)
+ * -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)
+ * -sect: display sections loaded and built
+ * -vice (file.vs) : export a vice symbol file
+ * -merlin: use Merlin syntax
+ * -endm : macros end with endm or endmacro instead of scoped('{' - '}')
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+CPU options
+-----------
+
+
+The CPU can be defined on the command line with the -cpu=<name> option, or as an
+assembler directive with the CPU directive. The supported CPU names are:
+
+* 6502 - basic 6502 instruction set
+* 6502ill - 6502 instruction set with illegal opcodes
+* 65C02 - basic 65C02 instruction set
+* 65c02WDC - 65C02 instruction set with added WDC instructions
+* 65816 - basic 65816 instruction set
+
+The CPU can be changed within a source file, the highest instruction count
+CPU will be used for -lst disassembly output.
+
+65816 has additional states that the assembler needs to be aware of such as the
+accumulator and index register sizes (8 or 16 bit). These can be specified
+on the command line and using assembler directives like A16, A8, I16, I8 etc.
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Syntax
+------
+
+
+The syntax of x65 source is the result of trying to build code from a
+variety of assemblers, including a number of open source games and old
+personal code. The primary syntax inspiration is from Kick Assembler,
+but also DASM, TASM and XASM. Most of the downloaded sample code was
+written for Apple II where Merlin, Orca and Lisa were referenced.
+
+Note that Merlin syntax requires the -merlin command line option.
+
+In normal mode x65 does not care about indentation, labels can be indented
+and instructions can be in column 1. In this mode labels can not use
+the same name as any directive or instruction and the same goes for macros,
+etc. Colons are optional for labels.
+
+Comments are line based and either semicolon or double forward slashes:
+
+    ; comment
+    // also a comment
+
+Local labels are any labels starting with ., !, @ or : or ending with $.
+A local label will be discarded after a scope ends ( '}' ) or after a
+global label is declared.
+
+    {            ; open scope
+        ldx #2
+        dex
+        beq .zero   ; .zero is a local label within the current scope
+        bne !      ; address of open scope ({)
+.zero
+    }            ; close scope
+
+Symbols are assigned with an equal sign or the EQU keyword and can be
+preceeded by 'CONST' to prevent changes:
+
+BitmapStart = $2000
+CONST ColorMap EQU $400
+
+By using the -merlin command line argument x65 is in Merlin syntax mode
+which restrics labels to be in column 1 and everything else in column 2
+or higher. Merlin syntax also enables a number of Merlin specific assembler
+directives. See the Merlin section for more information.
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Targets
+-------
+
+
+Most target file formats are just a binary executable code with a few bytes
+for load address and code size, with the exception of the Apple II GS
+relocatable executable.
+
+If building a fixed address target the initial address can be specified
+with the command line option "-org" or by using an ORG directive in the source.
+
+Multiple ORG statements is allowed in the source and inbetween space will
+be filled with zeroes.
+
+In order to support larger projects an intermediate (fully assembled)
+relocatable target format is available using the -obj command line option to
+generate a .x65 object file. More information about object files in Sections.
+
+Command line options for target output:
+
+ * -org = $2000: set the default start address of fixed address code,
+    default is $1000
+ * -obj (file.x65): generate object file for later linking
+ * -bin : Raw binary
+ * -c64 : Include load address (default)
+ * -a2b : Apple II Dos 3.3 Binary (load address + file size)
+ * -a2p : Apple II ProDos Binary (set org to $2000 otherwise binary)
+ * -a2o : Apple II GS OS executable (relocatable)
+ * -mrg : Force merge all sections (use with -a2o)
+
+ The -mrg option will combine all segments into one to allow for 16 bit
+ addressing  to reach data in other segments, but will limit the size to fit
+ into a 64 k bank.
+ 
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+List Output
+-----------
+
+
+The command line -lst option will enable list output which is a traditional
+way to review 6502 code. -lst=(filename) will write the list output to a file
+whereas -lst by itself will send the list output to stdout.
+
+The list output will be generated after the source has been assembled. The
+output will use spaces instead of tabs to keep the columns consistant in
+different editors.
+
+The order of lines in the list output will correspond to memory and not to the
+order of lines in the original code, and lines that doesn't generate data may
+be omitted.
+
+By using scoping '{' and '}' the listing starts and stops cycle counters, each
+cycle counter starting is marked by c>number and stopping by c<number = time for
+a single pass through all the instructions within the scope.
+
+Columns left to right
+
+* Address
+* Bytes (up to 4) or Cycle Counter start (c>1) / end (c<1 = ...)
+* Instruction (disassembled)
+* Cycle Count for Instruction
+* Source line that generated the data
+
+                                        section Code
+      c>1                               Sin {
+$0000 a2 03       ldx #$03       2        ldx #3
+      c>2                                 {
+$0002 b5 e8       lda $e8,x      4          lda SinP.Ang,x
+$0004 95 ec       sta $ec,x      4          sta SinP.R,x
+$0006 95 e4       sta $e4,x      4          sta SinP.W0,x
+$0008 95 f4       sta $f4,x      4          sta Mul824.A,x
+$000a 95 f0       sta $f0,x      4          sta Mul824.B,x
+$000c ca          dex            2          dex
+$000d 10 f3       bpl $0002      2+         bpl !
+      c<2 = 24 + 1                        }
+                                          ; x^2, copy to W1
+$000f a9 e0       lda #$e0       2        lda #SinP.W1
+$0011 20 00 00    jsr $0000      6        jsr Multiply824S_Copy
+                                          ; iterate value
+$0014 a0 00       ldy #$00       2        ldy #0
+                                        .SinIterate
+      c>2                                 {
+                                            ; W0 *= W1
+$0016 a2 03       ldx #$03       2          ldx #3
+      c>3                                   {
+$0018 b5 e4       lda $e4,x      4            lda SinP.W0,x     ; x^(1+2n)
+$001a 95 f4       sta $f4,x      4            sta Mul824.A,x
+$001c b5 e0       lda $e0,x      4            lda SinP.W1,x     ; x^2
+$001e 95 f0       sta $f0,x      4            sta Mul824.B,x
+$0020 ca          dex            2            dex
+$0021 10 f5       bpl $0018      2+           bpl !
+      c<3 = 20 + 1                          }
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Expressions
+-----------
+
+
+Expressions contain values, such as labels or raw numbers and operators,
+the order of operations is based on C like precedence. Internally the
+expression is converted to reverse polish notation to make it easier to
+keep track of complex expressions.
+
+
+Math expression symbols supported:
+
++   Add two numbers (a+b)
+
+-   Subtract one number from another (a-b)
+
+*   Multiply two numbers (a*b)
+
+/   Divide one number by another (a/b)
+
+&   Logical and two numbers (a&b)
+
+|   Logical or two numbers (a|b)
+
+^   Logical exclusive or two numbers (a^b)
+
+<<  Shift value left (multiply a by 2^b)
+
+>>  Shift value right (divide a by 2^b)
+
+(   Open parenthesis, override operator precedence
+
+)   Close parenthesis, end a parenthesis block
+
+
+
+PC expression symbols supported:
+
+*   Current address (PC). This conflicts with the use of * as multiply
+    so multiply will be interpreted only after a value or right parenthesis
+
+<   If less than is not followed by another '<' in an expression this
+    evaluates to the low byte of a value (and $ff)
+
+>   If greater than is not followed by another '>' in an expression
+    this evaluates to the high byte of a value (>>8)
+
+^   Inbetween two values '^' is an eor operation, as a prefix to
+    values it extracts the bank byte (v>>24).
+
+!   Start of scope (use like an address label in expression)
+
+%   First address after scope (use like an address label in expression)
+
+$   Precedes hexadecimal value
+
+%   If immediately followed by '0' or '1' this is a binary value and not
+    scope closure address
+
+
+
+Conditional operators
+
+==   Double equal signs yields 1 if left value is the same as the right value
+
+<   If inbetween two values, less than will yield 1 if left value is less
+    than right value
+
+>   If inbetween two values, greater than will yield 1 if left value is
+    greater than right value
+
+<=   If inbetween two values, less than or equal will yield 1 if left value
+    is less than or equal to right value
+
+>=   If inbetween two values, greater than or equal will yield 1 if left
+    value is greater than or equal to right value
+
+
+Example:
+
+lda #(((>SCREEN_MATRIX)&$3c)*4)+8
+sta $d018
+
+Avoid using parenthesis as the first character of the parameter of an opcode
+that can be relative addressed instead of an absolute address. This can be
+avoided by 
+
+    jmp (a+b)   ; generates a relative jump
+    jmp.a (a+b)   ; generates an absolute jump
+    jmp +(a+b)   ; generates an absolute jump
+
+c = (a+b)
+    jmp c      ; generates an absolute jump
+    jmp a+b      ; generates an absolute jump
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Conditional assembly
+--------------------
+
+
+IF / ELSE / ENDIF etc. works in a similar way to C, IF exp / ELIF exp assembles if
+the expression is non-zero, IFDEF symbol assembles if the symbol has been
+assigned.
+
+There isn't any particular restriction to what can be excluded in a
+non-assembling block of source.
+
+
+* ELIF - conditionals, "else if" following an IF or IFDEF condtion
+* ELSE - conditionals, following an IF or IFDEF or ELIF condition
+* ENDIF - conditionals, terminates a condition
+* IF - conditionals, start a block of conditional assembly if an expression
+  evaluates to non-zero
+* IFDEF - conditionals, start a block of conditional assembly if a symbol or
+  label exists at this point
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+65816
+-----
+
+
+65816 is large expansion of 6502 and requires the assembler to be aware of
+what processor flags the user has set to select instructions.
+
+* A16 - 65816, set accumulator immediate operators to 16 bit mode
+* A8 - 65816, set accumulator immediate operators to 8 bit mode
+* I16 - 65816, set index register immediate operators to 16 bit mode,
+  same as XY16
+* I8 - 65816, set index register immediate operators to 8 bit mode,
+  same as XY8
+* XY16 - 65816, set index register immediate operators to 16 bit mode,
+  same as I16
+* XY8 - 65816, set index register immediate operators to 8 bit mode,
+  same as I8
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Data
+----
+
+
+Data is any part of the binary that is not generate by assembler
+mnemonics, most of the directives declare specific data except for DS that
+declares a repeating value.
+
+* BYTE - data, define comma separated bytes
+* BYTES - data, same as byte
+* DC - data, define comma separated bytes (default), words, triples or
+  longs (DC.B, DC.W, DC.T, DC.L)
+* DS - data, define repeated value, first value is count, optional is fill
+  value, default is in bytes (DS.B, DS.W, DS.T, DS.L)
+* DV - data, same as DC but differentiated in DASM as allowing expressions
+* IMPORT - data and sections, load a file and include it in the assembly based
+  on the argument
+* INCBIN - data, load a file and insert it at the current address
+* INCDIR - data and control, add a directory to search for INCLUDE, INCBIN,
+  INCOBJ or IMPORT files in
+* LONG - data, define comma separated 32 bit values
+* TEXT - data, insert text at the current address optionally with a filter
+* WORD - data, insert comma separated 16 bit values, same as WORDS
+* WORDS - data, insert comma seperated 16 bit values, same as WORD
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Macros
+------
+
+
+The default macro syntax is similar to a C inline function, using the
+directive MACRO.
+
+  MACRO [name](parameter1, parameter2, etc.) {
+    lda #parameter1
+    sta parameter2
+  }
+
+To use the macro use the name and specify parameters:
+
+    [name](1,dest)
+
+The parenthesis are optional both for the macro declaration and for the
+macro instantiation so macros can be used as if they were instructions
+
+    MACRO neg address {
+  		sec
+  		lda #0
+  		sbc source
+  		sta source
+    }
+
+	MACRO nega {
+		eor #$ff
+		sec
+		adc #0
+	}
+
+Now 'neg' and 'nega' can be used as if it was an instruction:
+
+	neg $7f80	; negate byte at this hard coded address for some reason
+	lda #$6c
+	nega			; negate accumulator
+
+In order to support code written for other assemblers the -endm command line
+option changes the syntax for macro declarations to start on the line after
+MACRO and end before the line starting with ENDM or ENDMACRO:
+
+	MACRO inca
+	sec
+	adc #0
+	ENDMACRO
+
+Directives for macros:
+
+* MACRO - macros, start a macro declaration
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+Structs and Enums
+
+* ENUM - structs and enums, declare enumerations like C
+* STRUCT - structs and enums, declare a C-like structure of symbols
+  separated by dots
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+#Sections
+
+x65 supports linking of fully assembled object files into a single
+larger project. This is a fairly standard feature of compilers but
+supporting both common 68000 linking style and Apple II Merlin style
+means that x65 is not quite as straightforward.
+
+The purpose of a linked project is to work in multiple source files
+without worrying about where in memory each file gets compiled to.
+In addition sections of code and data in a single file can be linked
+to different target locations. Each source file gets assembled to an
+object file (.x65) and all the internal and external references are
+stored separately from the binary code to be fixed up later.
+
+The last step of a linked project is to load all object files and
+generate one or more exported programs. A special source file uses
+the INCOBJ directive to bring in object files one by one and piled up
+by using the LINK [segment name] at a fixed address.
+
+The SECTION directive starts a block of code or data to be linked
+later. By default x65 creates a section named "default" which can
+be used for linking as is but is intended to be replaced.
+
+
+* DUMMY - sections, start a dummy section (defines addresses but does not
+  generate data, same as Merlin DUM)
+* DUMMY_END - sections, end a dummy section (same as Merlin DEND)
+* EXPORT - sections, this section will link or save to a separate binary file
+  with the argument appended to the link or binary filename.
+* IMPORT - data and sections, load a file and include it in the assembly based
+  on the argument
+* INCOBJ - sections, load an object file (.x65) of previously assembled source
+* LINK - sections, links a section to the current section
+* SECTION - section, declare a section; Comma separated arguments are name,
+  type, align where type is Code, Data, BSS or Zeropage
+* SEG - section, same as SECTION
+* SEGMENT - section, same as SECTION
+* XDEF - sections, declare a label as external which can be referenced in
+  other source files by using XREF
+* XREF - sections, reference a label that has been declared as global in
+  another file by using XDEF
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+#Symbols
+
+* INCSYM - symbols, include all or specific symbols from a .sym file
+* LABEL - symbols, optional prefix to symbol assignments
+* LABPOOL - symbols, a stack-like pool of addresses, same as POOL
+* STRUCT - structs and enums, declare a C-like structure of symbols
+  separated by dots
+* POOL - symbols, a stack-like pool of addresses, same as LABPOOL
+* CONST - symbols, declare assigned symbol as constant and if changed
+  cause an error
+* XDEF - sections, declare a label as external which can be referenced in
+  other source files by using XREF
+* XREF - sections, reference a label that has been declared as global in
+  another file by using XDEF
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Relocatable code and linking
+
+A lot of 6502 code has been built with fixed address assemblers. While
+supporting fixed address assembling, x65 is built around generating relocatable
+code that can be linked as as final build step.
+
+Code and data is broken into sections, where data sections can be
+uninitialized (BSS and Zeropage) or initialized. Sections with the same
+type and the same name are combined before linking.
+
+Apple II GS uses a relocatable binary format that can be exported, other
+targets link to a fixed address during the linking stage.
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+All Directives
+---------------
+
+
+* A16 - 65816, set accumulator immediate operators to 16 bit mode
+* A8 - 65816, set accumulator immediate operators to 8 bit mode
+* ABORT - exit assembler after printing the argument to stdout and error,
+  same as ERR
+* ALIGN - fixed address assembly align next to argumnet, reloc assembly set
+  aligment of section if immediately after section declaration
+* BYTE - data, define comma separated bytes
+* BYTES - data, same as byte
+* CONST - symbols, declare assigned symbol as constant and if changed cause
+  an error
+* CPU - instructions, change target processor, valid arguments are: 6502,
+  6502ill, 65C02, 65C02WDC, 65816; Same as PROCESSOR
+* DC - data, define comma separated bytes (default), words, triples or
+  longs (DC.B, DC.W, DC.T, DC.L)
+* DS - data, define repeated value, first value is count, optional is fill
+  value, default is in bytes (DS.B, DS.W, DS.T, DS.L)
+* DUMMY - sections, start a dummy section (defines addresses but does not
+  generate data, same as Merlin DUM)
+* DUMMY_END - sections, end a dummy section (same as Merlin DEND)
+* DV - data, same as DC but differentiated in DASM as allowing expressions
+* ECHO - status, output an expression to stdout, same as PRINT and EVAL
+* ELIF - conditionals, "else if" following an IF or IFDEF condtion
+* ELSE - conditionals, following an IF or IFDEF or ELIF condition
+* ENDIF - conditionals, terminates a condition
+* ENUM - structs and enums, declare enumerations like C
+* ERR - exit assembler with a message and error, same as ABORT
+* EVAL - status, output an expression to stdout, same as PRINT and ECHO
+* EXPORT - sections, this section will link or save to a separate binary
+  file with the argument appended to the link or binary filename.
+* I16 - 65816, set index register immediate operators to 16 bit mode,
+  same as XY16
+* I8 - 65816, set index register immediate operators to 8 bit mode,
+  same as XY8
+* IF - conditionals, start a block of conditional assembly if an expression
+  evaluates to non-zero
+* IFDEF - conditionals, start a block of conditional assembly if a symbol or
+  label exists at this point
+* IMPORT - data and sections, load a file and include it in the assembly
+  based on the argument
+* INCBIN - data, load a file and insert it at the current address
+* INCDIR - data and control, add a directory to search for INCLUDE, INCBIN,
+  INCOBJ or IMPORT files in
+* INCLUDE - control, load a source file and assemble it at the current address
+* INCOBJ - sections, load an object file (.x65) of previously assembled source
+* INCSYM - symbols, include all or specific symbols from a .sym file
+* LABEL - symbols, optional prefix to symbol assignments
+* LABPOOL - symbols, a stack-like pool of addresses, same as POOL
+* LINK - sections, links a section to the current section
+* LOAD - set the load address for fixed address binary if different than the
+  initial fixed address (c64 prg and Apple II Dos 3)
+* LONG - data, define comma separated 32 bit values
+* MACRO - macros, start a macro declaration
+* ORG - set fixed address, same as PC
+* PC - set fixed address, same as ORG
+* POOL - symbols, a stack-like pool of addresses, same as LABPOOL
+* PRINT - status, output an expression to stdout, same as PRINT and EVAL
+* PROCESSOR - instructions, change target processor, valid arguments are: 6502,
+  6502ill, 65C02, 65C02WDC, 65816; Same as CPU
+* REPEAT - repeat a block of code a number of times, same as REPT
+* REPT - repeat a block of code a number of times, same as REPEAT
+* SECTION - section, declare a section; Comma separated arguments are name,
+  type, align where type is Code, Data, BSS or Zeropage
+* SEG - section, same as SECTION
+* SEGMENT - section, same as SECTION
+* STRUCT - structs and enums, declare a C-like structure of symbols separated
+  by dots
+* TEXT - data, insert text at the current address optionally with a filter
+* WORD - data, insert comma separated 16 bit values, same as WORDS
+* WORDS - data, insert comma seperated 16 bit values, same as WORD
+* XDEF - sections, declare a label as external which can be referenced in
+  other source files by using XREF
+* XREF - sections, reference a label that has been declared as global in
+  another file by using XDEF
+* XY16 - 65816, set index register immediate operators to 16 bit mode,
+  same as I16
+* XY8 - 65816, set index register immediate operators to 8 bit mode,
+  same as I8
+
+
+
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
