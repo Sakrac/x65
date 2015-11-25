@@ -1,3 +1,4 @@
+
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
 
 
@@ -80,7 +81,7 @@ Document Updates
 ----------------
 
 Nov 23 2015 - Initial pass of x65 documentation
-
+Nov 24 2015 - More text
 
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
 
@@ -556,6 +557,46 @@ The SECTION directive starts a block of code or data to be linked
 later. By default x65 creates a section named "default" which can
 be used for linking as is but is intended to be replaced.
 
+In order to export labels from a source file it should be declared
+with XDEF prior to being defined:
+
+  XDEF Function
+
+  SECTION Code
+
+Function:
+  lda #1
+  rts
+
+To reference an exported label from a different file use XREF
+
+  XREF Function
+
+  SECTION Code
+Code:
+  jsr Function
+  rts
+
+To link object files (.x65) into an executable the assembled
+objects need to be combined into a single source using INCOBJ
+
+  INCOBJ "Code.x65"
+  INCOBJ "Routines.x65"
+
+The result will put the first included code section OR the first code
+section declared in the link file.
+
+The link file can export multiple binary executable files by using
+the EXPORT directive
+
+  SECTION CodeOther, Code
+  EXPORT other
+
+Code in the CodeOther section will be built as (binary)_other.(ext)
+
+By linking multiple targets at once files can reference labels
+between eachother.
+
 
 * DUMMY - sections, start a dummy section (defines addresses but does not
   generate data, same as Merlin DUM)
@@ -575,9 +616,28 @@ be used for linking as is but is intended to be replaced.
 * XREF - sections, reference a label that has been declared as global in
   another file by using XDEF
 
+
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
 
-#Symbols
+
+Symbols
+-------
+
+
+Symbols are assigned with an equal sign or the keyword EQU or defined
+as labels within code.
+
+Structs and Enums are structured symbols.
+
+INCSYM can be used to reference symbols from previous assembled
+binary executables:
+
+  INCSYM EntryPoint "Binary.sym"
+
+EntryPoint is defined from the previously assembled code using an
+optional symbol file.
+
+
 
 * INCSYM - symbols, include all or specific symbols from a .sym file
 * LABEL - symbols, optional prefix to symbol assignments
@@ -591,6 +651,70 @@ be used for linking as is but is intended to be replaced.
   other source files by using XREF
 * XREF - sections, reference a label that has been declared as global in
   another file by using XDEF
+
+
+-0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+Label Pool
+----------
+
+
+Add a label pool for temporary address labels. This is similar to how
+stack frame variables are assigned in C.
+
+A label pool is a mini stack of addresses that can be assigned as
+temporary labels with a scope ('{' and '}'). This can be handy for large
+functions trying to minimize use of zero page addresses, the function can
+declare a range (or set of ranges) of available zero page addresses and
+labels can be assigned within a scope and be deleted on scope closure.
+
+The format of a label pool is: "pool [pool name] start-end, start-end"
+and labels can then be allocated from that range by
+
+  [pool name] [label name][.b][.w]
+
+where .b means allocate one byte and .w means allocate two bytes. The
+label pools themselves are local to the scope they are defined in so
+you can have label pools that are only valid for a section of your code.
+Label pools works with any addresses, not just zero page addresses.
+
+Example:
+```
+Function_Name: {
+    pool zpWork $f6-$100      ; zero page addresses for temporary labels
+    zpWork zpTrg.w            ; zpTrg will be $fe
+    zpWork zpSrc.w            ; zpSrc will be $fc
+
+    lda #>Src
+    sta zpSrc
+    lda #<Src
+    sta zpSrc+1
+    lda #>Dest
+    sta zpDst
+    lda #<Dest
+    sta zpDst+1
+
+    {
+        zpWork zpLen         ; zpLen will be $fb
+        lda #Length
+        sta zpLen
+    }
+    nop
+    {
+        zpWork zpOff         ; zpOff will be $fb (shared with zpLen)
+    }
+    rts
+```
+
+The following extensions are recognized:
+
+* [pool name] var (no extension is one byte)
+* [pool name] var.w (2 bytes)
+* [pool name] var.d (2 bytes)
+* [pool name] var.t (3 bytes)
+* [pool name] var.l (4 bytes)
+
 
 
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
