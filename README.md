@@ -2,6 +2,8 @@
 
 6502 Macro Assembler in a single c++ file using the struse single file text parsing library. Supports most syntaxes. x65 was recently named Asm6502 but was renamed because Asm6502 is too generic, x65 has no particular meaning.
 
+![x65](bin/x65.png)
+
 In order to minimize the documentation and make this page shorter I've moved the [old documentation](../../wiki/Previous-first-page) here.
 
 The [up to date documentation is here](x65.txt).
