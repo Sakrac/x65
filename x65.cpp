@@ -234,9 +234,11 @@ enum AssemblerDirective {
 	AD_TEXT,		// TEXT: Add text to output
 	AD_INCLUDE,		// INCLUDE: Load and assemble another file at this address
 	AD_INCBIN,		// INCBIN: Load and directly insert another file at this address
-	AD_CONST,		// CONST: Prevent a label from mutating during assemble
 	AD_IMPORT,		// IMPORT: Include or Incbin or Incobj or Incsym
+	AD_CONST,		// CONST: Prevent a label from mutating during assemble
 	AD_LABEL,		// LABEL: Create a mutable label (optional)
+	AD_STRING,		// STRING: Declare a string symbol
+	AD_UNDEF,		// UNDEF: remove a string or a label
 	AD_INCSYM,		// INCSYM: Reference labels from another assemble
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
 	AD_IF,			// #IF: Conditional assembly follows based on expression
@@ -304,7 +306,8 @@ enum EvalOperator {
 	EVOP_STP,		// u, Unexpected input, should stop and evaluate what we have
 	EVOP_NRY,		// v, Not ready yet
 	EVOP_XRF,		// w, value from XREF label
-	EVOP_ERR,		// x, Error
+	EVOP_EXP,		// x, sub expression
+	EVOP_ERR,		// y, Error
 };
 
 // Opcode encoding
@@ -940,6 +943,8 @@ DirectiveName aDirectiveNames[] {
 	{ "IMPORT", AD_IMPORT },
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
+	{ "STRING", AD_STRING },
+	{ "UNDEF", AD_UNDEF },
 	{ "INCSYM", AD_INCSYM },
 	{ "LABPOOL", AD_LABPOOL },
 	{ "POOL", AD_LABPOOL },
@@ -1274,6 +1279,24 @@ public:
 	bool reference;			// this label is accessed from external and can't be used for evaluation locally
 } Label;
 
+
+// String data
+typedef struct {
+public:
+	strref string_name;		// name of the string
+	strref string_const;	// string contents if source reference
+	strovl string_value;	// string contents if modified, initialized to null string
+
+	StatusCode Append(strref append);
+	StatusCode ParseLine(strref line);
+
+	strref get() { return string_value.valid() ? string_value.get_strref() : string_const; }
+	void clear() { if (string_value.cap()) { free(string_value.charstr());
+					string_value.invalidate(); string_value.clear(); }
+					string_const.clear();
+	}
+} StringSymbol;
+
 // If an expression can't be evaluated immediately, this is required
 // to reconstruct the result when it can be.
 typedef struct {
@@ -1408,6 +1431,7 @@ public:
 class Asm {
 public:
 	pairArray<unsigned int, Label> labels;
+	pairArray<unsigned int, StringSymbol> strings;
 	pairArray<unsigned int, Macro> macros;
 	pairArray<unsigned int, LabelPool> labelPools;
 	pairArray<unsigned int, LabelStruct> labelStructs;
@@ -1528,7 +1552,7 @@ public:
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
 								 EvalOperator prev_op, short &section, int &value);
 	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
-						  EvalOperator prev_op, short &section, int &value);
+		EvalOperator prev_op, short &section, int &value, strref &subexp);
 	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
 	void SetEvalCtxDefaults(struct EvalContext &etx);
 	int ReptCnt() const;
@@ -1541,7 +1565,13 @@ public:
 	StatusCode AssignLabel(strref label, strref line, bool make_constant = false);
 	StatusCode AddressLabel(strref label);
 	void LabelAdded(Label *pLabel, bool local = false);
-	void IncludeSymbols(strref line);
+	StatusCode IncludeSymbols(strref line);
+
+	// Strings
+	StringSymbol *GetString(strref string_name);
+	StringSymbol *AddString(strref string_name, strref string_value);
+	StatusCode StringAction(StringSymbol *pStr, strref line);
+	StatusCode ParseStringOp(StringSymbol *pStr, strref line);
 
 	// Manage locals
 	void MarkLabelLocal(strref label, bool scope_label = false);
@@ -1564,6 +1594,8 @@ public:
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
 	StatusCode Directive_Rept(strref line, strref source_file);
 	StatusCode Directive_Macro(strref line, strref source_file);
+	StatusCode Directive_String(strref line);
+	StatusCode Directive_Undef(strref line);
 	StatusCode Directive_Include(strref line);
 	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
 	StatusCode Directive_Import(strref line);
@@ -1630,6 +1662,12 @@ void Asm::Cleanup() {
 	labels.clear();
 	macros.clear();
 	allSections.clear();
+	for (unsigned int i = 0; i < strings.count(); ++i) {
+		StringSymbol &str = strings.getValue(i);
+		if (str.string_value.cap())
+			free(str.string_value.charstr());
+	}
+	strings.clear();
 	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti !=externals.end(); ++exti)
 		exti->labels.clear();
 	externals.clear();
@@ -3111,7 +3149,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value)
+EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value, strref &subexp)
 {
 	char c = exp.get_first();
 	switch (c) {
@@ -3165,6 +3203,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
 				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
+				if (!pLabel) { if (StringSymbol *pStr = GetString(label)) subexp = pStr->get(); return EVOP_EXP; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
@@ -3200,10 +3239,15 @@ static int mul_as_shift(int scalar)
 	return scalar == 1 ? shift : 0;
 }
 
+#define MAX_EXPR_STACK 2
+
 StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx, int &result)
 {
 	int numValues = 0;
 	int numOps = 0;
+
+	strref expression_stack[MAX_EXPR_STACK];
+	int exp_sp = 0;
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
@@ -3217,19 +3261,29 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		char op_stack[MAX_EVAL_OPER];
 		EvalOperator prev_op = EVOP_NONE;
 		expression.trim_whitespace();
-		while (expression) {
+		while (expression || exp_sp) {
 			int value = 0;
 			short section = -1, index_section = -1;
 			EvalOperator op = EVOP_NONE;
-			if (syntax == SYNTAX_MERLIN)
+			strref subexp;
+			if (!expression && exp_sp) {
+				expression = expression_stack[--exp_sp];
+				op = EVOP_RPR;
+			} else if (syntax == SYNTAX_MERLIN)
 				op = RPNToken_Merlin(expression, etx, prev_op, section, value);
 			else
-				op = RPNToken(expression, etx, prev_op, section, value);
+				op = RPNToken(expression, etx, prev_op, section, value, subexp);
 			if (op == EVOP_ERR)
 				return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
 			else if (op == EVOP_NRY)
 				return STATUS_NOT_READY;
-			else if (op == EVOP_XRF) {
+			else if (op == EVOP_EXP) {
+				if (exp_sp >= MAX_EXPR_STACK)
+					return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
+				expression_stack[exp_sp++] = expression;
+				expression = subexp;
+				op = EVOP_LPR;
+			} else if (op == EVOP_XRF) {
 				xrefd = true;
 				op = EVOP_VAL;
 			}
@@ -4016,7 +4070,7 @@ StatusCode Asm::AddressLabel(strref label)
 }
 
 // include symbols listed from a .sym file or all if no listing
-void Asm::IncludeSymbols(strref line)
+StatusCode Asm::IncludeSymbols(strref line)
 {
 	strref symlist = line.before('"').get_trimmed_ws();
 	line = line.between('"', '"');
@@ -4044,10 +4098,143 @@ void Asm::IncludeSymbols(strref line)
 			}
 		}
 		loadedData.push_back(buffer);
-	}
+	} else
+		return ERROR_COULD_NOT_INCLUDE_FILE;
+	return STATUS_OK;
 }
 
+// Get a string record if it exists
+StringSymbol *Asm::GetString(strref string_name)
+{
+	unsigned int string_hash = string_name.fnv1a();
+	unsigned int index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
+	while (index < strings.count() && string_hash == strings.getKey(index)) {
+		if (string_name.same_str(strings.getValue(index).string_name))
+			return strings.getValues() + index;
+		index++;
+	}
+	return nullptr;
+}
 
+// Add or modify a string record
+StringSymbol *Asm::AddString(strref string_name, strref string_value)
+{
+	StringSymbol *pStr = GetString(string_name);
+	if (pStr==nullptr) {
+		unsigned int string_hash = string_name.fnv1a();
+		unsigned int index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
+		strings.insert(index, string_hash);
+		pStr = strings.getValues() + index;
+		pStr->string_name = string_name;
+		pStr->string_value.invalidate();
+		pStr->string_value.clear();
+	}
+	if (pStr->string_value.cap()) {
+		free(pStr->string_value.charstr());
+		pStr->string_value.invalidate();
+		pStr->string_value.clear();
+	}
+	pStr->string_const = string_value;
+	return pStr;
+}
+
+// append a string to another string
+StatusCode StringSymbol::Append(strref append)
+{
+	if (!append)
+		return STATUS_OK;
+
+	strl_t add_len = append.get_len();
+
+	if (!string_value.cap()) {
+		strl_t new_len = (add_len + 0xff)&(~(strl_t)0xff);
+		char *buf = (char*)malloc(new_len);
+		if (!buf)
+			return ERROR_OUT_OF_MEMORY;
+		string_value.set_overlay(buf, new_len);
+		string_value.copy(string_const);
+	} else if (string_value.cap() < (string_value.get_len() + add_len)) {
+		strl_t new_len = (string_value.get_len() + add_len + 0xff)&(~(strl_t)0xff);
+		char *buf = (char*)malloc(new_len);
+		if (!buf)
+			return ERROR_OUT_OF_MEMORY;
+		strovl ovl(buf, new_len);
+		ovl.copy(string_value.get_strref());
+		free(string_value.charstr());
+		string_value.set_overlay(buf, new_len);
+	}
+	string_const.clear();
+	string_value.append(append);
+	return STATUS_OK;
+}
+
+StatusCode Asm::ParseStringOp(StringSymbol *pStr, strref line)
+{
+	line.skip_whitespace();
+	if (line[0] == '+')
+		++line;
+	for (;;) {
+		line.skip_whitespace();
+		if (line[0] == '"') {
+			strref substr = line.between('"', '"');
+			line += substr.get_len() + 2;
+			pStr->Append(substr);
+		} else {
+			strref label = line.split_range(syntax == SYNTAX_MERLIN ?
+				label_end_char_range_merlin : label_end_char_range);
+			if (StringSymbol *pStr2 = GetString(label))
+				pStr->Append(pStr2->get());
+			else if (Label *pLabel = GetLabel(label)) {
+				if (!pLabel->evaluated)
+					return ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY;
+				strown<32> lblstr;
+				lblstr.sprintf("$%x", pLabel->value);
+				pStr->Append(lblstr.get_strref());
+			} else
+				break;
+		}
+		line.skip_whitespace();
+		if (!line || line[0] != '+')
+			break;
+		++line;
+		line.skip_whitespace();
+	}
+	return STATUS_OK;
+}
+
+StatusCode Asm::StringAction(StringSymbol *pStr, strref line)
+{
+	line.skip_whitespace();
+	if (line[0] == '+' && line[1] == '=') {	// append strings
+		line += 2;
+		line.skip_whitespace();
+		return ParseStringOp(pStr, line);
+	} else if (line[0] == '=') {
+		++line;
+		line.skip_whitespace();
+		pStr->clear();
+		return ParseStringOp(pStr, line);
+	} else {
+		strref str = pStr->string_value.valid() ?
+			pStr->string_value.get_strref() : pStr->string_const;
+		if (!str)
+			return STATUS_OK;
+		char *macro = (char*)malloc(str.get_len());
+		strovl mac(macro, str.get_len());
+		mac.copy(str);
+		mac.replace("\\n", "\n");
+		loadedData.push_back(macro);
+		contextStack.push(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
+		if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
+			return ERROR_TOO_DEEP_SCOPE;
+		else
+			scope_address[++scope_depth] = CurrSection().GetPC();
+		contextStack.curr().scoped_context = true;
+		return STATUS_OK;
+
+	}
+	return STATUS_OK;
+}
 
 //
 //
@@ -4251,6 +4438,62 @@ StatusCode Asm::Directive_Macro(strref line, strref source_file)
 	return STATUS_OK;
 }
 
+// string: create a symbolic string
+StatusCode Asm::Directive_String(strref line)
+{
+	line.skip_whitespace();
+	strref string_name = line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0);
+	if (line[0]=='=' || keyword_equ.is_prefix_word(line)) {
+		line.next_word_ws();
+		strref substr = line;
+		if (line[0] == '"') {
+			substr = line.between('"', '"');
+			line += substr.get_len() + 2;
+			StringSymbol *pStr = AddString(string_name, substr);
+			if (pStr == nullptr)
+				return ERROR_OUT_OF_MEMORY;
+			line.skip_whitespace();
+			if (line[0] == '+')
+				return ParseStringOp(pStr, line);
+		} else {
+			StringSymbol *pStr = AddString(string_name, strref());
+			return ParseStringOp(pStr, line);
+		}
+	} else {
+		if (!AddString(string_name, strref()))
+			return ERROR_OUT_OF_MEMORY;
+	}
+	return STATUS_OK;
+}
+
+StatusCode Asm::Directive_Undef(strref line)
+{
+	strref name = line.split_range_trim(syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+	unsigned int name_hash = name.fnv1a();
+	unsigned int index = FindLabelIndex(name_hash, labels.getKeys(), labels.count());
+	while (index < labels.count() && name_hash == labels.getKey(index)) {
+		if (name.same_str(labels.getValue(index).label_name)) {
+			labels.remove(index);
+			return STATUS_OK;
+		}
+		index++;
+	}
+	index = FindLabelIndex(name_hash, strings.getKeys(), strings.count());
+	while (index < strings.count() && name_hash == strings.getKey(index)) {
+		if (name.same_str(strings.getValue(index).string_name)) {
+			StringSymbol str = strings.getValue(index);
+			if (str.string_value.cap()) {
+				free(str.string_value.charstr());
+				str.string_value.invalidate();
+			}
+			strings.remove(index);
+			return STATUS_OK;
+		}
+		index++;
+	}
+	return STATUS_OK;
+}
+
 // include: read in a source file and assemble at this point
 StatusCode Asm::Directive_Include(strref line)
 {
@@ -4355,10 +4598,16 @@ StatusCode Asm::Directive_Import(strref line)
 		line += import_text.get_len();
 		line.skip_whitespace();
 		strref text_type = "petscii";
-		if (line[0]!='"') {
-			text_type = line.get_word_ws();
-			line += text_type.get_len();
-			line.skip_whitespace();
+		while (line[0]!='"') {
+			strref word = line.get_word_ws();
+			if (word.same_str("petscii") || word.same_str("petscii_shifted")) {
+				text_type = line.get_word_ws();
+				line += text_type.get_len();
+				line.skip_whitespace();
+			} else if (StringSymbol *pStr = GetString(line.get_word_ws())) {
+				line = pStr->get();
+				break;
+			}
 		}
 		CurrSection().AddText(line, text_type);
 		return STATUS_OK;
@@ -4369,8 +4618,7 @@ StatusCode Asm::Directive_Import(strref line)
 	} else if (import_symbols.is_prefix_word(line)) {
 		line += import_symbols.get_len();
 		line.skip_whitespace();
-		IncludeSymbols(line);
-		return STATUS_OK;
+		return IncludeSymbols(line);
 	}
 	
 	return STATUS_OK;
@@ -4570,20 +4818,44 @@ StatusCode Asm::Directive_EVAL(strref line)
 	line.trim_whitespace();
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
+	strref lab1 = line;
+	lab1 = lab1.split_token_any_trim(syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+	StringSymbol *pStr = line.same_str_case(lab1) ? GetString(lab1) : nullptr;
+
 	if (line && EvalExpression(line, etx, value) == STATUS_OK) {
 		if (description) {
-			printf("EVAL(%d): " STRREF_FMT ": \"" STRREF_FMT "\" = $%x\n",
-				contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line), value);
+			if (pStr != nullptr) {
+				printf("EVAL(%d): " STRREF_FMT ": \"" STRREF_FMT "\" = \"" STRREF_FMT "\" = $%x\n",
+					contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line), STRREF_ARG(pStr->get()), value);
+			} else {
+				printf("EVAL(%d): " STRREF_FMT ": \"" STRREF_FMT "\" = $%x\n",
+					contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line), value);
+			}
 		} else {
-			printf("EVAL(%d): \"" STRREF_FMT "\" = $%x\n",
-				contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line), value);
+			if (pStr != nullptr) {
+				printf("EVAL(%d): \"" STRREF_FMT "\" = \"" STRREF_FMT "\" = $%x\n",
+					contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line), STRREF_ARG(pStr->get()), value);
+			} else {
+				printf("EVAL(%d): \"" STRREF_FMT "\" = $%x\n",
+					contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line), value);
+			}
 		}
 	} else if (description) {
-		printf("EVAL(%d): \"" STRREF_FMT ": " STRREF_FMT"\"\n",
-			contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line));
+		if (pStr != nullptr) {
+			printf("EVAL(%d): " STRREF_FMT ": \"" STRREF_FMT "\" = \"" STRREF_FMT "\"\n",
+				contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line), STRREF_ARG(pStr->get()));
+		} else {
+			printf("EVAL(%d): \"" STRREF_FMT ": " STRREF_FMT"\"\n",
+				contextStack.curr().source_file.count_lines(description) + 1, STRREF_ARG(description), STRREF_ARG(line));
+		}
 	} else {
-		printf("EVAL(%d): \"" STRREF_FMT "\"\n",
-			contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line));
+		if (pStr != nullptr) {
+			printf("EVAL(%d): \"" STRREF_FMT "\" = \"" STRREF_FMT "\"\n",
+				contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line), STRREF_ARG(pStr->get()));
+		} else {
+			printf("EVAL(%d): \"" STRREF_FMT "\"\n",
+				contextStack.curr().source_file.count_lines(line) + 1, STRREF_ARG(line));
+		}
 	}
 	return STATUS_OK;
 }
@@ -4774,8 +5046,20 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 			
 		case AD_TEXT: {		// text: add text within quotes
-			strref text_prefix = line.before('"').get_trimmed_ws();
-			line = line.between('"', '"');
+			strref text_prefix;
+			while (line[0] != '"') {
+				strref word = line.get_word_ws();
+				if (word.same_str("petscii") || word.same_str("petscii_shifted")) {
+					text_prefix = line.get_word_ws();
+					line += text_prefix.get_len();
+					line.skip_whitespace();
+				} else if (StringSymbol *pStr = GetString(line.get_word_ws())) {
+					line = pStr->get();
+					break;
+				}
+			}
+			if (line[0] == '"')
+				line = line.between('"', '"');
 			CurrSection().AddText(line, text_prefix);
 			break;
 		}
@@ -4803,10 +5087,15 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				error = ERROR_UNEXPECTED_LABEL_ASSIGMENT_FORMAT;
 			break;
 		}
+
+		case AD_STRING:
+			return Directive_String(line);
 			
+		case AD_UNDEF:
+			return Directive_Undef(line);
+
 		case AD_INCSYM:
-			IncludeSymbols(line);
-			break;
+			return IncludeSymbols(line);
 
 		case AD_LABPOOL: {
 			strref name = line.split_range_trim(word_char_range, line[0]=='.' ? 1 : 0);
@@ -4831,7 +5120,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				CheckConditionalDepth();	// Check if nesting
 				bool conditional_result;
 				error = EvalStatement(line, conditional_result);
-				if (GetLabel(line.get_trimmed_ws()) != nullptr)
+				strref name = line.get_trimmed_ws();
+				if (GetLabel(name) != nullptr || GetString(name) != nullptr)
 					ConsumeConditional();
 				else
 					SetConditional();
@@ -5432,7 +5722,10 @@ StatusCode Asm::BuildLine(strref line)
 						labPool++;
 					}
 					if (!gotConstruct) {
-						if (syntax==SYNTAX_MERLIN && strref::is_ws(line_start[0])) {
+						if (StringSymbol *pStr = GetString(label)) {
+							StringAction(pStr, line);
+							line.clear();
+						} else if (syntax==SYNTAX_MERLIN && strref::is_ws(line_start[0])) {
 							error = ERROR_UNDEFINED_CODE;
 						} else if (label[0]=='$' || strref::is_number(label[0]))
 							line.clear();
