@@ -230,6 +230,10 @@ preceeded by 'CONST' to prevent changes:
 BitmapStart = $2000
 CONST ColorMap EQU $400
 
+Symbols can be removed using the UNDEF directive
+
+UNDEF BitmapStart ; BitmapStart is no longer defined
+
 By using the -merlin command line argument x65 is in Merlin syntax mode
 which restrics labels to be in column 1 and everything else in column 2
 or higher. Merlin syntax also enables a number of Merlin specific assembler
@@ -620,6 +624,8 @@ name and an equal sign followed by a string expression.
 Strings can include value symbols which will be evaluated and represented
 by $ + the hexadecimal representation of the value.
 
+The UNDEF directive can be used to remove String Symbols.
+
 Example:
 
     STRING exp = "1 + 2 + 3"
@@ -647,6 +653,7 @@ Example:
 Directives for String Symbols
 
 * STRING - declare a string symbol
+* UNDEF - remove a string
 
 
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
@@ -695,6 +702,7 @@ optional symbol file.
   other source files by using XREF
 * XREF - sections, reference a label that has been declared as global in
   another file by using XDEF
+* UNDEF - symbols, erase a symbol or string
 
 
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
@@ -1071,6 +1079,7 @@ All Directives
 * BYTES - data, same as byte
 * CONST - symbols, declare assigned symbol as constant and if changed cause
   an error
+* UNDEF - symbols, erase a symbol or string
 * CPU - instructions, change target processor, valid arguments are: 6502,
   6502ill, 65C02, 65C02WDC, 65816; Same as PROCESSOR
 * DC - data, define comma separated bytes (default), words, triples or
@@ -1121,6 +1130,8 @@ All Directives
   6502ill, 65C02, 65C02WDC, 65816; Same as CPU
 * REPEAT - repeat a block of code a number of times, same as REPT
 * REPT - repeat a block of code a number of times, same as REPEAT
+* STRING - strings, declare a string that can be used in expressions or
+  assembled as if it was a macro.
 * SECTION - section, declare a section; Comma separated arguments are name,
   type, align where type is Code, Data, BSS or Zeropage
 * SEG - section, same as SECTION

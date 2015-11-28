@@ -947,6 +947,12 @@ enum RefType {
 	RT_COUNT
 };
 
+enum DataType {
+	DT_CODE,
+	DT_DATA,
+	DT_PTRS
+};
+
 const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data" };
 
 struct RefLink {
@@ -955,8 +961,10 @@ struct RefLink {
 };
 
 struct RefAddr {
-	int address:30;					// address
-	int data:2;						// 1 if data, 0 if code
+	int address:29;					// address
+	int data:3;						// 1 if data, 0 if code, 2 if pointers
+	strref label;					// user defined label
+	strref comment;
 	std::vector<RefLink> *pRefs;	// what is referencing this address
 
 	RefAddr() : address(-1), data(0), pRefs(nullptr) {}
@@ -970,17 +978,65 @@ static int _sortRefs(const void *A, const void *B)
 	return ((const RefAddr*)A)->address - ((const RefAddr*)B)->address;
 }
 
-void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, int init_data)
+static const strref kw_data("data");
+static const strref kw_code("code");
+static const strref kw_pointers("pointers");
+
+int GetLabelIndex(int addr) {
+	for (int i = 0; i<(int)refs.size(); i++) {
+		if (addr == refs[i].address)
+			return i;
+	}
+	return -1;
+}
+
+
+void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, int init_data, strref labels)
 {
 	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
-	refs.push_back(RefAddr(start_addr));
-	refs[0].pRefs = new std::vector<RefLink>();
-	if (init_data) {
-		refs[0].data = 1;
-		refs.push_back(RefAddr(start_addr+init_data));
-		refs[1].pRefs = new std::vector<RefLink>();
+
+	strref lab_parse = labels;
+	while (strref lab_line = labels.line()) {
+		strref name = lab_line.split_token_trim('=');
+		if (lab_line.get_first()=='$')
+			++lab_line;
+		unsigned int address = lab_line.ahextoui_skip();
+		lab_line.skip_whitespace();
+		if (lab_line.get_first()==',') {
+			++lab_line;
+			lab_line.skip_whitespace();
+		}
+
+		refs.push_back(RefAddr(address));
+		RefAddr &r = refs[refs.size()-1];
+		r.pRefs = new std::vector<RefLink>();
+		if (kw_data.is_prefix_word(lab_line)) {
+			r.data = 1;
+			lab_line += kw_data.get_len();
+		} else if (kw_code.is_prefix_word(lab_line)) {
+			r.data = 0;
+			lab_line += kw_code.get_len();
+		} else if (kw_pointers.is_prefix_word(lab_line)) {
+			r.data = 2;
+			lab_line += kw_pointers.get_len();
+		}
+		lab_line.trim_whitespace();
+		r.label = name;
+		r.comment = lab_line;
 	}
+
+	if (GetLabelIndex(start_addr)<0) {
+		refs.push_back(RefAddr(start_addr));
+		refs[refs.size()-1].pRefs = new std::vector<RefLink>();
+		refs[refs.size()-1].data = 1;
+	} if (init_data && GetLabelIndex(start_addr + init_data)<0) {
+		refs.push_back(RefAddr(start_addr+init_data));
+		refs[refs.size()-1].pRefs = new std::vector<RefLink>();
+	}
+
+	if (refs.size())
+		qsort(&refs[0], refs.size(), sizeof(RefAddr), _sortRefs);
 
 	unsigned char *mem_orig = mem;
 	size_t bytes_orig = bytes;
@@ -991,6 +1047,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 	addr += init_data;
 	bytes -= init_data;
+	mem += init_data;
 
 	while (bytes) {
 		unsigned char op = *mem++;
@@ -1079,66 +1136,91 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	int prev_op = 0xff;
 	addr += init_data;
 	bytes -= init_data;
+	mem += init_data;
+	bool cutoff = false;
 	while (bytes && curr_label<(int)refs.size()) {
 		unsigned char op = *mem++;
 		int curr = addr;
 		bytes--;
 		addr++;
-		if (opcodes == a65816_ops) {
-			if (op == 0xe2) {	// sep
-				if ((*mem)&0x20) acc_16 = false;
-				if ((*mem)&0x10) ind_16 = false;
-			} else if (op == 0xc2) { // rep
-				if ((*mem)&0x20) acc_16 = true;
-				if ((*mem)&0x10) ind_16 = true;
+		if (!was_data) {
+			if (opcodes == a65816_ops) {
+				if (op == 0xe2) {	// sep
+					if ((*mem)&0x20) acc_16 = false;
+					if ((*mem)&0x10) ind_16 = false;
+				} else if (op == 0xc2) { // rep
+					if ((*mem)&0x20) acc_16 = true;
+					if ((*mem)&0x10) ind_16 = true;
+				}
 			}
+
+			int arg_size = opcodes[op].arg_size;;
+			int mode = opcodes[op].addrMode;
+			switch (mode) {
+				case AM_IMM_DBL_A:
+					arg_size = acc_16 ? 2 : 1;
+					break;
+				case AM_IMM_DBL_I:
+					arg_size = ind_16 ? 2 : 1;
+					break;
+			}
+			if (arg_size > (int)bytes)
+				break;	// ended on partial instruction
+			addr += arg_size;
+			bytes -= arg_size;
+			mem += arg_size;
+		}
+		if (separator && curr_label>0 && curr!=refs[curr_label].address && !cutoff) {
+			int end_addr = curr_label<(int)refs.size() ? refs[curr_label].address : (int)(addr_orig + bytes_orig);
+			for (std::vector<RefAddr>::iterator k = refs.begin(); k!= refs.end(); ++k) {
+				std::vector<RefLink> &l = *k->pRefs;
+				std::vector<RefLink>::iterator r = l.begin();
+				while (r!=l.end()) {
+					if (r->instr_addr>=curr && r->instr_addr<end_addr)
+						r = l.erase(r);
+					else
+						++r;
+				}
+			}
+			cutoff = true;
 		}
 
-		int arg_size = opcodes[op].arg_size;;
-		int mode = opcodes[op].addrMode;
-		switch (mode) {
-			case AM_IMM_DBL_A:
-				arg_size = acc_16 ? 2 : 1;
-				break;
-			case AM_IMM_DBL_I:
-				arg_size = ind_16 ? 2 : 1;
-				break;
-		}
-		if (arg_size > (int)bytes)
-			break;	// ended on partial instruction
-		addr += arg_size;
-		bytes -= arg_size;
-		mem += arg_size;
-
-		if (curr == refs[curr_label].address) {
+		if (curr == refs[curr_label].address || (curr > refs[curr_label].address && prev_addr>=0)) {
+			if (curr != refs[curr_label].address && !refs[curr_label].label) {
+				refs[curr_label].address = prev_addr;
+			}
 			std::vector<RefLink> &pRefs = *refs[curr_label].pRefs;
 			if (curr_label < (int)refs.size()) {
-				bool prev_data = was_data;
-				was_data = separator && !(!was_data && op==0x4c && prev_op==0x4c);
-				for (size_t j = 0; j<pRefs.size(); ++j) {
-					RefType type = pRefs[j].type;
-					if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
-						separator = false;
-						was_data = false;
-						prev_data = false;
-						break;
-					}
-				}
-
-				if (!was_data && prev_data) {
-					bool only_data_ref = pRefs.size() ? true : false;
+				if (refs[curr_label].label) {
+					was_data = !!refs[curr_label].data;
+				} else {
+					bool prev_data = was_data;
+					was_data = separator && !(!was_data && ((op==0x4c || op==0x6c) && (prev_op==0x4c || prev_op==0x6c)));
 					for (size_t j = 0; j<pRefs.size(); ++j) {
 						RefType type = pRefs[j].type;
-						int ref_addr = pRefs[j].instr_addr;
-						if (type != RT_DATA && (type != RT_BRANCH || ref_addr<addr)) {
-							only_data_ref = false;
-							if (type != RT_BRANCH)
-								separator = false;
+						if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
+							separator = false;
+							was_data = false;
+							prev_data = false;
+							break;
 						}
 					}
-					was_data = only_data_ref;
+
+					if (!was_data && prev_data) {
+						bool only_data_ref = pRefs.size() ? true : false;
+						for (size_t j = 0; j<pRefs.size(); ++j) {
+							RefType type = pRefs[j].type;
+							int ref_addr = pRefs[j].instr_addr;
+							if (type != RT_DATA && (type != RT_BRANCH || ref_addr<addr)) {
+								only_data_ref = false;
+								if (type != RT_BRANCH)
+									separator = false;
+							}
+						}
+						was_data = only_data_ref;
+					}
+					refs[curr_label].data = was_data;
 				}
-				refs[curr_label].data = was_data;
 				if (was_data) {
 					int start = curr;
 					int end = (curr_label+1)<(int)refs.size() ? refs[curr_label+1].address : (int)(addr + bytes);
@@ -1156,17 +1238,14 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			}
 			curr_label++;
 		}
-		else if (curr > refs[curr_label].address && prev_addr>=0) {
-			refs[curr_label].address = prev_addr;
-			refs[curr_label].data = was_data;
-			curr_label++;
-		}
 
 		// after a separator if there is no jmp, jsr, brl begin data block
 		if (!was_data) {
-			if (op == 0x60 || op == 0x40 || op == 0x6b || op == 0x4c || op == 0x6c ||
-				op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+			if (op == 0x60 || op == 0x40 || op == 0x6b ||
+				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
+				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
+				cutoff = false;
 				for (size_t i = curr_label+1; i<refs.size() && (refs[i].address-curr)<0x7e; i++) {	// check no branch crossing
 					if (refs[i].address<=curr) {
 						std::vector<RefLink> &pRefs = *refs[i].pRefs;
@@ -1185,6 +1264,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		prev_addr = curr;
 	}
 
+	
 
 	int last = (int)refs.size()-1;
 	while (last>1 && refs[last-1].data) {
@@ -1211,16 +1291,35 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			++k;	// don't delete the initial label
 	}
 	while (k!=refs.end()) {
-		if (k->pRefs && k->pRefs->size()==0) {
+		if (k->pRefs && k->pRefs->size()==0 && !k->label) {
 			delete k->pRefs;
 			k = refs.erase(k);
 		} else
 			++k;
 	}
+
+	// remove duplicate labels
+	k = refs.begin();
+	while (k!=refs.end()) {
+		std::vector<RefAddr>::iterator n = k;
+		++n;
+		if (n != refs.end() && k->address == n->address) {
+			std::vector<RefLink> &pRefs = *k->pRefs;
+			std::vector<RefLink> &pRefs2 = *n->pRefs;
+			std::vector<RefLink>::iterator r = pRefs2.begin();
+			while (r != pRefs2.end()) {
+				pRefs.push_back(*r);
+				r = pRefs2.erase(r);
+			}
+			delete &pRefs2;
+			refs.erase(n);
+		}
+		++k;
+	}
 }
 
 static const char spacing[] = "                ";
-void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src, int init_data)
+void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src, int init_data, strref labels)
 {
 	FILE *f = stdout;
 	bool opened = false;
@@ -1234,20 +1333,19 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	const char *spc = src ? "" : spacing;
 
 	strref prev_src;
-	int prev_offs = 0;
 	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
 
 	refs.clear();
-	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes, init_data);
+	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes, init_data, labels);
 
 	int curr_label_index = 0;
 	bool separator = false;
 	bool is_data = refs.size() ? !!refs[0].data : false;
+	bool is_ptrs = is_data && refs[0].data==2;
 	strown<256> out;
-	int prev_op = 255;
+
 	while (bytes) {
-		bool data_to_code = false;
 		// Determine if current address is referenced from somewhere
 		while (curr_label_index<(int)refs.size() && addr >= refs[curr_label_index].address) {
 			struct RefAddr &ref = refs[curr_label_index];
@@ -1264,27 +1362,60 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 							lbl = (int)k;
 							prv_addr = refs[k].address;
 						}
-						out.sprintf("%s; Referenced from Label_%d + $%x (%s)\n", spc, lbl, ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
+						if (refs[lbl].label)
+							out.sprintf("%s; Referenced from " STRREF_FMT " + $%x (%s)\n", spc,
+										STRREF_ARG(refs[lbl].label), ref_addr - prv_addr,
+										aRefNames[(*ref.pRefs)[j].type]);
+						else
+							out.sprintf("%s; Referenced from Label_%d + $%x (%s)\n", spc, lbl,
+										ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
 					} else
-						out.sprintf("%s; Referenced from $%04x (%s)\n", spc, (*ref.pRefs)[j].instr_addr, aRefNames[(*ref.pRefs)[j].type]);
+						out.sprintf("%s; Referenced from $%04x (%s)\n", spc, (*ref.pRefs)[j].instr_addr,
+									aRefNames[(*ref.pRefs)[j].type]);
 					fputs(out.c_str(), f);
 				}
 			}
-			out.sprintf("%sLabel_%d: ; $%04x\n", spc, curr_label_index, addr);
+			out.clear();
+			if (refs[curr_label_index].comment)
+				out.sprintf_append("%s; " STRREF_FMT"\n", spc,	STRREF_ARG(refs[curr_label_index].comment));
+			if (refs[curr_label_index].label)
+				out.sprintf_append("%s" STRREF_FMT ": ; $%04x\n", spc,
+							STRREF_ARG(refs[curr_label_index].label), addr);
+			else
+				out.sprintf_append("%sLabel_%d: ; $%04x\n", spc, curr_label_index, addr);
 			fputs(out.c_str(), f);
 			is_data = !!refs[curr_label_index].data;
-			data_to_code = !is_data;
+			is_ptrs = is_data && refs[curr_label_index].data==2;
 			separator = false;
 			curr_label_index++;
-			if (curr_label_index < (int)refs.size() && refs[curr_label_index].data)
-				data_to_code = false;
 		}
 		if (src && (is_data || separator)) {
 			out.clear();
 			int left = end_addr - addr;
-			if (curr_label_index<(int)refs.size())
+			if (curr_label_index<(int)refs.size() && refs[curr_label_index].address<end_addr)
 				left = refs[curr_label_index].address - addr;
 			is_data = true;
+			if (is_ptrs) {
+				while (left>=2 && bytes>=2) {
+					out.clear();
+					out.copy("  dc.w ");
+					int a = mem[0] + (((unsigned short)mem[1])<<8);
+					int lbl = GetLabelIndex(a);
+					if (lbl>=0) {
+						if (refs[lbl].label) {
+							out.append(refs[lbl].label);
+							out.sprintf_append(" ; $%04x " STRREF_FMT "\n", a, STRREF_ARG(refs[lbl].comment));
+						} else
+							out.sprintf_append("Label_%d ; $%04x " STRREF_FMT "\n", lbl, a, STRREF_ARG(refs[lbl].comment));
+					} else
+						out.sprintf_append("$%04x\n", a);
+					fputs(out.c_str(), f);
+					mem += 2;
+					addr += 2;
+					bytes -= 2;
+					left -= 2;
+				}
+			}
 			for (int i = 0; i<left; i++) {
 				if (!(i&0xf)) {
 					if (i) {
@@ -1304,7 +1435,6 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				fputs(out.c_str(), f);
 			}
 			separator = false;
-			prev_op = 255;
 		} else {
 			int curr_addr = addr;
 			unsigned char op = *mem++;
@@ -1350,7 +1480,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 			int reference = -1;
 			separator = false;
-			if (op == 0x60 || op == 0x40 || op == 0x6b || (op == 0x4c && mem[arg_size] != 0x4c) ||
+			if (op == 0x60 || op == 0x40 || op == 0x6b ||
+				((op == 0x4c || op == 0x6c) && mem[arg_size] != 0x4c && mem[arg_size] != 0x6c) ||
 				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
 				for (size_t i = 0; i<refs.size(); i++) {
@@ -1377,15 +1508,19 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				reference = (int)mem[0] | ((int)mem[1])<<8;
 
 			strown<64> lblname;
-			if (reference>=start_addr && reference<=end_addr) {
-				for (size_t i = 0; i<refs.size(); ++i) {
-					if (reference >= refs[i].address) {
-						if (i==(refs.size()-1) || reference<refs[i+1].address) {
+			strref lblcmt;
+			for (size_t i = 0; i<refs.size(); ++i) {
+				if (reference == refs[i].address || 
+					(reference>=start_addr &&reference<=end_addr && reference>=refs[i].address)) {
+					if (i==(refs.size()-1) || reference<refs[i+1].address) {
+						if (refs[i].label)
+							lblname.copy(refs[i].label);
+						else
 							lblname.sprintf("Label_%d", i);
-							if (reference > refs[i].address)
-								lblname.sprintf_append(" + $%x", reference - refs[i].address);
-							break;
-						}
+						lblcmt = refs[i].comment;
+						if (reference > refs[i].address)
+							lblname.sprintf_append(" + $%x", reference - refs[i].address);
+						break;
 					}
 				}
 			}
@@ -1455,14 +1590,13 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 					break;
 			}
 			if (!src && lblname)
-				out.sprintf_append(" ; %s", lblname.c_str());
+				out.sprintf_append(" ; %s " STRREF_FMT, lblname.c_str(), STRREF_ARG(lblcmt));
 			else if (src && lblname)
-				out.sprintf_append(" ; $%04x", reference);
+				out.sprintf_append(" ; $%04x " STRREF_FMT, reference, STRREF_ARG(lblcmt));
 
 			mem += arg_size;
 			out.append('\n');
 			fputs(out.c_str(), f);
-			prev_op = op;
 		}
 		if (separator || (curr_label_index<(int)refs.size() &&
 				refs[curr_label_index].address==addr && is_data &&
@@ -1483,6 +1617,23 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 }
 
+strref read_text(const char *filename)
+{
+	if (filename) {
+		if (FILE *f = fopen(strown<512>(filename).c_str(), "rb")) {
+			fseek(f, 0, SEEK_END);
+			size_t size = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (char *buf = (char*)malloc(size)) {
+				fread(buf, size, 1, f);
+				fclose(f);
+				return strref(buf, (strl_t)size);
+			}
+		}
+	}
+	return  strref();
+}
+
 
 int main(int argc, char **argv)
 {
@@ -1498,6 +1649,7 @@ int main(int argc, char **argv)
 	bool prg = false;
 
 	const dismnm *opcodes = a6502_ops;
+	strref labels;
 
 	for (int i = 1; i < argc; i++) {
 		strref arg(argv[i]);
@@ -1527,6 +1679,8 @@ int main(int argc, char **argv)
 					int mx = arg.atoi();
 					ind_16 = !!(mx & 1);
 					acc_16 = !!(mx & 2);
+				} else if (var.same_str("labels")) {
+					labels = read_text(arg.get());
 				} else if (var.same_str("addr")) {
 					if (arg.get_first() == '$')
 						++arg;
@@ -1569,12 +1723,14 @@ int main(int argc, char **argv)
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
 					bytes = size_t(end - skip);
-				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src, data);
+				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src, data, labels);
 			}
 			free(mem);
 		}
 	} else {
-		puts("Usage:\nx65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816] [mx=0-3] [src]\n"
+		puts("Usage:\n"
+			 "x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]\n"
+			 "         [mx=0-3] [src] [labels=(labels.txt)]\n"
 			 " * binary: file which contains some 65xx series instructions\n"
 			 " * disasm.txt: output file (default is stdout)\n"
 			 " * $skip-$end: first byte offset to disassemble to last byte offset to disassemble\n"
@@ -1582,7 +1738,10 @@ int main(int argc, char **argv)
 			 " * prg: file is a c64 program file starting with the load address\n"
 			 " * cpu: set which cpu to disassemble for (default is 6502)\n"
 			 " * src: export near assemblable source with guesstimated data blocks\n"
-			 " * mx: set the mx flags which control accumulator and index register size\n");
+			 " * mx: set the mx flags which control accumulator and index register size\n"
+			 " * labels: define some labels with address and type (lbl=$addr,[code]/[data])\n");
 	}
+	if (labels)
+		free(const_cast<char*>(labels.get()));
 	return 0;
 }

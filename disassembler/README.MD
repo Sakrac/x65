@@ -9,18 +9,39 @@ Typical command line ([*] = optional):
 **Usage**
 
 ```
-x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816] [mx=0-3] [src] [prg]
+x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]
+         [mx=0-3] [src] [prg] [data=$xx] [labels=labels.lbl]
 ```
 
 * binary: file which contains some 65xx series instructions
 * disasm.txt: output file (default is stdout)
 * $skip-$end: first byte offset to disassemble to last byte offset to disassemble
-* addr: disassemble as if loaded at addr
+* addr: disassemble as if loaded at addr (addr)
+* data: this number of initial bytes in file is data and not code
 * prg: file is a c64 program file starting with the load address
 * cpu: set which cpu to disassemble for (default is 6502)
 * src: export near assemblable source with guesstimated data blocks
 * mx: set the mx flags which control accumulator and index register size
+* labels: import labels from a file (each line: label=$xxxx [code]/[data] comment)
 
+### Labels file format
+
+Labels is a text file with one label declaration per line followed by the address to assign and the
+type of block to represent (code or data or pointers) followed by an optional comment. The labels
+file makes the most sense together with the *src* command line argument.
+
+Example labels file:
+
+```
+Init = $1000 code Entry point into code
+SinTable = $1400 data 256 byte sinus table
+Interrupt = $10f3 code Interrupt code
+Callbacks = $1123 pointers Array of function pointers
+VIC_Sprite0_x = $d000 set sprite 0 x position
+VIC_Sprite0_y = $d001 set sprite 0 y position
+VIC_Sprite1_x = $d002 set sprite 1 x position
+VIC_Sprite1_y = $d003 set sprite 1 y position
+```
 
 Sample output:
 
