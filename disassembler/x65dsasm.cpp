@@ -786,7 +786,7 @@ struct dismnm a65816_ops[256] = {
 	{ "rtl", AM_NON, 0x00 },
 	{ "adc", AM_IMM_DBL_A, 0x01 },
 	{ "ror", AM_NON, 0x00 },
-	{ "???", AM_NON, 0x00 },
+	{ "rtl", AM_NON, 0x00 },
 	{ "jmp", AM_REL, 0x02 },
 	{ "adc", AM_ABS, 0x02 },
 	{ "ror", AM_ABS, 0x02 },
@@ -967,19 +967,30 @@ std::vector<RefAddr> refs;
 
 static int _sortRefs(const void *A, const void *B)
 {
-	return ((const RefLink*)A)->instr_addr - ((const RefLink*)B)->instr_addr;
+	return ((const RefAddr*)A)->address - ((const RefAddr*)B)->address;
 }
 
-void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes)
+void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, int init_data)
 {
 	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
 	refs.push_back(RefAddr(start_addr));
 	refs[0].pRefs = new std::vector<RefLink>();
+	if (init_data) {
+		refs[0].data = 1;
+		refs.push_back(RefAddr(start_addr+init_data));
+		refs[1].pRefs = new std::vector<RefLink>();
+	}
 
 	unsigned char *mem_orig = mem;
 	size_t bytes_orig = bytes;
 	int addr_orig = addr;
+
+	if (size_t(init_data)>bytes)
+		return;
+
+	addr += init_data;
+	bytes -= init_data;
 
 	while (bytes) {
 		unsigned char op = *mem++;
@@ -1060,13 +1071,15 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	mem = mem_orig;
 	bytes = bytes_orig;
 	addr = addr_orig;
-	int curr_label = 0;
+	int curr_label = init_data ? 1 : 0;
 	int prev_addr = -1;
-	bool was_data = false;
+	bool was_data = init_data>0;
 	refs[curr_label].data = 0;
 	bool separator = false;
 	int prev_op = 0xff;
-	while (bytes && curr_label<refs.size()) {
+	addr += init_data;
+	bytes -= init_data;
+	while (bytes && curr_label<(int)refs.size()) {
 		unsigned char op = *mem++;
 		int curr = addr;
 		bytes--;
@@ -1091,7 +1104,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				arg_size = ind_16 ? 2 : 1;
 				break;
 		}
-		if (arg_size > bytes)
+		if (arg_size > (int)bytes)
 			break;	// ended on partial instruction
 		addr += arg_size;
 		bytes -= arg_size;
@@ -1151,7 +1164,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 		// after a separator if there is no jmp, jsr, brl begin data block
 		if (!was_data) {
-			if (op == 0x60 || op == 0x40 || op == 0x68 || op == 0x4c || op == 0x6c ||
+			if (op == 0x60 || op == 0x40 || op == 0x6b || op == 0x4c || op == 0x6c ||
 				op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
 				for (size_t i = curr_label+1; i<refs.size() && (refs[i].address-curr)<0x7e; i++) {	// check no branch crossing
@@ -1192,8 +1205,11 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	}
 
 	std::vector<RefAddr>::iterator k = refs.begin();
-	if (k != refs.end())
+	if (k != refs.end()) {
 		++k;	// don't delete the initial label
+		if (init_data && k != refs.end())
+			++k;	// don't delete the initial label
+	}
 	while (k!=refs.end()) {
 		if (k->pRefs && k->pRefs->size()==0) {
 			delete k->pRefs;
@@ -1204,7 +1220,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 }
 
 static const char spacing[] = "                ";
-void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src)
+void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src, int init_data)
 {
 	FILE *f = stdout;
 	bool opened = false;
@@ -1223,17 +1239,17 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	int end_addr = addr + (int)bytes;
 
 	refs.clear();
-	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes);
+	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes, init_data);
 
 	int curr_label_index = 0;
 	bool separator = false;
-	bool is_data = false;
+	bool is_data = refs.size() ? !!refs[0].data : false;
 	strown<256> out;
 	int prev_op = 255;
 	while (bytes) {
 		bool data_to_code = false;
 		// Determine if current address is referenced from somewhere
-		while (curr_label_index<refs.size() && addr >= refs[curr_label_index].address) {
+		while (curr_label_index<(int)refs.size() && addr >= refs[curr_label_index].address) {
 			struct RefAddr &ref = refs[curr_label_index];
 			if (ref.pRefs) {
 				for (size_t j = 0; j<ref.pRefs->size(); ++j) {
@@ -1334,7 +1350,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 			int reference = -1;
 			separator = false;
-			if (op == 0x60 || op == 0x40 || op == 0x68 || (op == 0x4c && mem[arg_size] != 0x4c) ||
+			if (op == 0x60 || op == 0x40 || op == 0x6b || (op == 0x4c && mem[arg_size] != 0x4c) ||
 				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
 				for (size_t i = 0; i<refs.size(); i++) {
@@ -1441,14 +1457,16 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			if (!src && lblname)
 				out.sprintf_append(" ; %s", lblname.c_str());
 			else if (src && lblname)
-				out.sprintf_append(" ; $%4x", reference);
+				out.sprintf_append(" ; $%04x", reference);
 
 			mem += arg_size;
 			out.append('\n');
 			fputs(out.c_str(), f);
 			prev_op = op;
 		}
-		if (separator || ((curr_label_index)<refs.size() && refs[curr_label_index].address==addr && is_data && !refs[curr_label_index].data)) {
+		if (separator || (curr_label_index<(int)refs.size() &&
+				refs[curr_label_index].address==addr && is_data &&
+				!refs[curr_label_index].data)) {
 			fputs("\n", f);
 			fputs(spc, f);
 			fprintf(f, "; ------------- $%04x ------------- ;\n\n", addr);
@@ -1473,6 +1491,7 @@ int main(int argc, char **argv)
 	int skip = 0;
 	int end = 0;
 	int addr = 0x1000;
+	int data = 0;
 	bool acc_16 = true;
 	bool ind_16 = true;
 	bool src = false;
@@ -1512,6 +1531,12 @@ int main(int argc, char **argv)
 					if (arg.get_first() == '$')
 						++arg;
 					addr = arg.ahextoui();
+				} else if (var.same_str("data")) {
+					if (arg.get_first() == '$') {
+						++arg;
+						data = arg.ahextoui();
+					} else
+						data = arg.atoi();
 				} else if (var.same_str("cpu")) {
 					if (arg.same_str("65816"))
 						opcodes = a65816_ops;
@@ -1544,7 +1569,7 @@ int main(int argc, char **argv)
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
 					bytes = size_t(end - skip);
-				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src);
+				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src, data);
 			}
 			free(mem);
 		}
