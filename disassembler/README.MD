@@ -30,13 +30,20 @@ Labels is a text file with one label declaration per line followed by the addres
 type of block to represent (code or data or pointers) followed by an optional comment. The labels
 file makes the most sense together with the *src* command line argument.
 
+Addresses can define a range using a '-' after the address followed by an ending address.
+No automatic labels will be inserted within this range.
+
+A special data format is pointers indicating a function pointer table, the label should be
+defined with a range to limit the size. Each pointer within the pointer table will be
+assigned a code label.
+
 Example labels file:
 
 ```
 Init = $1000 code Entry point into code
 SinTable = $1400 data 256 byte sinus table
 Interrupt = $10f3 code Interrupt code
-Callbacks = $1123 pointers Array of function pointers
+Callbacks = $1123-$112b pointers Array of function pointers
 VIC_Sprite0_x = $d000 set sprite 0 x position
 VIC_Sprite0_y = $d001 set sprite 0 y position
 VIC_Sprite1_x = $d002 set sprite 1 x position
