@@ -961,14 +961,15 @@ struct RefLink {
 };
 
 struct RefAddr {
-	int address:29;					// address
+	int address;					// address
 	int data:3;						// 1 if data, 0 if code, 2 if pointers
+	int size:29;						// user specified size
 	strref label;					// user defined label
 	strref comment;
 	std::vector<RefLink> *pRefs;	// what is referencing this address
 
-	RefAddr() : address(-1), data(0), pRefs(nullptr) {}
-	RefAddr(int addr) : address(addr), data(0), pRefs(nullptr) {}
+	RefAddr() : address(-1), data(0), size(0), pRefs(nullptr) {}
+	RefAddr(int addr) : address(addr), data(0), size(0), pRefs(nullptr) {}
 };
 
 std::vector<RefAddr> refs;
@@ -996,21 +997,29 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
 
-	strref lab_parse = labels;
 	while (strref lab_line = labels.line()) {
 		strref name = lab_line.split_token_trim('=');
 		if (lab_line.get_first()=='$')
 			++lab_line;
 		unsigned int address = lab_line.ahextoui_skip();
+		int size = 0;
 		lab_line.skip_whitespace();
-		if (lab_line.get_first()==',') {
+		if (lab_line.get_first()=='-') {
 			++lab_line;
-			lab_line.skip_whitespace();
+			if (lab_line.get_first()=='$')
+				++lab_line;
+			size = lab_line.ahextoui_skip() - address;
+			if (size<0)
+				size = 0;
 		}
+		if (lab_line.get_first()==',')
+			++lab_line;
+		lab_line.skip_whitespace();
 
 		refs.push_back(RefAddr(address));
 		RefAddr &r = refs[refs.size()-1];
 		r.pRefs = new std::vector<RefLink>();
+		r.size = size;
 		if (kw_data.is_prefix_word(lab_line)) {
 			r.data = 1;
 			lab_line += kw_data.get_len();
@@ -1037,6 +1046,29 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 	if (refs.size())
 		qsort(&refs[0], refs.size(), sizeof(RefAddr), _sortRefs);
+
+	int last_user = (int)refs.size();
+	for (int i = 0; i<last_user; ++i) {
+		if (refs[i].data==2) {
+			int num = refs[i].size ? (refs[i].size/2) : ((refs[i+1].address - refs[i].address)/2);
+			unsigned char *p = mem + refs[i].address - addr;
+			for (int l = 0; l<num; l++) {
+				int a = p[0] + ((unsigned short)p[1]<<8);
+				int n = GetLabelIndex(a);
+				int nr = (int)refs.size();
+				struct RefLink ref = { 2*l + refs[i].address, RT_JSR };
+				if (n<0) {
+					refs.push_back(RefAddr(a));
+					refs[nr].pRefs = new std::vector<RefLink>();
+					refs[nr].data = 0;
+					refs[nr].pRefs->push_back(ref);
+				} else {
+					refs[n].pRefs->push_back(ref);
+				}
+				p += 2;
+			}
+		}
+	}
 
 	unsigned char *mem_orig = mem;
 	size_t bytes_orig = bytes;
@@ -1097,7 +1129,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		if (reference >= start_addr && reference <= end_addr && type != RT_NONE) {
 			bool found = false;
 			for (std::vector<RefAddr>::iterator i = refs.begin(); i != refs.end(); ++i) {
-				if (i->address == reference) {
+				if (i->address == reference || (reference>i->address && (reference-i->size)<i->address)) {
 					struct RefLink ref = { curr, type };
 					i->pRefs->push_back(ref);
 					found = true;
@@ -1170,15 +1202,17 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			bytes -= arg_size;
 			mem += arg_size;
 		}
-		if (separator && curr_label>0 && curr!=refs[curr_label].address && !cutoff) {
+		if (separator && curr_label>0 && refs[curr_label-1].data!=2 && curr!=refs[curr_label].address && !cutoff) {
 			int end_addr = curr_label<(int)refs.size() ? refs[curr_label].address : (int)(addr_orig + bytes_orig);
 			for (std::vector<RefAddr>::iterator k = refs.begin(); k!= refs.end(); ++k) {
 				std::vector<RefLink> &l = *k->pRefs;
 				std::vector<RefLink>::iterator r = l.begin();
 				while (r!=l.end()) {
-					if (r->instr_addr>=curr && r->instr_addr<end_addr)
+					if (r->instr_addr>=curr && r->instr_addr<end_addr) {
+						if (k->address>0x43c5 && k->address<0x4600)
+							printf("erasing for address $%04x\n", k->address);
 						r = l.erase(r);
-					else
+					}  else
 						++r;
 				}
 			}
@@ -1192,7 +1226,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			std::vector<RefLink> &pRefs = *refs[curr_label].pRefs;
 			if (curr_label < (int)refs.size()) {
 				if (refs[curr_label].label) {
-					was_data = !!refs[curr_label].data;
+					was_data = refs[curr_label].data==1;
 				} else {
 					bool prev_data = was_data;
 					was_data = separator && !(!was_data && ((op==0x4c || op==0x6c) && (prev_op==0x4c || prev_op==0x6c)));
@@ -1228,9 +1262,9 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 						std::vector<RefLink> &pRefs = *refs[k].pRefs;
 						std::vector<RefLink>::iterator r = pRefs.begin();
 						while (r != pRefs.end()) {
-							if (r->instr_addr>=start && r->instr_addr<end)
+							if (r->instr_addr>=start && r->instr_addr<end) {
 								r = pRefs.erase(r);
-							else
+							} else
 								++r;
 						}
 					}
@@ -1273,8 +1307,9 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			std::vector<RefLink> &pRefs = *refs[k].pRefs;
 			std::vector<RefLink>::iterator r = pRefs.begin();
 			while (r != pRefs.end()) {
-				if (r->instr_addr>=start_addr && r->instr_addr<end_addr)
+				if (r->instr_addr>=start_addr && r->instr_addr<end_addr) {
 					r = pRefs.erase(r);
+				}
 				else
 					++r;
 			}
@@ -1396,7 +1431,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				left = refs[curr_label_index].address - addr;
 			is_data = true;
 			if (is_ptrs) {
-				while (left>=2 && bytes>=2) {
+				int blk = refs[curr_label_index-1].size ? refs[curr_label_index-1].size : left;
+				while (left>=2 && bytes>=2 && blk) {
 					out.clear();
 					out.copy("  dc.w ");
 					int a = mem[0] + (((unsigned short)mem[1])<<8);
@@ -1414,6 +1450,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 					addr += 2;
 					bytes -= 2;
 					left -= 2;
+					blk -= 2;
 				}
 			}
 			for (int i = 0; i<left; i++) {
