@@ -961,15 +961,18 @@ struct RefLink {
 };
 
 struct RefAddr {
-	int address;					// address
-	int data:3;						// 1 if data, 0 if code, 2 if pointers
-	int size:29;						// user specified size
+	int address:29;					// address
+	int data:3;						// 0 if code, 1 if data, 2 if pointers
+	int size:16;					// user specified size
+	int local:1;					// nonzero if local label
+	int separator:1;				// nonzero if following a separator
+	int number:15;					// label count
 	strref label;					// user defined label
 	strref comment;
 	std::vector<RefLink> *pRefs;	// what is referencing this address
 
-	RefAddr() : address(-1), data(0), size(0), pRefs(nullptr) {}
-	RefAddr(int addr) : address(addr), data(0), size(0), pRefs(nullptr) {}
+	RefAddr() : address(-1), data(0), size(0), local(0), separator(0), number(-1), pRefs(nullptr) {}
+	RefAddr(int addr) : address(addr), data(0), size(0), local(0), separator(0), number(-1), pRefs(nullptr) {}
 };
 
 std::vector<RefAddr> refs;
@@ -1021,13 +1024,13 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		r.pRefs = new std::vector<RefLink>();
 		r.size = size;
 		if (kw_data.is_prefix_word(lab_line)) {
-			r.data = 1;
+			r.data = DT_DATA;
 			lab_line += kw_data.get_len();
 		} else if (kw_code.is_prefix_word(lab_line)) {
-			r.data = 0;
+			r.data = DT_CODE;
 			lab_line += kw_code.get_len();
 		} else if (kw_pointers.is_prefix_word(lab_line)) {
-			r.data = 2;
+			r.data = DT_PTRS;
 			lab_line += kw_pointers.get_len();
 		}
 		lab_line.trim_whitespace();
@@ -1038,7 +1041,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	if (GetLabelIndex(start_addr)<0) {
 		refs.push_back(RefAddr(start_addr));
 		refs[refs.size()-1].pRefs = new std::vector<RefLink>();
-		refs[refs.size()-1].data = 1;
+		refs[refs.size()-1].data = DT_DATA;
 	} if (init_data && GetLabelIndex(start_addr + init_data)<0) {
 		refs.push_back(RefAddr(start_addr+init_data));
 		refs[refs.size()-1].pRefs = new std::vector<RefLink>();
@@ -1049,7 +1052,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 	int last_user = (int)refs.size();
 	for (int i = 0; i<last_user; ++i) {
-		if (refs[i].data==2) {
+		if (refs[i].data==DT_PTRS) {
 			int num = refs[i].size ? (refs[i].size/2) : ((refs[i+1].address - refs[i].address)/2);
 			unsigned char *p = mem + refs[i].address - addr;
 			for (int l = 0; l<num; l++) {
@@ -1060,7 +1063,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				if (n<0) {
 					refs.push_back(RefAddr(a));
 					refs[nr].pRefs = new std::vector<RefLink>();
-					refs[nr].data = 0;
+					refs[nr].data = DT_CODE;
 					refs[nr].pRefs->push_back(ref);
 				} else {
 					refs[n].pRefs->push_back(ref);
@@ -1163,7 +1166,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	int curr_label = init_data ? 1 : 0;
 	int prev_addr = -1;
 	bool was_data = init_data>0;
-	refs[curr_label].data = 0;
+	refs[curr_label].data = DT_CODE;
 	bool separator = false;
 	int prev_op = 0xff;
 	addr += init_data;
@@ -1202,15 +1205,13 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			bytes -= arg_size;
 			mem += arg_size;
 		}
-		if (separator && curr_label>0 && refs[curr_label-1].data!=2 && curr!=refs[curr_label].address && !cutoff) {
+		if (separator && curr_label>0 && refs[curr_label-1].data!=DT_PTRS && curr!=refs[curr_label].address && !cutoff) {
 			int end_addr = curr_label<(int)refs.size() ? refs[curr_label].address : (int)(addr_orig + bytes_orig);
 			for (std::vector<RefAddr>::iterator k = refs.begin(); k!= refs.end(); ++k) {
 				std::vector<RefLink> &l = *k->pRefs;
 				std::vector<RefLink>::iterator r = l.begin();
 				while (r!=l.end()) {
 					if (r->instr_addr>=curr && r->instr_addr<end_addr) {
-						if (k->address>0x43c5 && k->address<0x4600)
-							printf("erasing for address $%04x\n", k->address);
 						r = l.erase(r);
 					}  else
 						++r;
@@ -1226,14 +1227,14 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			std::vector<RefLink> &pRefs = *refs[curr_label].pRefs;
 			if (curr_label < (int)refs.size()) {
 				if (refs[curr_label].label) {
-					was_data = refs[curr_label].data==1;
+					refs[curr_label].separator = 1;	// user labels are always global
+					was_data = refs[curr_label].data==DT_DATA;
 				} else {
 					bool prev_data = was_data;
 					was_data = separator && !(!was_data && ((op==0x4c || op==0x6c) && (prev_op==0x4c || prev_op==0x6c)));
 					for (size_t j = 0; j<pRefs.size(); ++j) {
 						RefType type = pRefs[j].type;
 						if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
-							separator = false;
 							was_data = false;
 							prev_data = false;
 							break;
@@ -1253,7 +1254,8 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 						}
 						was_data = only_data_ref;
 					}
-					refs[curr_label].data = was_data;
+					refs[curr_label].separator = separator;
+					refs[curr_label].data = was_data ? DT_DATA : DT_CODE;
 				}
 				if (was_data) {
 					int start = curr;
@@ -1272,6 +1274,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			}
 			curr_label++;
 		}
+		separator = false;
 
 		// after a separator if there is no jmp, jsr, brl begin data block
 		if (!was_data) {
@@ -1301,7 +1304,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	
 
 	int last = (int)refs.size()-1;
-	while (last>1 && refs[last-1].data) {
+	while (last>1 && refs[last-1].data!=DT_CODE) {
 		int start_addr = refs[last].address;
 		for (int k = 0; k<(int)refs.size(); ++k) {
 			std::vector<RefLink> &pRefs = *refs[k].pRefs;
@@ -1315,7 +1318,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			}
 		}
 		last--;
-		if (last<=1 || !refs[last].data)
+		if (last<=1 || refs[last].data==DT_CODE)
 			break;
 	}
 
@@ -1326,7 +1329,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			++k;	// don't delete the initial label
 	}
 	while (k!=refs.end()) {
-		if (k->pRefs && k->pRefs->size()==0 && !k->label) {
+		if (k->pRefs && k->pRefs->size()==0 && !k->label && !k->separator) {
 			delete k->pRefs;
 			k = refs.erase(k);
 		} else
@@ -1346,10 +1349,60 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				pRefs.push_back(*r);
 				r = pRefs2.erase(r);
 			}
+			if (n->separator)
+				k->separator = 1;
 			delete &pRefs2;
 			refs.erase(n);
 		}
 		++k;
+	}
+
+	// figure out which labels can be local
+
+	k = refs.begin();
+	int label_count_code_global = 1;
+	int label_count_data_global = 1;
+	while (k!=refs.end()) {
+		if (k->separator && k->data == DT_CODE) {
+			int address = k->address;
+			k->number = label_count_code_global++;
+
+			std::vector<RefAddr>::iterator f = k;	// f = first local
+			++f;
+			std::vector<RefAddr>::iterator e = f;	// e = end of locals
+			while (e!=refs.end()) {
+				if (e->label || e->data != DT_CODE)
+					break;
+				std::vector<RefLink> &r = *(e->pRefs);
+				bool ext_ref = false;
+				for (std::vector<RefLink>::iterator i = r.begin(); i!=r.end(); ++i) {
+					if ((i->type != RT_BRANCH && i->type != RT_DATA) || i->instr_addr<k->address) {
+						ext_ref = true;
+						break;
+					}
+				}
+				if (ext_ref)
+					break;
+				++e;
+			}
+			int label_count_code_local = 1;
+			while (f!=e) {
+				f->number = label_count_code_local++;
+				f->local = 1;
+				++f;
+			}
+			if (k!=e)
+				k = e;
+			else
+				++k;
+		} else {
+			k->local = 0;
+			if (k->data == DT_CODE)
+				k->number = label_count_code_global++;
+			else
+				k->number = label_count_data_global++;
+			++k;
+		}
 	}
 }
 
@@ -1376,8 +1429,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 	int curr_label_index = 0;
 	bool separator = false;
-	bool is_data = refs.size() ? !!refs[0].data : false;
-	bool is_ptrs = is_data && refs[0].data==2;
+	bool is_data = refs.size() ? (refs[0].data==DT_DATA || refs[0].data==DT_PTRS) : false;
+	bool is_ptrs = is_data && refs[0].data==DT_PTRS;
 	strown<256> out;
 
 	while (bytes) {
@@ -1401,9 +1454,20 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 							out.sprintf("%s; Referenced from " STRREF_FMT " + $%x (%s)\n", spc,
 										STRREF_ARG(refs[lbl].label), ref_addr - prv_addr,
 										aRefNames[(*ref.pRefs)[j].type]);
-						else
-							out.sprintf("%s; Referenced from Label_%d + $%x (%s)\n", spc, lbl,
-										ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
+						else {
+							out.sprintf("%s; Referenced from", spc);
+							if (refs[lbl].local) {
+								int lbl_glb = lbl;
+								while (lbl_glb>0 && refs[lbl_glb].local)
+									lbl_glb--;
+								if (refs[lbl].label)
+									out.append(refs[lbl].label);
+								else
+									out.sprintf_append(" %s_%d /", refs[lbl_glb].local ? ".l" : (refs[lbl_glb].data==DT_CODE ? "Code" : "Data"), refs[lbl_glb].number);
+							}
+							out.sprintf_append(" %s_%d + $%x (%s)\n",	refs[lbl].local ? ".l" : (refs[lbl].data==DT_CODE ? "Code" : "Data"),
+										refs[lbl].number, ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
+						}
 					} else
 						out.sprintf("%s; Referenced from $%04x (%s)\n", spc, (*ref.pRefs)[j].instr_addr,
 									aRefNames[(*ref.pRefs)[j].type]);
@@ -1417,10 +1481,12 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				out.sprintf_append("%s" STRREF_FMT ": ; $%04x\n", spc,
 							STRREF_ARG(refs[curr_label_index].label), addr);
 			else
-				out.sprintf_append("%sLabel_%d: ; $%04x\n", spc, curr_label_index, addr);
+				out.sprintf_append("%s%s_%d: ; $%04x\n", spc,
+					refs[curr_label_index].local ? ".l" : (refs[curr_label_index].data==DT_CODE ? "Code" : "Data"),
+					refs[curr_label_index].number, addr);
 			fputs(out.c_str(), f);
 			is_data = !!refs[curr_label_index].data;
-			is_ptrs = is_data && refs[curr_label_index].data==2;
+			is_ptrs = is_data && refs[curr_label_index].data==DT_PTRS;
 			separator = false;
 			curr_label_index++;
 		}
@@ -1442,7 +1508,9 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 							out.append(refs[lbl].label);
 							out.sprintf_append(" ; $%04x " STRREF_FMT "\n", a, STRREF_ARG(refs[lbl].comment));
 						} else
-							out.sprintf_append("Label_%d ; $%04x " STRREF_FMT "\n", lbl, a, STRREF_ARG(refs[lbl].comment));
+							out.sprintf_append("%s%s_%d: ; $%04x%s\n", spc,
+								refs[lbl].local ? ".l" : (refs[lbl].data==DT_CODE ? "Code" : "Data"),
+								refs[lbl].number, a, STRREF_ARG(refs[lbl].comment));
 					} else
 						out.sprintf_append("$%04x\n", a);
 					fputs(out.c_str(), f);
@@ -1553,7 +1621,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 						if (refs[i].label)
 							lblname.copy(refs[i].label);
 						else
-							lblname.sprintf("Label_%d", i);
+							lblname.sprintf("%s_%d", refs[i].local ? ".l" : (refs[i].data==DT_CODE ? "Code" : "Data"), refs[i].number);
 						lblcmt = refs[i].comment;
 						if (reference > refs[i].address)
 							lblname.sprintf_append(" + $%x", reference - refs[i].address);

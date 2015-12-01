@@ -24,6 +24,13 @@ x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]
 * mx: set the mx flags which control accumulator and index register size
 * labels: import labels from a file (each line: label=$xxxx [code]/[data] comment)
 
+### Updates
+
+* **Local labels** to improve code readability
+* Improvements to code vs data determination
+* Instrument labels through labels text file
+* **src** option attempts to generate valid assembler source
+
 ### Labels file format
 
 Labels is a text file with one label declaration per line followed by the address to assign and the
