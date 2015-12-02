@@ -89,6 +89,8 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Macros works within conditionals (if/else/endif, etc)
+* String symbols broke late evaluation resulting in garbage references, this has been fixed
 * Added string symbols
 * Resolved the DirectPage_Stack section vs. Zeropage section for Apple II GS/OS executables.
 * OMF export for Apple II GS/OS executables

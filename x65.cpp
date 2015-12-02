@@ -143,6 +143,7 @@ enum StatusCode {
 	ERROR_OUT_OF_MEMORY,
 	ERROR_CANT_WRITE_TO_FILE,
 	ERROR_ABORTED,
+	ERROR_CONDITION_TOO_NESTED,
 
 	STATUSCODE_COUNT
 };
@@ -212,6 +213,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Out of memory while building",
 	"Can not write to file",
 	"Assembly aborted",
+	"Condition too deeply nested",
 };
 
 // Assembler directives
@@ -1394,6 +1396,7 @@ typedef struct {
 	strref next_source;		// next position/length in source file
 	short repeat;			// how many times to repeat this code segment
 	short repeat_total;		// initial number of repeats for this code segment
+	short conditional_ctx;	// conditional depth at root of this context
 	bool scoped_context;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
@@ -1464,7 +1467,7 @@ public:
 	AsmSyntax syntax;
 
 	// Conditional assembly vars
-	int conditional_depth;
+	int conditional_depth;		// conditional depth / base depth for context
 	strref conditional_source[MAX_CONDITIONAL_DEPTH];	// start of conditional for error report
 	char conditional_nesting[MAX_CONDITIONAL_DEPTH];
 	bool conditional_consumed[MAX_CONDITIONAL_DEPTH];
@@ -1490,6 +1493,10 @@ public:
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
+
+	// Push a new context and handle enter / exit of context
+	StatusCode PushContext(strref src_name, strref src_file, strref code_seg, int rept = 1);
+	StatusCode PopContext();
 
 	// Generate assembler listing if requested
 	bool List(strref filename);
@@ -2675,6 +2682,41 @@ StatusCode Asm::ExitScope()
 }
 
 
+//
+//
+// CONTEXT ISOLATION
+//
+//
+
+
+StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, int rept)
+{
+	if (conditional_depth>=MAX_CONDITIONAL_DEPTH)
+		return ERROR_CONDITION_TOO_NESTED;
+	conditional_depth++;
+	conditional_nesting[conditional_depth] = 0;
+	conditional_consumed[conditional_depth] = false;
+	contextStack.push(src_name, src_file, code_seg, rept);
+	contextStack.curr().conditional_ctx = conditional_depth;
+	return STATUS_OK;
+}
+
+StatusCode Asm::PopContext()
+{
+	if (contextStack.curr().scoped_context && scope_depth) {
+		StatusCode ret = ExitScope();
+		if (ret != STATUS_OK)
+			return ret;
+	}
+	if (!ConditionalAsm() || ConditionalConsumed() ||
+		conditional_depth!=contextStack.curr().conditional_ctx)
+		return ERROR_UNTERMINATED_CONDITION;
+
+	conditional_depth = contextStack.curr().conditional_ctx-1;
+	contextStack.pop();
+	return STATUS_OK;
+}
+
 
 //
 //
@@ -2836,7 +2878,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 					macexp.replace_bookend(tag.get_strref(), a, label_end_char_range_merlin);
 				}
 			}
-			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			if (scope_depth>=(MAX_SCOPE_DEPTH-1))
 				return ERROR_TOO_DEEP_SCOPE;
 			else
@@ -2869,9 +2911,9 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				strref a = arg_list.split_token_trim(token);
 				macexp.replace_bookend(param, a, label_end_char_range);
 			}
-			contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			if (end_macro_directive) {
-				contextStack.push(m.source_name, macexp.get_strref(), macexp.get_strref());
+				PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 				if (scope_depth>=(MAX_SCOPE_DEPTH-1))
 					return ERROR_TOO_DEEP_SCOPE;
 				else
@@ -2882,7 +2924,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 		} else
 			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
 	}
-	contextStack.push(m.source_name, m.source_file, macro_src);
+	PushContext(m.source_name, m.source_file, macro_src);
 	return STATUS_OK;
 }
 
@@ -3203,7 +3245,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
 				}
 				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
-				if (!pLabel) { if (StringSymbol *pStr = GetString(label)) subexp = pStr->get(); return EVOP_EXP; }
+				if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
@@ -4224,7 +4266,7 @@ StatusCode Asm::StringAction(StringSymbol *pStr, strref line)
 		mac.copy(str);
 		mac.replace("\\n", "\n");
 		loadedData.push_back(macro);
-		contextStack.push(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
+		PushContext(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
 		if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
 			return ERROR_TOO_DEEP_SCOPE;
 		else
@@ -4255,7 +4297,7 @@ bool Asm::NewConditional() {
 
 // Encountered #endif, close out the current conditional
 void Asm::CloseConditional() {
-	if (conditional_depth)
+	if (conditional_depth>contextStack.curr().conditional_ctx)
 		conditional_depth--;
 	else
 		conditional_consumed[conditional_depth] = false;
@@ -4419,7 +4461,7 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 		} else
 			recur = read_source.scoped_block_skip();
 		ctx.next_source = read_source;
-		contextStack.push(ctx.source_name, ctx.source_file, recur, count);
+		PushContext(ctx.source_name, ctx.source_file, recur, count);
 	}
 	return STATUS_OK;
 }
@@ -4505,27 +4547,27 @@ StatusCode Asm::Directive_Include(strref line)
 	if ((buffer = LoadText(file, size))) {
 		loadedData.push_back(buffer);
 		strref src(buffer, strl_t(size));
-		contextStack.push(file, src, src);
+		PushContext(file, src, src);
 	} else if (syntax == SYNTAX_MERLIN) {
 		// MERLIN include file name rules
 		if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
 			loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
 			strref src(buffer, strl_t(size));
-			contextStack.push(file+1, src, src);
+			PushContext(file+1, src, src);
 		} else {
 			strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
 			fileadd.append(".s");
 			if ((buffer = LoadText(fileadd.get_strref(), size))) {
 				loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
 				strref src(buffer, strl_t(size));
-				contextStack.push(file, src, src);
+				PushContext(file, src, src);
 			} else {
 				fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
 				fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
 				if ((buffer = LoadText(fileadd.get_strref(), size))) {
 					loadedData.push_back(buffer);
 					strref src(buffer, strl_t(size));
-					contextStack.push(file, src, src);
+					PushContext(file, src, src);
 				}
 			}
 		}
@@ -5745,13 +5787,13 @@ StatusCode Asm::BuildLine(strref line)
 		}
 		// Check for unterminated condition in source
 		if (!contextStack.curr().next_source &&
-			(!ConditionalAsm() || ConditionalConsumed() || conditional_depth)) {
+			(!ConditionalAsm() || ConditionalConsumed() || !conditional_depth)) {
 			if (syntax == SYNTAX_MERLIN) {	// this isn't a listed feature,
 				conditional_nesting[0] = 0;	//	some files just seem to get away without closing
 				conditional_consumed[0] = 0;
 				conditional_depth = 0;
 			} else {
-				PrintError(conditional_source[conditional_depth], error);
+				PrintError(conditional_source[conditional_depth], ERROR_UNTERMINATED_CONDITION);
 				return ERROR_UNTERMINATED_CONDITION;
 			}
 		}
@@ -6069,16 +6111,14 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 	SetCPU(cpu);
 
 	StatusCode error = STATUS_OK;
-	contextStack.push(filename, source, source);
+	PushContext(filename, source, source);
 
 	scope_address[scope_depth] = CurrSection().GetPC();
-	while (contextStack.has_work()) {
+	while (contextStack.has_work() && error == STATUS_OK) {
 		error = BuildSegment();
-		if (contextStack.curr().complete()) {
-			if (contextStack.curr().scoped_context && scope_depth)
-				ExitScope();
-			contextStack.pop();
-		} else
+		if (contextStack.curr().complete())
+			error = PopContext();
+		else
 			contextStack.curr().restart();
 	}
 	if (error == STATUS_OK) {
@@ -6108,7 +6148,9 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 				fwrite(errorText.get(), errorText.get_len(), 1, stderr);
 			}
 		}
-	}
+	} else
+		PrintError(&contextStack.curr() ?
+			contextStack.curr().read_source.get_line() : strref(), error);
 }
 
 
