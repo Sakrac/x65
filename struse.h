@@ -2782,7 +2782,7 @@ int strref::find_last_bookend(const strref str, const strref bookend) const
 				}
 			}
 			if (!left_check) {
-				if (string == scan_chk || bookend.char_matches_ranges(int_tolower_ascii7(*--cmp_chk)))
+				if (string == scan_chk || bookend.char_matches_ranges(int_tolower_ascii7(*--scan_chk)))
 					return left - str.length + 1;
 			}
 		}
@@ -4272,7 +4272,7 @@ strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t c
 			ps += ss;
 			while (ss >= 0 && strl_t(ss)<left) {
 				ps += len_a;
-				int sl = strref(ps, left - ss - len_a).find(a);
+				int sl = strref(ps, left - ss - len_a).find_bookend(a, bookend);
 				if (sl<0)
 					sl = left - ss - len_a;
 				if (len_b && b.get()) {
@@ -4281,10 +4281,15 @@ strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t c
 					while (r--)
 						*pd++ = *po++;
 				}
-				if (ps != pd && sl) {
-					int r = sl;
-					while (r--)
-						*pd++ = *ps++;
+				if (sl) {
+					if (ps != pd) {
+						int r = sl;
+						while (r--)
+							*pd++ = *ps++;
+					} else {
+						pd += sl;
+						ps += sl;
+					}
 				}
 				ss += len_a + sl;
 			}
