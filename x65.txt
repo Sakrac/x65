@@ -1155,3 +1155,115 @@ All Directives
 
 
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
+
+
+x65macro.i
+----------
+
+A collection of macros to simplify common tasks such as assigning values
+to addresses, moving values, addition and subtraction, memory copy
+options and a variety of C-like for loops.
+
+This is an example of how macros can be used:
+
+	jmp CodeEnd
+CopyCode:
+	{
+		inx
+		beq !
+		txa
+		bne %
+		tay
+		dey
+		nop
+	}
+CodeEnd:
+	sei
+
+	set.w CopyCode, $fc
+
+	for.ws $2000, $4000, $fe, CodeEnd-CopyCode
+	 copy.ry $fc, $fe, CodeEnd - CopyCode
+	forend
+	cli
+
+Included macros:
+
+set.b / .w / .t / .l Trg, Value
+  - set the contents of an 1-4 byte location to a value
+  - uses accumulator
+
+move.b / .w / .t / .l / .n Src,Trg
+  - copy 1-4 (or n) bytes from Src location to Trg location
+  - uses accumulator
+
+add.n Address1, Address2, Target, Bytes
+  - add contents of two memory locations into a target lcoation
+  - uses accumulator
+
+sub.n Address1, Address2, Target, Bytes
+  - Target = Address1 - Address2
+  - uses accumulator
+
+add.ni Address, Value, Target, Bytes
+  - add a fixed value to a memory location into a target
+  - uses accumulator
+
+sub.ni Address, Value, Target, Bytes
+  - Target = Address - Value
+  - uses accumulator
+
+addw.i Address, Value, Target
+  - Subtract 16 bit Value from contents of Address and store at Target
+  - uses accumulator
+
+subw.i Address1, Address2, Target
+  - add contents of two 16 bit addresses into a target 16 bit location
+  - uses accumulator
+
+mnop Count
+  - add Count nops
+
+copy.x Source, Target, Size
+  - copy up to 256 bytes using the x register as a counter
+  - uses accumulator and x register
+
+copy.y Source, Target, Size
+  - copy up to 256 bytes using the y register as a counter
+  - uses accumulator and y register
+
+copy.p Src,Trg,Size,PoolZP
+  - copy more than 256 bytes using zero page label pool addresses
+  - uses accumulator, x and y register
+
+copy.a Src,Trg,Size
+  - copy more than 256 bytes using absolute indexed in a loop
+  - uses accumulator, x and y register
+
+copy.zp Src,Trg,Size,zpTmp1,zpTmp2
+  - copy more than 256 bytes using two pairs of zero page values
+  - uses accumulator, x and y register
+
+for.x Start, End
+  - iterate using the x register from Start to End, End is not inclusive
+    so to iterate from 31 to 0 use for.x 31, -1
+  - uses x register
+  - end for loop with forend macro
+
+for.y Start, End
+  - same as for.x but with the y register
+  - uses y register
+  - end for loop with forend macro
+
+for.w Start, End, Counter
+  - for loop for 16 bit counter
+  - uses accumulator
+  - end for loop with forend macro
+
+for.ws Start, End, Counter, Step
+  - for loop for 16 bit counter with a step value
+  - uses accumulator
+  - end for loop with forend macro
+
+forend
+  - terminates for-loops
