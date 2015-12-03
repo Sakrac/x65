@@ -305,11 +305,12 @@ enum EvalOperator {
 	EVOP_EOR,		// r, ^
 	EVOP_SHL,		// s, <<
 	EVOP_SHR,		// t, >>
-	EVOP_STP,		// u, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// v, Not ready yet
-	EVOP_XRF,		// w, value from XREF label
-	EVOP_EXP,		// x, sub expression
-	EVOP_ERR,		// y, Error
+	EVOP_NEG,		// u, negate value
+	EVOP_STP,		// v, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// w, Not ready yet
+	EVOP_XRF,		// x, value from XREF label
+	EVOP_EXP,		// y, sub expression
+	EVOP_ERR,		// z, Error
 };
 
 // Opcode encoding
@@ -2757,7 +2758,8 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		} else
 			return ERROR_BAD_MACRO_FORMAT;
 	} else {
-		name = macro.split_label();
+		name = macro.split_range(label_end_char_range);
+		macro.skip_whitespace();
 		strref left_line = macro.get_line();
 		left_line.skip_whitespace();
 		left_line = left_line.before_or_full(';').before_or_full(c_comment);
@@ -3360,14 +3362,25 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			} else if (op == EVOP_STP) {
 				break;
 			} else {
-				while (sp) {
-					EvalOperator p = (EvalOperator)op_stack[sp-1];
-					if (p==EVOP_LPR || op>p)
-						break;
-					ops[numOps++] = p;
-					sp--;
+				bool skip = false;
+				if ((prev_op >= EVOP_EQU && prev_op <= EVOP_GTE) || (prev_op==EVOP_HIB || prev_op==EVOP_LOB)) {
+					if (op==EVOP_SUB)
+						op = EVOP_NEG;
+					else if (op == EVOP_ADD)
+						skip = true;
 				}
-				op_stack[sp++] = op;
+				if (op == EVOP_SUB && sp && op_stack[sp-1]== EVOP_SUB)
+					sp--;
+				else {
+					while (sp && !skip) {
+						EvalOperator p = (EvalOperator)op_stack[sp-1];
+						if (p==EVOP_LPR || op>p)
+							break;
+						ops[numOps++] = p;
+						sp--;
+					}
+					op_stack[sp++] = op;
+				}
 			}
 			// check for out of bounds or unexpected input
 			if (numValues==MAX_EVAL_VALUES)
@@ -3442,6 +3455,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 							section_counts[i][ri-1] -= section_counts[i][ri];
 						values[ri-1] -= values[ri];
 					} break;
+				case EVOP_NEG:
+					if (ri>=1)
+						values[ri-1] = -values[ri-1];
+					break;
 				case EVOP_MUL:	// *
 					ri--;
 					for (int i = 0; i<num_sections; i++)
@@ -4363,30 +4380,13 @@ StatusCode Asm::EvalStatement(strref line, bool &result)
 	int equ = line.find('=');
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
-	if (equ >= 0) {
-		// (EXP) == (EXP)
-		strref left = line.get_clipped(equ);
-		bool equal = left.get_last()!='!';
-		left.trim_whitespace();
-		strref right = line + equ + 1;
-		if (right.get_first()=='=')
-			++right;
-		right.trim_whitespace();
-		int value_left, value_right;
-		if (STATUS_OK != EvalExpression(left, etx, value_left))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		if (STATUS_OK != EvalExpression(right, etx, value_right))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		result = (value_left==value_right && equal) || (value_left!=value_right && !equal);
-	} else {
-		bool invert = line.get_first()=='!';
-		if (invert)
-			++line;
-		int value;
-		if (STATUS_OK != EvalExpression(line, etx, value))
-			return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
-		result = (value!=0 && !invert) || (value==0 && invert);
-	}
+	bool invert = line.get_first()=='!';
+	if (invert)
+		++line;
+	int value;
+	if (STATUS_OK != EvalExpression(line, etx, value))
+		return ERROR_CONDITION_COULD_NOT_BE_RESOLVED;
+	result = (value!=0 && !invert) || (value==0 && invert);
 	return STATUS_OK;
 }
 
@@ -7163,7 +7163,10 @@ int main(int argc, char **argv)
 									break;
 								}
 							}
-							fprintf(f, "al $%04x %s" STRREF_FMT "\n", value, i->name[0]=='.' ? "" : ".",
+							if (i->name.same_str("debugbreak"))
+								fprintf(f, "break $%04x\n", value);
+							else
+								fprintf(f, "al $%04x %s" STRREF_FMT "\n", value, i->name[0]=='.' ? "" : ".",
 									STRREF_ARG(i->name));
 						}
 						fclose(f);
