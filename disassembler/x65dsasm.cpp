@@ -1,6 +1,5 @@
-﻿
-//
-//  x65.cpp
+﻿//
+//  x65dsasm.cpp
 //  
 //
 //  Created by Carl-Henrik Skårstedt on 9/23/15.
@@ -944,6 +943,7 @@ enum RefType {
 	RT_JUMP,	// jmp
 	RT_JSR,		// jsr
 	RT_DATA,	// lda $...
+	RT_ZP,		// using a zero page / direct page instruction
 	RT_COUNT
 };
 
@@ -953,7 +953,7 @@ enum DataType {
 	DT_PTRS
 };
 
-const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data" };
+const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data", "zp" };
 
 struct RefLink {
 	int instr_addr;
@@ -1127,9 +1127,13 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				type = RT_JUMP;
 			else
 				type = RT_DATA;
+		} else if (mode == AM_ZP || mode == AM_ZP_REL || mode == AM_ZP_REL_L || mode == AM_ZP_REL_X || mode == AM_ZP_REL_Y ||
+				   mode == AM_ZP_X || mode == AM_ZP_Y || mode == AM_ZP_REL_L || mode == AM_ZP_REL_Y_L) {
+			reference = mem[0];
+			type = RT_ZP;
 		}
 
-		if (reference >= start_addr && reference <= end_addr && type != RT_NONE) {
+		if (/*reference >= start_addr && reference <= end_addr &&*/ reference>=0 && type != RT_NONE) {
 			bool found = false;
 			for (std::vector<RefAddr>::iterator i = refs.begin(); i != refs.end(); ++i) {
 				if (i->address == reference || (reference>i->address && (reference-i->size)<i->address)) {
@@ -1163,16 +1167,24 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	mem = mem_orig;
 	bytes = bytes_orig;
 	addr = addr_orig;
-	int curr_label = init_data ? 1 : 0;
+	int curr_label = 0;
 	int prev_addr = -1;
 	bool was_data = init_data>0;
-	refs[curr_label].data = DT_CODE;
 	bool separator = false;
 	int prev_op = 0xff;
 	addr += init_data;
 	bytes -= init_data;
 	mem += init_data;
 	bool cutoff = false;
+
+	while (curr_label<(int)refs.size() && refs[curr_label].address<addr) {
+		refs[curr_label].data = DT_DATA;
+		++curr_label;
+	}
+
+	if (curr_label<(int)refs.size())
+		refs[curr_label].data = init_data ? DT_DATA : DT_CODE;
+
 	while (bytes && curr_label<(int)refs.size()) {
 		unsigned char op = *mem++;
 		int curr = addr;
@@ -1232,28 +1244,45 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				} else {
 					bool prev_data = was_data;
 					was_data = separator && !(!was_data && ((op==0x4c || op==0x6c) && (prev_op==0x4c || prev_op==0x6c)));
-					for (size_t j = 0; j<pRefs.size(); ++j) {
-						RefType type = pRefs[j].type;
-						if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
-							was_data = false;
-							prev_data = false;
-							break;
+					if (!prev_data) {
+						for (size_t j = 0; j<pRefs.size(); ++j) {
+							RefType type = pRefs[j].type;
+							if (!(pRefs[j].instr_addr>curr && type == RT_BRANCH) && type != RT_DATA) {
+								was_data = false;
+								prev_data = false;
+								break;
+							}
 						}
 					}
 
 					if (!was_data && prev_data) {
 						bool only_data_ref = pRefs.size() ? true : false;
+						if (!curr_label || refs[curr_label-1].data == DT_CODE) {
+							for (size_t j = 0; j<pRefs.size(); ++j) {
+								RefType type = pRefs[j].type;
+								int ref_addr = pRefs[j].instr_addr;
+								if (type != RT_DATA && (type != RT_BRANCH || ref_addr<addr)) {
+									only_data_ref = false;
+									if (type != RT_BRANCH)
+										separator = false;
+								}
+							}
+							was_data = only_data_ref;
+						} else
+							was_data = true;
+					}
+
+					// check all references
+					if (was_data) {
 						for (size_t j = 0; j<pRefs.size(); ++j) {
-							RefType type = pRefs[j].type;
-							int ref_addr = pRefs[j].instr_addr;
-							if (type != RT_DATA && (type != RT_BRANCH || ref_addr<addr)) {
-								only_data_ref = false;
-								if (type != RT_BRANCH)
-									separator = false;
+							RefLink &rl = pRefs[j];
+							if (rl.type == RT_BRA_L || rl.type == RT_JSR || rl.type == RT_JUMP) {
+								was_data = false;
+								break;
 							}
 						}
-						was_data = only_data_ref;
 					}
+
 					refs[curr_label].separator = separator;
 					refs[curr_label].data = was_data ? DT_DATA : DT_CODE;
 				}
@@ -1270,6 +1299,12 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 								++r;
 						}
 					}
+				}
+				if (refs[curr_label].pRefs->size()==0) {
+					int lbl = curr_label;
+					while (lbl && refs[lbl].pRefs->size()==0)
+						lbl--;
+					was_data = refs[lbl].data != DT_CODE;
 				}
 			}
 			curr_label++;
@@ -1323,13 +1358,8 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	}
 
 	std::vector<RefAddr>::iterator k = refs.begin();
-	if (k != refs.end()) {
-		++k;	// don't delete the initial label
-		if (init_data && k != refs.end())
-			++k;	// don't delete the initial label
-	}
 	while (k!=refs.end()) {
-		if (k->pRefs && k->pRefs->size()==0 && !k->label && !k->separator) {
+		if (k->pRefs && k->pRefs->size()==0 && !k->label && !k->separator && k->address!=addr_orig) {
 			delete k->pRefs;
 			k = refs.erase(k);
 		} else
@@ -1451,9 +1481,9 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 							prv_addr = refs[k].address;
 						}
 						if (refs[lbl].label)
-							out.sprintf("%s; Referenced from " STRREF_FMT " + $%x (%s)\n", spc,
+							out.sprintf("%s; Referenced from " STRREF_FMT " + $%x (%s, $%02x)\n", spc,
 										STRREF_ARG(refs[lbl].label), ref_addr - prv_addr,
-										aRefNames[(*ref.pRefs)[j].type]);
+										aRefNames[(*ref.pRefs)[j].type], ref_addr);
 						else {
 							out.sprintf("%s; Referenced from", spc);
 							if (refs[lbl].local) {
@@ -1462,11 +1492,14 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 									lbl_glb--;
 								if (refs[lbl].label)
 									out.append(refs[lbl].label);
-								else
-									out.sprintf_append(" %s_%d /", refs[lbl_glb].local ? ".l" : (refs[lbl_glb].data==DT_CODE ? "Code" : "Data"), refs[lbl_glb].number);
+								else {
+									RefAddr &ra = refs[lbl_glb];
+									out.sprintf_append(" %s_%d /", ra.local ? ".l" : (ra.data==DT_CODE ? "Code" : (ra.address>=0 && ra.address<0x100 ? "zp" : "Data")), ra.number);
+								}
 							}
-							out.sprintf_append(" %s_%d + $%x (%s)\n",	refs[lbl].local ? ".l" : (refs[lbl].data==DT_CODE ? "Code" : "Data"),
-										refs[lbl].number, ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type]);
+							RefAddr &ra = refs[lbl];
+							out.sprintf_append(" %s_%d + $%x (%s, $%02x)\n",	ra.local ? ".l" : (ra.data==DT_CODE ? "Code" : (ra.address>=0 && ra.address<0x100 ? "zp" : "Data")),
+										ra.number, ref_addr - prv_addr, aRefNames[(*ref.pRefs)[j].type], ra.address);
 						}
 					} else
 						out.sprintf("%s; Referenced from $%04x (%s)\n", spc, (*ref.pRefs)[j].instr_addr,
@@ -1474,19 +1507,27 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 					fputs(out.c_str(), f);
 				}
 			}
-			out.clear();
-			if (refs[curr_label_index].comment)
-				out.sprintf_append("%s; " STRREF_FMT"\n", spc,	STRREF_ARG(refs[curr_label_index].comment));
-			if (refs[curr_label_index].label)
-				out.sprintf_append("%s" STRREF_FMT ": ; $%04x\n", spc,
-							STRREF_ARG(refs[curr_label_index].label), addr);
-			else
-				out.sprintf_append("%s%s_%d: ; $%04x\n", spc,
-					refs[curr_label_index].local ? ".l" : (refs[curr_label_index].data==DT_CODE ? "Code" : "Data"),
-					refs[curr_label_index].number, addr);
+			if (addr>refs[curr_label_index].address) {
+				if (ref.label)
+					out.sprintf(STRREF_FMT " = %02x\n", STRREF_ARG(ref.label), ref.address);
+				else
+					out.sprintf("%s_%d = $%02x\n", ref.local ? ".l" : (ref.data==DT_CODE ? "Code" : (ref.address>=0 && ref.address<0x100 ? "zp" : "Data")),
+						ref.number, ref.address);
+			} else {
+				out.clear();
+				if (ref.comment)
+					out.sprintf_append("%s; " STRREF_FMT"\n", spc, STRREF_ARG(ref.comment));
+				if (ref.label)
+					out.sprintf_append("%s" STRREF_FMT ": ; $%04x\n", spc,
+									   STRREF_ARG(ref.label), ref.address);
+				else
+					out.sprintf_append("%s%s_%d: ; $%04x\n", spc,
+									   ref.local ? ".l" : (ref.data==DT_CODE ? "Code" : (ref.address>=0 && ref.address<0x100 ? "zp" : "Data")),
+									   ref.number, ref.address);
+			}
 			fputs(out.c_str(), f);
-			is_data = !!refs[curr_label_index].data;
-			is_ptrs = is_data && refs[curr_label_index].data==DT_PTRS;
+			is_data = !!ref.data;
+			is_ptrs = is_data && ref.data==DT_PTRS;
 			separator = false;
 			curr_label_index++;
 		}
@@ -1507,10 +1548,12 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 						if (refs[lbl].label) {
 							out.append(refs[lbl].label);
 							out.sprintf_append(" ; $%04x " STRREF_FMT "\n", a, STRREF_ARG(refs[lbl].comment));
-						} else
-							out.sprintf_append("%s%s_%d: ; $%04x%s\n", spc,
-								refs[lbl].local ? ".l" : (refs[lbl].data==DT_CODE ? "Code" : "Data"),
-								refs[lbl].number, a, STRREF_ARG(refs[lbl].comment));
+						} else {
+							RefAddr &ra = refs[lbl];
+							out.sprintf_append("%s%s_%d: ; $%04x" STRREF_FMT "\n", spc,
+								ra.local ? ".l" : (ra.data==DT_CODE ? "Code" : (ra.address>=0 && ra.address<0x100 ? "zp" : "Data")),
+								ra.number, a, STRREF_ARG(ra.comment));
+						}
 					} else
 						out.sprintf_append("$%04x\n", a);
 					fputs(out.c_str(), f);
@@ -1618,13 +1661,16 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				if (reference == refs[i].address || 
 					(reference>=start_addr &&reference<=end_addr && reference>=refs[i].address)) {
 					if (i==(refs.size()-1) || reference<refs[i+1].address) {
-						if (refs[i].label)
-							lblname.copy(refs[i].label);
+						RefAddr &ra = refs[i];
+						if (ra.label)
+							lblname.copy(ra.label);
 						else
-							lblname.sprintf("%s_%d", refs[i].local ? ".l" : (refs[i].data==DT_CODE ? "Code" : "Data"), refs[i].number);
-						lblcmt = refs[i].comment;
-						if (reference > refs[i].address)
-							lblname.sprintf_append(" + $%x", reference - refs[i].address);
+							lblname.sprintf("%s_%d",
+											ra.local ? ".l" : (ra.data==DT_CODE ? "Code" :
+											(ra.address>=0 && ra.address<0x100 ? "zp" : "Data")), ra.number);
+						lblcmt = ra.comment;
+						if (reference > ra.address)
+							lblname.sprintf_append(" + $%x", reference - ra.address);
 						break;
 					}
 				}

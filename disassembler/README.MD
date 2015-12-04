@@ -26,6 +26,9 @@ x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]
 
 ### Updates
 
+* c64.lbl file defining all c64 hardware addresses
+* Tracking label references outside of the code including zero page
+* Data / Code distinction improvements
 * **Local labels** to improve code readability
 * Improvements to code vs data determination
 * Instrument labels through labels text file
