@@ -1,12 +1,77 @@
 ;x65macros.i
-
 ;
-; set.b / .w / .t / .l Trg, Value
+; letter definition
+; -----------------
+; The letters after the period has the following meanings:
+; - b: byte
+; - w: word (2 bytes)
+; - t: triple (3 bytes)
+; - l: long (4 bytes)
+; - n: number of bytes in value
+; - c: copy result to target
+; - i: immediate, for example add a value to the contents of an address
+; - x: use the x register for operation as a counter or an offset
+; - y: use the y register for operation
+; - r: relative; ry=(zp),y
+; - a: use the contents of an address for operation (16 bits)
+; - s: custom step size (instead of +1 or -1) for loops
+; - p: positive
+; - m: negative
+; - o: use label pool for counter
+;
+; operations
+; ----------
+; The base operations provided by these macros are:
+; - set: Assign a value to the contents of an address
+; - move: Move the contents of an address to another address
+; - add: addition
+; - sub: subtraction
+; - asrm: arithmetic shift right
+; - aslm: arithmetic shift left
+; - neg: negate a number
+; - abs: make a number positive
+; - copy: copy memory from one location to another
+; - for: iterate between two numbers with optional step size
+; - mnop: insert multiple nop at this point
+;
+; set.b / .w / .t / .l Value, Target
 ;   - set the contents of an 1-4 byte location to a value
 ;   - uses accumulator
 ;
 ; move.b / .w / .t / .l / .n Src,Trg
 ;   - copy 1-4 (or n) bytes from Src location to Trg location
+;   - uses accumulator
+;
+; asrm.n Target, Size
+;   - shift a signed multi byte number right
+;   - uses accumulator
+;
+; asrm.nx Target, Size
+;   - shift a signed multi byte number right offset by the x register
+;   - no registers touched
+;
+; aslm.n Target, Size
+;   - shift a multi byte number left
+;   - no registers touched
+;
+; aslm.nx Target, Size
+;   - shift a multi byte number left offset by the x register
+;   - no registers changed
+;
+; neg.cn Source, Target, Size
+;   - negate and copy a multi byte number
+;   - uses accumulator
+;
+; neg.n Target, Size
+;   - negate a number in place
+;   - uses accumulator
+;
+; abs.n Trg, Size
+;   - make a number absolute
+;   - uses accumulator
+;
+; neg.nx Trg, Size
+;   - negate a number in place offset by the x register
 ;   - uses accumulator
 ;
 ; add.n Address1, Address2, Target, Bytes
@@ -25,11 +90,11 @@
 ;   - Target = Address - Value
 ;   - uses accumulator
 ;
-; addw.i Address, Value, Target
+; add.wi Address, Value, Target
 ;   - Subtract 16 bit Value from contents of Address and store at Target
 ;   - uses accumulator
 ;
-; subw.i Address1, Address2, Target
+; sub.wi Address1, Address2, Target
 ;   - add contents of two 16 bit addresses into a target 16 bit location
 ;   - uses accumulator
 ;
@@ -44,7 +109,14 @@
 ;   - copy up to 256 bytes using the y register as a counter
 ;   - uses accumulator and y register
 ;
-; copy.p Src,Trg,Size,PoolZP
+; copy.ry zpSrcPtr,zpTrgPtr,Size
+;   - copy a fixed length buffer using relative zp y indexing
+;   - size is up to a page, changing Y and A
+;
+; copy.ry128 zpSrcPtr,zpTrgPtr,Size
+;   - copy up to 128 bytes using the y register
+;
+; copy.o Src,Trg,Size,PoolZP
 ;   - copy more than 256 bytes using zero page label pool addresses
 ;   - uses accumulator, x and y register
 ;
@@ -76,6 +148,15 @@
 ;   - for loop for 16 bit counter with a step value
 ;   - uses accumulator
 ;   - end for loop with forend macro
+;
+;
+; for.wsp Start, End, Counter, Step {
+;   - for (word Counter=start; Counter<end; Counter += Step), Step>0
+;   - uses accumulator
+;
+; for.wsm Start, End, Counter, Step {
+;   - for (word Counter=start; Counter<end; Counter += Step), Step<0
+;   - uses accumulator
 ;
 ; forend
 ;   - terminates for loops
@@ -152,6 +233,90 @@ macro move.n Src,Trg,Size
   }
 }
 
+; shift a signed multi byte number right
+macro asrm.n Trg,Size
+{
+  lda Trg+Size-1
+  asl
+  rept Size {
+    ror (Trg - 1 + Size - rept)
+  }
+}
+
+; shift a signed multi byte number right offset by the x register
+macro asrm.nx Trg,Size
+{
+  lda Trg+Size-1,x
+  asl
+  rept Size {
+    ror (Trg + Size - 1 - rept), x
+  }
+}
+
+; shift a multi byte number left
+macro aslm.n Trg,Size
+{
+  asl Trg
+  rept Size-1 {
+    rol Trg+1+rept
+  }
+}
+
+; shift a multi byte number left offset by the x register
+macro aslm.nx Trg,Size
+{
+  asl Trg,x
+  rept Size-1 {
+    rol Trg+1+rept,x
+  }
+}
+
+; negate and copy a multi byte number
+macro neg.cn Src, Trg, Size
+{
+  sec
+  rept Size {
+    lda #0
+    sbc Src + rept
+    sta Trg + rept
+  }
+}
+
+; negate a number in place
+macro neg.n Trg, Size
+{
+  sec
+  rept Size {
+    lda #0
+    sbc Trg + rept
+    sta Trg + rept
+  }
+}
+
+; negate a number in place offset by the x register
+macro neg.nx Trg, Size
+{
+  sec
+  rept Size {
+    lda #0
+    sbc Trg + rept,x
+    sta Trg + rept,x
+  }
+}
+
+; make a number absolute
+macro abs.n Trg, Size
+{
+  lda Trg+Size-1
+  bpl %
+  sec
+  rept Size {
+    lda #0
+    sbc Trg + rept
+    sta Trg + rept
+  }
+}
+
 ; add two numbers together (A and B and Trg are addresses)
 macro add.n A,B,Trg,NumSize
 {
@@ -197,7 +362,7 @@ macro sub.ni Src,Value,Trg,NumSize
 }
 
 ; add a fixed value to a two byte number and store at Trg
-macro addw.i Src,Value,Trg
+macro add.wi Src,Value,Trg
 {
  clc
  lda #<Value
@@ -209,7 +374,7 @@ macro addw.i Src,Value,Trg
 }
 
 ; add a fixed value to a two byte number and store at Trg
-macro subw.i Src,Value,Trg
+macro sub.wi Src,Value,Trg
 {
  sec
  lda Src
@@ -309,10 +474,22 @@ macro copy.ry zpSrcPtr,zpTrgPtr,Size
  endif
 }
 
+; copy up to 128 bytes using the y register
+macro copy.ry128 zpSrcPtr,zpTrgPtr,Size
+{
+  ldy #Size-1
+  {
+   lda (zpSrcPtr),y
+   sta (zpTrgPtr),y
+   dey
+   bpl !
+  }
+}
+
 ; copy pages using temp zero page registers
 ; falls back on CopyF if less than or equal to a page
 ; changes x, y and A
-macro copy.p Src,Trg,Size,PoolZP
+macro copy.o Src,Trg,Size,PoolZP
 {
  if (Size<256)
   copy.x Src,Trg,Size
@@ -491,7 +668,7 @@ macro forend {
   undef _ForEnd
 }
 
-; for (Counter=start; Counter<end; Counter += Step)
+; for (word Counter=start; Counter<end; Counter += Step), check Step sign to determine direction
 macro for.ws Start, End, Counter, Step {
   set.w Start, Counter
   if Start < End
@@ -510,7 +687,22 @@ macro for.ws Start, End, Counter, Step {
 _ForLoop
 }
 
+; for (word Counter=start; Counter<end; Counter += Step), Step>0
+macro for.wsp Start, End, Counter, Step {
+  set.w Start, Counter
+  string _ForEnd = "clc\nlda #<Step\nadc Counter\nsta Counter\nlda #>Step\n adc Counter+1\nsta Counter+1\ncmp #>End\nbcc _ForLoop\nlda Counter\ncmp #<End\nbcc _ForLoop"
+_ForLoop
+}
+
+; for (word Counter=start; Counter<end; Counter += Step), Step<0
+macro for.wsm Start, End, Counter, Step {
+  set.w Start, Counter
+  string _ForEnd = "sec\nlda Counter\n sbc #<(-Step)\nsta Counter\nlda Counter+1\nsbc #>(-Step)\nsta Counter+1\ncmp #(>End)+1\nbcs _ForLoop\nlda Counter\ncmp #(<End)+1\n\nbcs _ForLoop"
+_ForLoop
+}
+
 macro forend {
   _ForEnd
   undef _ForEnd
+  undef _ForLoop
 }
