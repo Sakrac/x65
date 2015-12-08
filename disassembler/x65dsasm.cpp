@@ -1080,57 +1080,80 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	if (size_t(init_data)>bytes)
 		return;
 
-	addr += init_data;
-	bytes -= init_data;
-	mem += init_data;
+	if (refs.size())
+		qsort(&refs[0], refs.size(), sizeof(RefAddr), _sortRefs);
+
+	bool curr_data = !!init_data;
+	int curr_label = 0;
+	int start_labels = (int)refs.size();
+	while (curr_label<start_labels && addr>refs[curr_label].address) {
+		curr_data = refs[curr_label].data == DT_CODE;
+		++curr_label;
+	}
 
 	while (bytes) {
+		if (curr_label<start_labels) {
+			if (addr>=refs[curr_label].address) {
+				curr_data = refs[curr_label].data != DT_CODE;
+				if (!refs[curr_label].size)
+					++curr_label;
+			} else if (refs[curr_label].size && addr>(refs[curr_label].address + refs[curr_label].size)) {
+				curr_data = false;
+				curr_label++;
+			}
+		} else
+			curr_data = false;
+
 		unsigned char op = *mem++;
 		int curr = addr;
 		bytes--;
 		addr++;
-		if (opcodes == a65816_ops) {
-			if (op == 0xe2) {	// sep
-				if ((*mem)&0x20) acc_16 = false;
-				if ((*mem)&0x10) ind_16 = false;
-			} else if (op == 0xc2) { // rep
-				if ((*mem)&0x20) acc_16 = true;
-				if ((*mem)&0x10) ind_16 = true;
-			}
-		}
-
-		int arg_size = opcodes[op].arg_size;;
-		int mode = opcodes[op].addrMode;
-		switch (mode) {
-			case AM_IMM_DBL_A:
-				arg_size = acc_16 ? 2 : 1;
-				break;
-			case AM_IMM_DBL_I:
-				arg_size = ind_16 ? 2 : 1;
-				break;
-		}
-
 		int reference = -1;
 		RefType type = RT_NONE;
+		int arg_size = 0;
+		int mode = 0;
 
-		if (mode == AM_BRANCH) {
-			reference = curr + 2 + (char)*mem;
-			type = RT_BRANCH;
-		} else if (mode == AM_BRANCH_L) {
-			reference = curr + 2 + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
-			type = RT_BRA_L;
-		} else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L) {
-			reference = (unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
-			if (op == 0x20 || op == 0xfc || op == 0x22)	// jsr opcodes
-				type = RT_JSR;
-			else if (op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc)	// jmp opcodes
-				type = RT_JUMP;
-			else
-				type = RT_DATA;
-		} else if (mode == AM_ZP || mode == AM_ZP_REL || mode == AM_ZP_REL_L || mode == AM_ZP_REL_X || mode == AM_ZP_REL_Y ||
-				   mode == AM_ZP_X || mode == AM_ZP_Y || mode == AM_ZP_REL_L || mode == AM_ZP_REL_Y_L) {
-			reference = mem[0];
-			type = RT_ZP;
+		if (!curr_data) {
+			if (opcodes == a65816_ops) {
+				if (op == 0xe2) {	// sep
+					if ((*mem)&0x20) acc_16 = false;
+					if ((*mem)&0x10) ind_16 = false;
+				} else if (op == 0xc2) { // rep
+					if ((*mem)&0x20) acc_16 = true;
+					if ((*mem)&0x10) ind_16 = true;
+				}
+			}
+
+			arg_size = opcodes[op].arg_size;;
+			mode = opcodes[op].addrMode;
+			switch (mode) {
+				case AM_IMM_DBL_A:
+					arg_size = acc_16 ? 2 : 1;
+					break;
+				case AM_IMM_DBL_I:
+					arg_size = ind_16 ? 2 : 1;
+					break;
+			}
+
+			if (mode == AM_BRANCH) {
+				reference = curr + 2 + (char)*mem;
+				type = RT_BRANCH;
+			} else if (mode == AM_BRANCH_L) {
+				reference = curr + 2 + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
+				type = RT_BRA_L;
+			} else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L) {
+				reference = (unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
+				if (op == 0x20 || op == 0xfc || op == 0x22)	// jsr opcodes
+					type = RT_JSR;
+				else if (op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc)	// jmp opcodes
+					type = RT_JUMP;
+				else
+					type = RT_DATA;
+			} else if (mode == AM_ZP || mode == AM_ZP_REL || mode == AM_ZP_REL_L || mode == AM_ZP_REL_X || mode == AM_ZP_Y_REL ||
+					   mode == AM_ZP_REL_Y || mode == AM_ZP_X || mode == AM_ZP_Y || mode == AM_ZP_REL_Y_L) {
+				reference = mem[0];
+				type = RT_ZP;
+			}
 		}
 
 		if (/*reference >= start_addr && reference <= end_addr &&*/ reference>=0 && type != RT_NONE) {
@@ -1167,7 +1190,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	mem = mem_orig;
 	bytes = bytes_orig;
 	addr = addr_orig;
-	int curr_label = 0;
+	curr_label = 0;
 	int prev_addr = -1;
 	bool was_data = init_data>0;
 	bool separator = false;
@@ -1234,7 +1257,13 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 		if (curr == refs[curr_label].address || (curr > refs[curr_label].address && prev_addr>=0)) {
 			if (curr != refs[curr_label].address && !refs[curr_label].label) {
-				refs[curr_label].address = prev_addr;
+				int curr_look_ahead = curr_label;
+				while ((curr_look_ahead+1)<(int)refs.size() && curr>refs[curr_look_ahead].address && curr>=refs[curr_look_ahead+1].address)
+					curr_look_ahead++;
+				if (curr_look_ahead>curr_label)
+					curr_label = curr_look_ahead;
+				if (curr>refs[curr_label].address)
+					refs[curr_label].address = prev_addr;
 			}
 			std::vector<RefLink> &pRefs = *refs[curr_label].pRefs;
 			if (curr_label < (int)refs.size()) {
@@ -1389,48 +1418,108 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 	// figure out which labels can be local
 
+	k = refs.begin();	// make all labels that are not assigned something local
+	bool was_sep = false;
+	while (k!=refs.end()) {
+		if (k->label || k->address<0x200 || k->separator)
+			k->local = false;
+		else
+			k->local = true;
+		was_sep = !!k->separator;
+		++k;
+	}
+
+	// check over and over for global labels breaking local boundaries
+	bool check_locals_completed = false;
+	while (!check_locals_completed) {
+		check_locals_completed = true;
+		k = refs.begin();	// make all labels that are not assigned something local
+		while (k!=refs.end()) {
+			if (k->local) {
+				std::vector<RefLink> &links = *k->pRefs;
+				for (std::vector<RefLink>::iterator l = links.begin(); k->local && l!=links.end(); ++l) {
+					int trg_addr = l->instr_addr;
+					bool skip_global = false;
+					std::vector<RefAddr>::iterator j = k;
+					if (trg_addr<k->address) {	// backward check
+						for (;;) {
+							if (!j->local)
+								skip_global = true;
+							if (j!=refs.begin())
+								--j;
+							if (trg_addr>=j->address || j == refs.begin())
+								break;
+						}
+					} else { // forward check
+						while (j!=refs.end()) {
+							++j;
+							if (j!=refs.end() && !j->local)
+								skip_global = true;
+							if (j==refs.end() || trg_addr<j->address)
+								break;
+						}
+					}
+					if (skip_global) {
+						if (j!=refs.end()) {
+							k->local = false;
+							check_locals_completed = false;
+						}
+					}
+				}
+			}
+			++k;
+		}
+	}
+
+	// now simply assign label numbers according to locality
 	k = refs.begin();
 	int label_count_code_global = 1;
 	int label_count_data_global = 1;
+	int label_count_local = 1;
 	while (k!=refs.end()) {
-		if (k->separator && k->data == DT_CODE) {
-			int address = k->address;
+		if (k->local) {
+			k->number = label_count_local++;
+		} else if (k->data==DT_CODE) {
+			label_count_local = 1;
+			k->number = label_count_data_global++;
+		} else {
+			label_count_local = 1;
 			k->number = label_count_code_global++;
+		}
+		++k;
+	}
 
-			std::vector<RefAddr>::iterator f = k;	// f = first local
-			++f;
-			std::vector<RefAddr>::iterator e = f;	// e = end of locals
-			while (e!=refs.end()) {
-				if (e->label || e->data != DT_CODE)
-					break;
-				std::vector<RefLink> &r = *(e->pRefs);
-				bool ext_ref = false;
-				for (std::vector<RefLink>::iterator i = r.begin(); i!=r.end(); ++i) {
-					if ((i->type != RT_BRANCH && i->type != RT_DATA) || i->instr_addr<k->address) {
-						ext_ref = true;
+	// re-check for code references to code being mislabeled
+	bool adjusted_code_ref = true;
+	while (adjusted_code_ref) {
+		adjusted_code_ref = false;
+		k = refs.begin();
+		while (k!=refs.end()) {
+			if (k->data != DT_CODE && !k->label) {
+				std::vector<RefLink> &links = *k->pRefs;
+				for (std::vector<RefLink>::iterator l = links.begin(); l!=links.end(); ++l) {
+					RefType t = l->type;
+					if (t==RT_BRANCH || t==RT_BRA_L || t==RT_JUMP || t==RT_JSR) {
+						int trg_addr = l->instr_addr;
+						std::vector<RefAddr>::iterator j = k;
+						if (trg_addr<k->address) {
+							while (j!=refs.begin() && trg_addr<j->address)
+								--j;
+						} else {
+							std::vector<RefAddr>::iterator n = j;
+							while (n!=refs.end() && trg_addr>n->address) {
+								j = n;
+								++n;
+							}
+						}
+						if (j->data == DT_CODE) {
+							k->data = DT_CODE;
+							adjusted_code_ref = true;
+						}
 						break;
 					}
 				}
-				if (ext_ref)
-					break;
-				++e;
 			}
-			int label_count_code_local = 1;
-			while (f!=e) {
-				f->number = label_count_code_local++;
-				f->local = 1;
-				++f;
-			}
-			if (k!=e)
-				k = e;
-			else
-				++k;
-		} else {
-			k->local = 0;
-			if (k->data == DT_CODE)
-				k->number = label_count_code_global++;
-			else
-				k->number = label_count_data_global++;
 			++k;
 		}
 	}
@@ -1654,6 +1743,9 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				reference = addr + (short)(unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
 			else if (mode == AM_ABS || mode == AM_ABS_Y || mode == AM_ABS_X || mode == AM_REL || mode == AM_REL_X || mode == AM_REL_L)
 				reference = (int)mem[0] | ((int)mem[1])<<8;
+			else if (mode == AM_ZP || mode == AM_ZP_REL || mode == AM_ZP_REL_L || mode == AM_ZP_REL_X || mode == AM_ZP_Y_REL ||
+					 mode == AM_ZP_REL_Y || mode == AM_ZP_X || mode == AM_ZP_Y || mode == AM_ZP_REL_Y_L)
+				reference = mem[0];
 
 			strown<64> lblname;
 			strref lblcmt;
@@ -1734,6 +1826,21 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
 					else
 						out.sprintf_append(fmt, opcodes[op].name, mem[0], addr + (char)mem[1]);
+					break;
+
+				case AM_ZP:
+				case AM_ZP_REL:
+				case AM_ZP_REL_L:
+				case AM_ZP_REL_X:
+				case AM_ZP_REL_Y:
+				case AM_ZP_X:
+				case AM_ZP_Y:
+				case AM_ZP_REL_Y_L:
+				case AM_ZP_Y_REL:
+					if (src && lblname)
+						out.sprintf_append(fmt, opcodes[op].name, lblname.c_str());
+					else
+						out.sprintf_append(fmt, opcodes[op].name, mem[0], mem[1]);
 					break;
 
 				default:
