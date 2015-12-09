@@ -1094,9 +1094,13 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	while (bytes) {
 		if (curr_label<start_labels) {
 			if (addr>=refs[curr_label].address) {
-				curr_data = refs[curr_label].data != DT_CODE;
-				if (!refs[curr_label].size)
-					++curr_label;
+				while (curr_label<start_labels && addr>=refs[curr_label].address) {
+					curr_data = refs[curr_label].data != DT_CODE;
+					if (addr>=(refs[curr_label].address+refs[curr_label].size))
+						++curr_label;
+					else
+						break;
+				}
 			} else if (refs[curr_label].size && addr>(refs[curr_label].address + refs[curr_label].size)) {
 				curr_data = false;
 				curr_label++;
