@@ -950,7 +950,8 @@ enum RefType {
 enum DataType {
 	DT_CODE,
 	DT_DATA,
-	DT_PTRS
+	DT_PTRS,
+	DT_PTRS_DATA
 };
 
 const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data", "zp" };
@@ -1030,8 +1031,12 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			r.data = DT_CODE;
 			lab_line += kw_code.get_len();
 		} else if (kw_pointers.is_prefix_word(lab_line)) {
-			r.data = DT_PTRS;
 			lab_line += kw_pointers.get_len();
+			lab_line.skip_whitespace();
+			if (kw_data.is_prefix_word(lab_line))
+				r.data = DT_PTRS_DATA;
+			else
+				r.data = DT_PTRS;
 		}
 		lab_line.trim_whitespace();
 		r.label = name;
@@ -1052,22 +1057,21 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 	int last_user = (int)refs.size();
 	for (int i = 0; i<last_user; ++i) {
-		if (refs[i].data==DT_PTRS) {
+		if (refs[i].data==DT_PTRS || refs[i].data==DT_PTRS_DATA) {
 			int num = refs[i].size ? (refs[i].size/2) : ((refs[i+1].address - refs[i].address)/2);
 			unsigned char *p = mem + refs[i].address - addr;
 			for (int l = 0; l<num; l++) {
 				int a = p[0] + ((unsigned short)p[1]<<8);
 				int n = GetLabelIndex(a);
 				int nr = (int)refs.size();
-				struct RefLink ref = { 2*l + refs[i].address, RT_JSR };
+				struct RefLink ref = { 2*l + refs[i].address, refs[i].data==DT_PTRS ? RT_JSR : RT_DATA };
 				if (n<0) {
 					refs.push_back(RefAddr(a));
 					refs[nr].pRefs = new std::vector<RefLink>();
-					refs[nr].data = DT_CODE;
+					refs[nr].data = refs[i].data==DT_PTRS_DATA ? DT_DATA : DT_CODE;
 					refs[nr].pRefs->push_back(ref);
-				} else {
+				} else
 					refs[n].pRefs->push_back(ref);
-				}
 				p += 2;
 			}
 		}
@@ -1101,7 +1105,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 					else
 						break;
 				}
-			} else if (refs[curr_label].size && addr>(refs[curr_label].address + refs[curr_label].size)) {
+			} else if (curr_label && addr>(refs[curr_label-1].address + refs[curr_label-1].size)) {
 				curr_data = false;
 				curr_label++;
 			}
@@ -1160,7 +1164,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			}
 		}
 
-		if (/*reference >= start_addr && reference <= end_addr &&*/ reference>=0 && type != RT_NONE) {
+		if (reference>=0 && type != RT_NONE) {
 			bool found = false;
 			for (std::vector<RefAddr>::iterator i = refs.begin(); i != refs.end(); ++i) {
 				if (i->address == reference || (reference>i->address && (reference-i->size)<i->address)) {
@@ -1244,7 +1248,8 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			bytes -= arg_size;
 			mem += arg_size;
 		}
-		if (separator && curr_label>0 && refs[curr_label-1].data!=DT_PTRS && curr!=refs[curr_label].address && !cutoff) {
+		if (separator && curr_label>0 && refs[curr_label-1].data!=DT_PTRS && refs[curr_label-1].data!=DT_PTRS_DATA &&
+				curr!=refs[curr_label].address && !cutoff) {
 			int end_addr = curr_label<(int)refs.size() ? refs[curr_label].address : (int)(addr_orig + bytes_orig);
 			for (std::vector<RefAddr>::iterator k = refs.begin(); k!= refs.end(); ++k) {
 				std::vector<RefLink> &l = *k->pRefs;
@@ -1554,8 +1559,8 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 	int curr_label_index = 0;
 	bool separator = false;
-	bool is_data = refs.size() ? (refs[0].data==DT_DATA || refs[0].data==DT_PTRS) : false;
-	bool is_ptrs = is_data && refs[0].data==DT_PTRS;
+	bool is_data = refs.size() ? (refs[0].data==DT_DATA || refs[0].data==DT_PTRS || refs[0].data==DT_PTRS_DATA) : false;
+	bool is_ptrs = is_data && (refs[0].data==DT_PTRS || refs[0].data==DT_PTRS_DATA);
 	strown<256> out;
 
 	while (bytes) {
@@ -1622,7 +1627,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			}
 			fputs(out.c_str(), f);
 			is_data = !!ref.data;
-			is_ptrs = is_data && ref.data==DT_PTRS;
+			is_ptrs = is_data && (ref.data==DT_PTRS || ref.data==DT_PTRS_DATA);
 			separator = false;
 			curr_label_index++;
 		}
