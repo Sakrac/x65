@@ -1149,7 +1149,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				reference = (unsigned short)mem[0] + ((unsigned short)mem[1]<<8);
 				if (op == 0x20 || op == 0xfc || op == 0x22)	// jsr opcodes
 					type = RT_JSR;
-				else if (op == 0x4c || op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc)	// jmp opcodes
+				else if (op == 0x4c || op == 0x7c || op == 0x5c || op == 0xdc)	// jmp opcodes
 					type = RT_JUMP;
 				else
 					type = RT_DATA;
@@ -1276,7 +1276,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 					was_data = refs[curr_label].data==DT_DATA;
 				} else {
 					bool prev_data = was_data;
-					was_data = separator && !(!was_data && ((op==0x4c || op==0x6c) && (prev_op==0x4c || prev_op==0x6c)));
+					was_data = separator && !(!was_data && op==0x4c && prev_op==0x4c);
 					if (!prev_data) {
 						for (size_t j = 0; j<pRefs.size(); ++j) {
 							RefType type = pRefs[j].type;
@@ -1349,18 +1349,20 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			if (op == 0x60 || op == 0x40 || op == 0x6b ||
 				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
 				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
-				separator = true;
-				cutoff = false;
-				for (size_t i = curr_label+1; i<refs.size() && (refs[i].address-curr)<0x7e; i++) {	// check no branch crossing
-					if (refs[i].address<=curr) {
-						std::vector<RefLink> &pRefs = *refs[i].pRefs;
-						for (size_t j = 0; j<pRefs.size() && separator; ++j) {
-							if (pRefs[j].type == RT_BRANCH && pRefs[j].instr_addr>curr) {
-								separator = false;
-								break;
-							}
+				bool exit_instr = false;
+				int lbl = GetLabelIndex(addr);
+				if (lbl>=0) {
+					std::vector<RefLink> &links = *refs[lbl].pRefs;
+					for (std::vector<RefLink>::iterator lnk = links.begin(); lnk!=links.end(); ++lnk) {
+						if (lnk->type == RT_BRANCH && lnk->instr_addr<addr) {
+							exit_instr = true;
+							break;
 						}
 					}
+				} // branch over rts/jmp or sequential jmp doesn't count as separator
+				if (!exit_instr && op!=0x4c && bytes && *mem!=0x4c) {
+					separator = true;
+					cutoff = false;
 				}
 			}
 		}
