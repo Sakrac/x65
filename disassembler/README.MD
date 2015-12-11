@@ -26,6 +26,9 @@ x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]
 
 ### Updates
 
+* a78.lbl file defining Atari 7800 hardware addresses
+* Switched the instruction info around to more easily determine read-only instructions
+* Various improvements distinguishing between code and data
 * c64.lbl file defining all c64 hardware addresses
 * Tracking label references outside of the code including zero page
 * Data / Code distinction improvements
@@ -47,13 +50,24 @@ A special data format is pointers indicating a function pointer table, the label
 defined with a range to limit the size. Each pointer within the pointer table will be
 assigned a code label.
 
+If the keyword "pointers" is followed by the word "data" the pointers will be interpreted as
+data pointers instead of code pointers.
+
+A label can be redefined with a different name for read-only instructions by using the keyword
+read after the address. The label must first be defined as a data label to be assigned a
+read-only name. Read only instructions include ora, and, bit, eor, adc, sbc, lda, ldx, ldy, cmp, cpy and cpx. 
+
+
 Example labels file:
 
 ```
+TIA_VSYNC = $00 data
+TIA_CXM0P = $00 read
 Init = $1000 code Entry point into code
 SinTable = $1400 data 256 byte sinus table
 Interrupt = $10f3 code Interrupt code
 Callbacks = $1123-$112b pointers Array of function pointers
+MapRefs = $1200-$1240 pointers data Array of data pointers
 VIC_Sprite0_x = $d000 set sprite 0 x position
 VIC_Sprite0_y = $d001 set sprite 0 y position
 VIC_Sprite1_x = $d002 set sprite 1 x position
