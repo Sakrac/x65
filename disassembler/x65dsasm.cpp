@@ -289,7 +289,10 @@ enum MNM_Base {
 	mnm_xce,
 	mnm_inv,
 	mnm_pla,
-	mnm_bbs0,
+
+	mnm_wdc_and_illegal_instructions,
+
+	mnm_bbs0 = mnm_wdc_and_illegal_instructions,
 	mnm_bbs1,
 	mnm_bbs2,
 	mnm_bbs3,
@@ -305,6 +308,7 @@ enum MNM_Base {
 	mnm_bbr5,
 	mnm_bbr6,
 	mnm_bbr7,
+
 	mnm_ahx,
 	mnm_anc,
 	mnm_aac,
@@ -1306,7 +1310,7 @@ int GetLabelIndex(int addr) {
 }
 
 
-void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, int init_data, strref labels)
+void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, bool ill_wdc, const dismnm *opcodes, int init_data, strref labels)
 {
 	int start_addr = addr;
 	int end_addr = addr + (int)bytes;
@@ -1446,8 +1450,10 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				}
 			}
 
-			arg_size = opcodes[op].arg_size;;
-			mode = opcodes[op].addrMode;
+			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
+
+			arg_size = not_valid ? 0 : opcodes[op].arg_size;;
+			mode = not_valid ? AM_NON : opcodes[op].addrMode;
 			switch (mode) {
 				case AM_IMM_DBL_A:
 					arg_size = acc_16 ? 2 : 1;
@@ -1546,8 +1552,10 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 				}
 			}
 
-			int arg_size = opcodes[op].arg_size;;
-			int mode = opcodes[op].addrMode;
+			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
+
+			int arg_size = not_valid ? 0 : opcodes[op].arg_size;;
+			int mode = not_valid ? AM_NON : opcodes[op].addrMode;
 			switch (mode) {
 				case AM_IMM_DBL_A:
 					arg_size = acc_16 ? 2 : 1;
@@ -1592,7 +1600,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			if (curr_label < (int)refs.size()) {
 				if (refs[curr_label].label) {
 					refs[curr_label].separator = 1;	// user labels are always global
-					was_data = refs[curr_label].data==DT_DATA;
+					was_data = refs[curr_label].data!=DT_CODE;
 				} else {
 					bool prev_data = was_data;
 					was_data = separator && !(!was_data && op==0x4c && prev_op==0x4c);
@@ -1638,7 +1646,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 					refs[curr_label].separator = separator;
 					refs[curr_label].data = was_data ? DT_DATA : DT_CODE;
 				}
-				if (was_data) {
+				if (was_data && refs[curr_label].data != DT_PTRS && refs[curr_label].data != DT_PTRS_DATA) {
 					int start = curr;
 					int end = (curr_label+1)<(int)refs.size() ? refs[curr_label+1].address : (int)(addr + bytes);
 					for (int k = 0; k<(int)refs.size(); ++k) {
@@ -1652,7 +1660,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 						}
 					}
 				}
-				if (refs[curr_label].pRefs->size()==0) {
+				if (refs[curr_label].pRefs->size()==0 && !refs[curr_label].label) {
 					int lbl = curr_label;
 					while (lbl && refs[lbl].pRefs->size()==0)
 						lbl--;
@@ -1874,7 +1882,7 @@ bool IsReadOnlyInstruction(MNM_Base op_base)
 }
 
 static const char spacing[] = "                ";
-void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, const dismnm *opcodes, bool src, int init_data, strref labels)
+void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, bool ill_wdc, const dismnm *opcodes, bool src, int init_data, strref labels)
 {
 	FILE *f = stdout;
 	bool opened = false;
@@ -1892,7 +1900,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	int end_addr = addr + (int)bytes;
 
 	refs.clear();
-	GetReferences(mem, bytes, acc_16, ind_16, addr, opcodes, init_data, labels);
+	GetReferences(mem, bytes, acc_16, ind_16, addr, ill_wdc, opcodes, init_data, labels);
 
 	int curr_label_index = 0;
 	bool separator = false;
@@ -2040,8 +2048,10 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 				}
 			}
 
-			int arg_size = opcodes[op].arg_size;;
-			int mode = opcodes[op].addrMode;
+			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
+
+			int arg_size = not_valid ? 0 : opcodes[op].arg_size;;
+			int mode = not_valid ? AM_NON : opcodes[op].addrMode;
 			switch (mode) {
 				case AM_IMM_DBL_A:
 					arg_size = acc_16 ? 2 : 1;
@@ -2121,6 +2131,9 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 					}
 				}
 			}
+
+			if (not_valid)
+				out.sprintf_append("dc.b $%02x ; $%04x ", op, curr_addr);
 
 			const char *fmt = (src && lblname) ? aAddrModeFmtSrc[mode] : aAddrModeFmt[mode];
 			const char *mnemonic = zsMNM[opcodes[op].mnemonic];
@@ -2263,6 +2276,7 @@ int main(int argc, char **argv)
 	bool ind_16 = true;
 	bool src = false;
 	bool prg = false;
+	bool ill_wdc = false;
 
 	const dismnm *opcodes = a6502_ops;
 	strref labels;
@@ -2314,6 +2328,13 @@ int main(int argc, char **argv)
 						opcodes = a65C02_ops;
 					else if (arg.same_str("6502"))
 						opcodes = a6502_ops;
+					else if (arg.same_str("65C02WDC")) {
+						opcodes = a65C02_ops;
+						ill_wdc = true;
+					} else if (arg.same_str("6502ILL")) {
+						opcodes = a6502_ops;
+						ill_wdc = true;
+					}
 				}
 			}
 		}
@@ -2339,7 +2360,7 @@ int main(int argc, char **argv)
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
 					bytes = size_t(end - skip);
-				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, opcodes, src, data, labels);
+				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, ill_wdc, opcodes, src, data, labels);
 			}
 			free(mem);
 		}
