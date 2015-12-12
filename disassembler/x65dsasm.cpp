@@ -1715,7 +1715,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			}
 		}
 		last--;
-		if (last<=1 || refs[last].data==DT_CODE)
+		if (last<=1 || (refs[last].data==DT_CODE || refs[last].data==DT_PTRS))
 			break;
 	}
 
@@ -2114,7 +2114,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			strown<64> lblname;
 			strref lblcmt;
 			for (size_t i = 0; i<refs.size(); ++i) {
-				if (reference == refs[i].address || 
+				if (reference == refs[i].address || (reference>=refs[i].address && reference<(refs[i].address+refs[i].size)) ||
 					(reference>=start_addr && reference<=end_addr && reference>=refs[i].address)) {
 					if (i==(refs.size()-1) || reference<refs[i+1].address) {
 						RefAddr &ra = refs[i];
