@@ -1786,10 +1786,10 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 					} else { // forward check
 						while (j!=refs.end()) {
 							++j;
-							if (j!=refs.end() && !j->local)
-								skip_global = true;
 							if (j==refs.end() || trg_addr<j->address)
 								break;
+							if (j!=refs.end() && !j->local)
+								skip_global = true;
 						}
 					}
 					if (skip_global) {
@@ -1884,15 +1884,6 @@ bool IsReadOnlyInstruction(MNM_Base op_base)
 static const char spacing[] = "                ";
 void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, bool ill_wdc, const dismnm *opcodes, bool src, int init_data, strref labels)
 {
-	FILE *f = stdout;
-	bool opened = false;
-	if (filename) {
-		f = fopen(strown<512>(filename).c_str(), "w");
-		if (!f)
-			return;
-		opened = true;
-	}
-
 	const char *spc = src ? "" : spacing;
 
 	strref prev_src;
@@ -1907,6 +1898,15 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	bool is_data = refs.size() ? (refs[0].data==DT_DATA || refs[0].data==DT_PTRS || refs[0].data==DT_PTRS_DATA) : false;
 	bool is_ptrs = is_data && (refs[0].data==DT_PTRS || refs[0].data==DT_PTRS_DATA);
 	strown<256> out;
+
+	FILE *f = stdout;
+	bool opened = false;
+	if (filename) {
+		f = fopen(strown<512>(filename).c_str(), "w");
+		if (!f)
+			return;
+		opened = true;
+	}
 
 	while (bytes) {
 		// Determine if current address is referenced from somewhere
