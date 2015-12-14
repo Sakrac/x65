@@ -1379,20 +1379,22 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	for (int i = 0; i<last_user; ++i) {
 		if (refs[i].data==DT_PTRS || refs[i].data==DT_PTRS_DATA) {
 			int num = refs[i].size ? (refs[i].size/2) : ((refs[i+1].address - refs[i].address)/2);
-			unsigned char *p = mem + refs[i].address - addr;
-			for (int l = 0; l<num; l++) {
-				int a = p[0] + ((unsigned short)p[1]<<8);
-				int n = GetLabelIndex(a);
-				int nr = (int)refs.size();
-				struct RefLink ref = { 2*l + refs[i].address, refs[i].data==DT_PTRS ? RT_JSR : RT_DATA };
-				if (n<0) {
-					refs.push_back(RefAddr(a));
-					refs[nr].pRefs = new std::vector<RefLink>();
-					refs[nr].data = refs[i].data==DT_PTRS_DATA ? DT_DATA : DT_CODE;
-					refs[nr].pRefs->push_back(ref);
-				} else
-					refs[n].pRefs->push_back(ref);
-				p += 2;
+			if (refs[i].address>=addr && (refs[i].address+refs[i].size)<=(addr+bytes)) {
+				unsigned char *p = mem + refs[i].address - addr;
+				for (int l = 0; l<num; l++) {
+					int a = p[0] + ((unsigned short)p[1]<<8);
+					int n = GetLabelIndex(a);
+					int nr = (int)refs.size();
+					struct RefLink ref = { 2*l + refs[i].address, refs[i].data==DT_PTRS ? RT_JSR : RT_DATA };
+					if (n<0) {
+						refs.push_back(RefAddr(a));
+						refs[nr].pRefs = new std::vector<RefLink>();
+						refs[nr].data = refs[i].data==DT_PTRS_DATA ? DT_DATA : DT_CODE;
+						refs[nr].pRefs->push_back(ref);
+					} else
+						refs[n].pRefs->push_back(ref);
+					p += 2;
+				}
 			}
 		}
 	}
@@ -1954,7 +1956,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 			}
 			if (addr>refs[curr_label_index].address) {
 				if (ref.label)
-					out.sprintf(STRREF_FMT " = %02x\n", STRREF_ARG(ref.label), ref.address);
+					out.sprintf(STRREF_FMT " = $%02x\n", STRREF_ARG(ref.label), ref.address);
 				else
 					out.sprintf("%s_%d = $%02x\n", ref.local ? ".l" : (ref.data==DT_CODE ? "Code" : (ref.address>=0 && ref.address<0x100 ? "zp" : "Data")),
 						ref.number, ref.address);
