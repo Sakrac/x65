@@ -77,7 +77,7 @@ VIC_Sprite0_x = $d000 set sprite 0 x position
 VIC_Sprite0_y = $d001 set sprite 0 y position
 VIC_Sprite1_x = $d002 set sprite 1 x position
 VIC_Sprite1_y = $d003 set sprite 1 y position
-``
+```
 
 The simple way to work with a labels file is to copy an existing hardware file and add labels to it.
 
