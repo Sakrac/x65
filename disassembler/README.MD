@@ -23,9 +23,14 @@ x65dsasm binary disasm.txt [$skip[-$end]] [addr=$xxxx] [cpu=6502/65C02/65816]
 * src: export near assemblable source with guesstimated data blocks
 * mx: set the mx flags which control accumulator and index register size
 * labels: import labels from a file (each line: label=$xxxx [code]/[data] comment)
+* graph: prefix the file with a calling graph
+* graph+bra: include branches in the calling graph (increases size significantly)
 
 ### Updates
 
+* graph option exports a calling graph before the disassembly
+* re-evaluation of separating segments after final cleanup
+* c64kernal.lbl file defining c64 hw + kernal functions in the range of $e000-$fffa
 * a78.lbl file defining Atari 7800 hardware addresses
 * Switched the instruction info around to more easily determine read-only instructions
 * Various improvements distinguishing between code and data
@@ -72,11 +77,31 @@ VIC_Sprite0_x = $d000 set sprite 0 x position
 VIC_Sprite0_y = $d001 set sprite 0 y position
 VIC_Sprite1_x = $d002 set sprite 1 x position
 VIC_Sprite1_y = $d003 set sprite 1 y position
-```
+``
+
+The simple way to work with a labels file is to copy an existing hardware file and add labels to it.
 
 Sample output:
 
 ```
+;
+; FUNCTION CALLING GRAPH
+;
+; Code_140 ($d4af) [-]
+;   Code_21 ($c5a3) [jmp]
+;     Code_143 ($d56e) [jsr]
+;       Code_109 ($cec3) [jsr]
+;
+; DISASSEMBLY
+;
+; Referenced from ResetVector + $0 (subroutine, $fffc)
+; Referenced from IntVector + $0 (subroutine, $fffe)
+Reset: ; $c000
+  cld 
+  sei 
+; Referenced from Reset / .l_1 + $3 (branch, $c002)
+.l_1: ; $c002
+
 ; -------------------------------- ;
 
 ; Referenced from Label_14 + $7 (subroutine)
