@@ -1316,6 +1316,8 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	int end_addr = addr + (int)bytes;
 
 	while (strref lab_line = labels.line()) {
+		if (lab_line.get_first()==';')
+			continue;
 		strref name = lab_line.split_token_trim('=');
 		if (lab_line.get_first()=='$')
 			++lab_line;
@@ -1379,7 +1381,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 	for (int i = 0; i<last_user; ++i) {
 		if (refs[i].data==DT_PTRS || refs[i].data==DT_PTRS_DATA) {
 			int num = refs[i].size ? (refs[i].size/2) : ((refs[i+1].address - refs[i].address)/2);
-			if (refs[i].address>=addr && (refs[i].address+refs[i].size)<=(addr+bytes)) {
+			if (refs[i].address>=addr && (refs[i].address+refs[i].size)<=(addr+(int)bytes)) {
 				unsigned char *p = mem + refs[i].address - addr;
 				for (int l = 0; l<num; l++) {
 					int a = p[0] + ((unsigned short)p[1]<<8);
@@ -1676,7 +1678,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 
 		// after a separator if there is no jmp, jsr, brl begin data block
 		if (!was_data) {
-			if (op == 0x60 || op == 0x40 || op == 0x6b ||
+			if (op == 0x00 || op == 0x60 || op == 0x40 || op == 0x6b ||
 				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
 				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				bool exit_instr = false;
@@ -1824,6 +1826,76 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		++k;
 	}
 
+	bytes = bytes_orig;
+	addr = addr_orig;
+	mem = mem_orig;
+	curr_label = 0;
+	was_data = true;
+
+	// disassemble code sections again with all the labels filtered out to
+	// re-evaluate separators
+	while (bytes && curr_label<(int)refs.size()) {
+		while (curr_label<(int)refs.size() && addr>=refs[curr_label].address) {
+			was_data = refs[curr_label].data != DT_CODE;
+			curr_label++;
+		}
+		if (curr_label==refs.size())
+			break;
+		if (was_data || refs[curr_label].separator) {
+			int skip = refs[curr_label].address-addr;
+			if (skip>(int)bytes)
+				break;
+			bytes -= skip;
+			addr += skip;
+			mem += skip;
+		} else {
+			unsigned char op = *mem++;
+			int curr = addr;
+			bytes--;
+			addr++;
+			if (opcodes == a65816_ops) {
+				if (op == 0xe2) {	// sep
+					if ((*mem)&0x20) acc_16 = false;
+					if ((*mem)&0x10) ind_16 = false;
+				} else if (op == 0xc2) { // rep
+					if ((*mem)&0x20) acc_16 = true;
+					if ((*mem)&0x10) ind_16 = true;
+				}
+			}
+
+			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
+			int arg_size = not_valid ? 0 : opcodes[op].arg_size;;
+			int mode = not_valid ? AM_NON : opcodes[op].addrMode;
+			switch (mode) {
+				case AM_IMM_DBL_A:
+					arg_size = acc_16 ? 2 : 1;
+					break;
+				case AM_IMM_DBL_I:
+					arg_size = ind_16 ? 2 : 1;
+					break;
+			}
+
+			addr += arg_size;
+			mem += arg_size;
+			if (arg_size > (int)bytes)
+				break;
+			bytes -= arg_size;
+
+			if (op == 0x00 || op == 0x60 || op == 0x40 || op == 0x6b ||
+				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
+				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+				refs[curr_label].separator = true;
+				int skip = refs[curr_label+1].address-addr;
+				if (skip>(int)bytes)
+					break;
+				bytes -= skip;
+				addr += skip;
+				mem += skip;
+			}
+		}
+	}
+
+
 	// re-check for code references to code being mislabeled
 	bool adjusted_code_ref = true;
 	while (adjusted_code_ref) {
@@ -1859,8 +1931,9 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		}
 	}
 	k = refs.begin();
+	bool was_code = false;
 	while (k!=refs.end()) {
-		if (k->data == DT_CODE && !k->label) {
+		if (k->data == DT_CODE && !k->label && (!was_code || k->separator)) {
 			std::vector<RefLink> &links = *k->pRefs;
 			bool definitely_code = false;
 			for (std::vector<RefLink>::iterator l = links.begin(); l!=links.end(); ++l) {
@@ -1873,6 +1946,7 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 			if (!definitely_code)
 				k->data = DT_DATA;
 		}
+		was_code = k->data == DT_CODE;
 		++k;
 	}
 }
@@ -1900,8 +1974,195 @@ bool IsReadOnlyInstruction(MNM_Base op_base)
 	return false;
 }
 
+struct call_ref {
+	int address;
+	int target;
+	int seg_addr;
+	int seg_trg;
+	bool recursed;
+	RefType type;
+};
+
+struct seg_call {
+	int first_call_in_seg;
+	int num_calls_in_seg;
+	int address;
+};
+
+
+typedef std::vector<call_ref> call_vector;
+typedef std::vector<seg_call> seg_lookup;
+
+static int _sortCalls(const void *A, const void *B)
+{
+	return ((const struct call_ref*)A)->address - ((const struct call_ref*)B)->address;
+}
+
+static int _sortInclusiveCalls(const void *A, const void *B)
+{
+	return ((const int*)B)[1] - ((const int*)A)[1];
+}
+
+static int countCalls(const int curr_ref, const call_ref *pCalls, const int num_calls, const seg_call *pLookup, const int num_lookup, char *visited)
+{
+	visited[curr_ref>>3] |= 1<<(curr_ref&7);
+	int ret = 1;
+	for (int j = 0; j<pLookup[curr_ref].num_calls_in_seg; j++) {
+		int next_ref = pCalls[pLookup[curr_ref].first_call_in_seg + j].seg_trg;
+		if ((visited[next_ref>>3] & 1<<(next_ref&7))==0)
+			ret += countCalls(next_ref, pCalls, num_calls, pLookup, num_lookup, visited);
+	}
+	return ret;
+}
+
+static strown<256> _lblName;
+
+static const char *aRefStr[] = {
+	"-", //RT_NONE,
+	"branch", //RT_BRANCH,	// bne, etc.
+	"long branch", //RT_BRA_L,	// brl
+	"jmp", //RT_JUMP,	// jmp
+	"jsr", //RT_JSR,		// jsr
+	"data", //RT_DATA,	// lda $...
+	"zp", //RT_ZP,		// using a zero page / direct page instruction
+};
+
+static void printCalls(const int curr_ref, const call_ref *pCalls, const int num_calls, const seg_call *pLookup, const int num_lookup, char *visited, char *included, char *prefix, RefType rtype, FILE *f)
+{
+	RefAddr &ra = refs[curr_ref];
+	if (ra.label)
+		_lblName.copy(ra.label);
+	else
+		_lblName.sprintf("%s_%d", ra.local ? ".l" : (ra.data==DT_CODE ? "Code" :
+			(ra.address>=0 && ra.address<0x100 ? "zp" : "Data")), ra.number);
+
+	fprintf(f, "%s" STRREF_FMT " ($%x) [%s]%s\n", prefix, STRREF_ARG(_lblName), pLookup[curr_ref].address, aRefStr[rtype], (visited[curr_ref>>3] & 1<<(curr_ref&7)) ? " ...":"");
+	if (visited[curr_ref>>3] & 1<<(curr_ref&7))
+		return;
+	visited[curr_ref>>3] |= 1<<(curr_ref&7);
+	included[curr_ref>>3] |= 1<<(curr_ref&7);
+	strcpy(prefix+strlen(prefix), "  ");
+	for (int j = 0; j<pLookup[curr_ref].num_calls_in_seg; j++) {
+		int next_ref = pCalls[pLookup[curr_ref].first_call_in_seg + j].seg_trg;
+		if ((visited[next_ref>>3] & 1<<(next_ref&7)) == 0) {
+			RefType next_type = pCalls[pLookup[curr_ref].first_call_in_seg + j].type;
+			printCalls(next_ref, pCalls, num_calls, pLookup, num_lookup, visited, included, prefix, next_type, f);
+		}
+	}
+	prefix[strlen(prefix)-2] = 0;
+}
+
+
+
+void CallGraph(int start, int end, bool branches, FILE *f)
+{
+	call_vector calls;
+	calls.reserve(refs.size() * 5);
+	std::vector<int> call_counts;
+	call_counts.reserve(refs.size());
+	seg_lookup lookup;
+	lookup.reserve(refs.size());
+
+
+	int g = 0;
+	DataType prevType = DT_DATA;
+	for (int i = 0; i<(int)refs.size(); ++i) {
+		if (refs[i].data == DT_CODE) {
+			if (!refs[i].local || prevType != DT_CODE)
+				g = i;
+			int addr0 = refs[g].address;
+			int addr1 = (i+1)<(int)refs.size() ? refs[i+1].address : end;
+			if (std::vector<RefLink> *pLinks = refs[i].pRefs) {
+				for (std::vector<RefLink>::iterator l = pLinks->begin(); l!=pLinks->end(); ++l) {
+					if (l->instr_addr>=addr0 && l->instr_addr<addr1)
+						continue;
+					if ((l->type == RT_JSR || l->type==RT_JUMP || (branches && (l->type == RT_BRANCH || l->type==RT_BRA_L))) &&
+						l->instr_addr>=start && l->instr_addr<end) {
+
+						struct call_ref c;
+						c.address = l->instr_addr;
+						c.target = refs[i].address;
+						c.seg_trg = g;
+						c.seg_addr = -1;
+						c.type = l->type;
+						int jg = 0;
+						for (int j = 0; j<(int)refs.size(); ++j) {
+							if (!j || !refs[j].local)
+								jg = j;
+							if (c.address>=refs[j].address && ((j+1)==refs.size() || c.address<refs[j+1].address)) {
+								c.seg_addr = jg;
+								break;
+							}
+						}
+						if (c.seg_trg != c.seg_addr)
+							calls.push_back(c);
+					}
+				}
+			}
+		}
+		prevType = (DataType)refs[i].data;
+	}
+
+	if (refs.size())
+		qsort(&calls[0], calls.size(), sizeof(calls[0]), _sortCalls);
+
+	struct seg_call sg0 = { -1, -1, 0 };
+	for (int i = 0; i<(int)refs.size(); i++) {
+		sg0.address = refs[i].address;
+		call_counts.push_back(0);
+		lookup.push_back(sg0);
+	}
+
+	int seg = 0;
+	int call = 0;
+	for (int i = 0; i<(int)calls.size(); i++) {
+		if (calls[i].seg_addr>=0)
+			call_counts[calls[i].seg_addr]++;
+		if (seg<calls[i].seg_addr) {
+			seg = calls[i].seg_addr;
+			lookup[seg].first_call_in_seg = i;
+		}
+		lookup[seg].num_calls_in_seg = i-lookup[seg].first_call_in_seg+1;
+	}
+
+	if (lookup.size()) {
+		int call8s = ((int)lookup.size() + 7)/8;
+		char *visited = (char*)malloc(call8s);
+		char *included = (char*)malloc(call8s);
+		int *subcalls = (int*)malloc(2 * lookup.size() * sizeof(int));
+		memset(included, 0, call8s);
+		memset(subcalls, 0, lookup.size() * sizeof(int) * 2);
+
+		// count number of calls
+		for (int i = 0; i<(int)lookup.size(); i++) {
+			memset(visited, 0, call8s);
+			subcalls[i*2] = i;
+			subcalls[i*2+1] = refs[i].data==DT_CODE ? countCalls(i, &calls[0], (int)calls.size(), &lookup[0], (int)lookup.size(), visited) : 0;
+		}
+		qsort(subcalls, lookup.size(), sizeof(int)*2, _sortInclusiveCalls);
+
+		fprintf(f, ";\n; FUNCTION CALLING GRAPH\n;\n");
+
+		char prefix[512];
+		strcpy(prefix, "; ");
+		for (int i = 0; i<(int)lookup.size(); i++) {
+			if (subcalls[i*2+1]) {
+				int n = subcalls[i*2];
+				if ((included[n>>3]&(1<<(n&7))) == 0 && refs[n].data==DT_CODE && !refs[n].local) {
+					memset(visited, 0, call8s);
+					printCalls(n, &calls[0], (int)calls.size(), &lookup[0], (int)lookup.size(), visited, included, prefix, RT_NONE, f);
+				}
+			}
+		}
+		fprintf(f, ";\n; DISASSEMBLY\n;\n");
+		free(subcalls);
+		free(visited);
+		free(included);
+	}
+}
+
 static const char spacing[] = "                ";
-void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, bool ill_wdc, const dismnm *opcodes, bool src, int init_data, strref labels)
+void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, int addr, bool ill_wdc, bool graph, bool graph_branches, const dismnm *opcodes, bool src, int init_data, strref labels)
 {
 	const char *spc = src ? "" : spacing;
 
@@ -1928,6 +2189,9 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 	}
 
 	int reseperate = -1;
+
+	if (graph)
+		CallGraph(addr, addr+(int)bytes, graph_branches, f);
 
 	while (bytes) {
 		// Determine if current address is referenced from somewhere
@@ -2024,7 +2288,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 							out.sprintf_append(" ; $%04x " STRREF_FMT "\n", a, STRREF_ARG(refs[lbl].comment));
 						} else {
 							RefAddr &ra = refs[lbl];
-							out.sprintf_append("%s%s_%d: ; $%04x" STRREF_FMT "\n", spc,
+							out.sprintf_append("%s%s_%d ; $%04x" STRREF_FMT "\n", spc,
 								ra.local ? ".l" : (ra.data==DT_CODE ? "Code" : (ra.address>=0 && ra.address<0x100 ? "zp" : "Data")),
 								ra.number, a, STRREF_ARG(ra.comment));
 						}
@@ -2105,7 +2369,7 @@ void Disassemble(strref filename, unsigned char *mem, size_t bytes, bool acc_16,
 
 			int reference = -1;
 			separator = false;
-			if (op == 0x60 || op == 0x40 || op == 0x6b ||
+			if (op == 0x00 || op == 0x60 || op == 0x40 || op == 0x6b ||
 				((op == 0x4c || op == 0x6c) && mem[arg_size] != 0x4c && mem[arg_size] != 0x6c) ||
 				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
 				separator = true;
@@ -2310,6 +2574,8 @@ int main(int argc, char **argv)
 	bool src = false;
 	bool prg = false;
 	bool ill_wdc = false;
+	bool graph = false;
+	bool graph_branches = false;
 
 	const dismnm *opcodes = a6502_ops;
 	strref labels;
@@ -2332,7 +2598,12 @@ int main(int argc, char **argv)
 				src = true;
 			else if (var.same_str("prg"))
 				prg = true;
-			else if (!arg) {
+			else if (var.same_str("graph"))
+				graph = true;
+			else if (var.same_str("graph+bra")) {
+				graph = true;
+				graph_branches = true;
+			} else if (!arg) {
 				if (!bin)
 					bin = argv[i];
 				else if (!out)
@@ -2393,7 +2664,7 @@ int main(int argc, char **argv)
 				size_t bytes = size - skip;
 				if (end && bytes > size_t(end - skip))
 					bytes = size_t(end - skip);
-				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, ill_wdc, opcodes, src, data, labels);
+				Disassemble(out, mem + skip, bytes, acc_16, ind_16, addr, ill_wdc, graph, graph_branches, opcodes, src, data, labels);
 			}
 			free(mem);
 		}
