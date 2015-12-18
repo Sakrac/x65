@@ -1256,6 +1256,7 @@ enum RefType {
 	RT_JSR,		// jsr
 	RT_DATA,	// lda $...
 	RT_ZP,		// using a zero page / direct page instruction
+	RT_FALLTHROUGH,	// function is entered from prior function
 	RT_COUNT
 };
 
@@ -1266,7 +1267,7 @@ enum DataType {
 	DT_PTRS_DATA
 };
 
-const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data", "zp" };
+const char *aRefNames[RT_COUNT] = { "???", "branch", "long branch", "jump", "subroutine", "data", "zp", "fallthrough" };
 
 struct RefLink {
 	int instr_addr;
@@ -2025,6 +2026,7 @@ static const char *aRefStr[] = {
 	"jsr", //RT_JSR,		// jsr
 	"data", //RT_DATA,	// lda $...
 	"zp", //RT_ZP,		// using a zero page / direct page instruction
+	"fallthrough"
 };
 
 static void printCalls(const int curr_ref, const call_ref *pCalls, const int num_calls, const seg_call *pLookup, const int num_lookup, char *visited, char *included, char *prefix, RefType rtype, FILE *f)
@@ -2065,13 +2067,28 @@ void CallGraph(int start, int end, bool branches, FILE *f)
 
 
 	int g = 0;
+	int pg = 0;
 	DataType prevType = DT_DATA;
+	bool separator = true;
 	for (int i = 0; i<(int)refs.size(); ++i) {
 		if (refs[i].data == DT_CODE) {
-			if (!refs[i].local || prevType != DT_CODE)
+			if (!refs[i].local || prevType != DT_CODE) {
+				pg = g;
 				g = i;
+			}
 			int addr0 = refs[g].address;
 			int addr1 = (i+1)<(int)refs.size() ? refs[i+1].address : end;
+
+			if (prevType == DT_CODE && !refs[i].separator && g==i) {
+				struct call_ref c;
+				c.address = refs[i-1].address;
+				c.target = refs[i].address;
+				c.seg_trg = g;
+				c.seg_addr = pg;
+				c.type = RT_FALLTHROUGH;
+				calls.push_back(c);
+			}
+
 			if (std::vector<RefLink> *pLinks = refs[i].pRefs) {
 				for (std::vector<RefLink>::iterator l = pLinks->begin(); l!=pLinks->end(); ++l) {
 					if (l->instr_addr>=addr0 && l->instr_addr<addr1)
@@ -2101,6 +2118,7 @@ void CallGraph(int start, int end, bool branches, FILE *f)
 			}
 		}
 		prevType = (DataType)refs[i].data;
+		separator = !!refs[i].separator;
 	}
 
 	if (refs.size())
