@@ -1754,6 +1754,80 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		++k;
 	}
 
+	bytes = bytes_orig;
+	addr = addr_orig;
+	mem = mem_orig;
+	curr_label = 0;
+	was_data = true;
+
+	// disassemble code sections again with all the labels filtered out to
+	// re-evaluate separators
+	bool was_separator = true;
+	while (bytes && curr_label<(int)refs.size()) {
+		while (curr_label<(int)refs.size() && addr>=refs[curr_label].address) {
+			if (!was_data && !was_separator && refs[curr_label].separator)
+				refs[curr_label].separator = 0;
+			was_data = refs[curr_label].data != DT_CODE;
+			was_separator = !!refs[curr_label].separator || was_data;
+			curr_label++;
+		}
+		if (curr_label==refs.size())
+			break;
+		if (was_data || was_separator) {
+			int skip = refs[curr_label].address-addr;
+			if (skip>(int)bytes)
+				break;
+			bytes -= skip;
+			addr += skip;
+			mem += skip;
+		} else {
+			unsigned char op = *mem++;
+			int curr = addr;
+			bytes--;
+			addr++;
+			if (opcodes == a65816_ops) {
+				if (op == 0xe2) {	// sep
+					if ((*mem)&0x20) acc_16 = false;
+					if ((*mem)&0x10) ind_16 = false;
+				} else if (op == 0xc2) { // rep
+					if ((*mem)&0x20) acc_16 = true;
+					if ((*mem)&0x10) ind_16 = true;
+				}
+			}
+
+			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
+			int arg_size = not_valid ? 0 : opcodes[op].arg_size;;
+			int mode = not_valid ? AM_NON : opcodes[op].addrMode;
+			switch (mode) {
+				case AM_IMM_DBL_A:
+					arg_size = acc_16 ? 2 : 1;
+					break;
+				case AM_IMM_DBL_I:
+					arg_size = ind_16 ? 2 : 1;
+					break;
+			}
+
+			addr += arg_size;
+			mem += arg_size;
+			if (arg_size > (int)bytes)
+				break;
+			bytes -= arg_size;
+
+			if (op == 0x00 || op == 0x60 || op == 0x40 || op == 0x6b ||
+				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
+				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
+				refs[curr_label].separator = true;
+				was_separator = true;
+				int skip = refs[curr_label+1].address-addr;
+				if (skip>(int)bytes)
+					break;
+				bytes -= skip;
+				addr += skip;
+				mem += skip;
+			}
+		}
+	}
+
 	// figure out which labels can be local
 
 	k = refs.begin();	// make all labels that are not assigned something local
@@ -1827,74 +1901,6 @@ void GetReferences(unsigned char *mem, size_t bytes, bool acc_16, bool ind_16, i
 		++k;
 	}
 
-	bytes = bytes_orig;
-	addr = addr_orig;
-	mem = mem_orig;
-	curr_label = 0;
-	was_data = true;
-
-	// disassemble code sections again with all the labels filtered out to
-	// re-evaluate separators
-	while (bytes && curr_label<(int)refs.size()) {
-		while (curr_label<(int)refs.size() && addr>=refs[curr_label].address) {
-			was_data = refs[curr_label].data != DT_CODE;
-			curr_label++;
-		}
-		if (curr_label==refs.size())
-			break;
-		if (was_data || refs[curr_label].separator) {
-			int skip = refs[curr_label].address-addr;
-			if (skip>(int)bytes)
-				break;
-			bytes -= skip;
-			addr += skip;
-			mem += skip;
-		} else {
-			unsigned char op = *mem++;
-			int curr = addr;
-			bytes--;
-			addr++;
-			if (opcodes == a65816_ops) {
-				if (op == 0xe2) {	// sep
-					if ((*mem)&0x20) acc_16 = false;
-					if ((*mem)&0x10) ind_16 = false;
-				} else if (op == 0xc2) { // rep
-					if ((*mem)&0x20) acc_16 = true;
-					if ((*mem)&0x10) ind_16 = true;
-				}
-			}
-
-			bool not_valid = opcodes[op].mnemonic==mnm_inv || (!ill_wdc && opcodes[op].mnemonic>=mnm_wdc_and_illegal_instructions);
-			int arg_size = not_valid ? 0 : opcodes[op].arg_size;;
-			int mode = not_valid ? AM_NON : opcodes[op].addrMode;
-			switch (mode) {
-				case AM_IMM_DBL_A:
-					arg_size = acc_16 ? 2 : 1;
-					break;
-				case AM_IMM_DBL_I:
-					arg_size = ind_16 ? 2 : 1;
-					break;
-			}
-
-			addr += arg_size;
-			mem += arg_size;
-			if (arg_size > (int)bytes)
-				break;
-			bytes -= arg_size;
-
-			if (op == 0x00 || op == 0x60 || op == 0x40 || op == 0x6b ||
-				((op == 0x4c || op == 0x6c) && (prev_op!=0x4c && prev_op!=0x6c)) ||
-				op == 0x6c || op == 0x7c || op == 0x5c || op == 0xdc) {	// rts, rti, rtl or jmp
-				refs[curr_label].separator = true;
-				int skip = refs[curr_label+1].address-addr;
-				if (skip>(int)bytes)
-					break;
-				bytes -= skip;
-				addr += skip;
-				mem += skip;
-			}
-		}
-	}
 
 
 	// re-check for code references to code being mislabeled
