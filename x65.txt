@@ -662,6 +662,48 @@ Directives for String Symbols
 Structs and Enums
 -----------------
 
+Hierarchical data structures (dot separated sub structures)
+
+Structs helps define complex data types, there are two basic types to
+define struct members, and as long as a struct is declared it can be
+used as a member type of another struct.
+
+The result of a struct is that each member is an offset from the start
+of the data block in memory. Each substruct is referenced by separating
+the struct names with dots.
+
+To get the size of a struct simply use the automatic 'bytes' member as
+in <struct>.bytes
+
+Example:
+
+struct MyStruct {
+    byte    count
+    word    pointer
+}
+
+struct TwoThings {
+    MyStruct thing_one
+    MyStruct thing_two
+}
+
+struct Mixed {
+    word banana
+    TwoThings things
+}
+
+Eval Mixed.bytes
+Eval Mixed.things
+Eval Mixed.things.thing_two
+Eval Mixed.things.thing_two.pointer
+Eval Mixed.things.thing_one.count
+results in the output:
+
+EVAL(15): "Mixed.bytes" = $3
+EVAL(16): "Mixed.things" = $2
+EVAL(27): "Mixed.things.thing_two" = $5
+EVAL(28): "Mixed.things.thing_two.pointer" = $6
+EVAL(29): "Mixed.things.thing_one.count" = $2
 
 * ENUM - structs and enums, declare enumerations like C
 * STRUCT - structs and enums, declare a C-like structure of symbols
