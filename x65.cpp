@@ -3017,6 +3017,8 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 	while (strref line = declaration.line()) {
 		line.trim_whitespace();
 		strref type = line.split_label();
+		if (!type)
+			continue;
 		line.skip_whitespace();
 		unsigned int type_hash = type.fnv1a();
 		unsigned short type_size = 0;
@@ -3052,6 +3054,17 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		structMembers.push_back(member);
 
 		size += type_size;
+		member_count++;
+	}
+
+	// add a trailing member of 0 bytes to access the size of the structure
+	{
+		struct MemberOffset bytes_member;
+		bytes_member.offset = size;
+		bytes_member.name = "bytes";
+		bytes_member.name_hash = bytes_member.name.fnv1a();
+		bytes_member.sub_struct = strref();
+		structMembers.push_back(bytes_member);
 		member_count++;
 	}
 
