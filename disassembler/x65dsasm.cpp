@@ -2037,19 +2037,22 @@ static const char *aRefStr[] = {
 
 static void printCalls(const int curr_ref, const call_ref *pCalls, const int num_calls, const seg_call *pLookup, const int num_lookup, char *visited, char *included, char *prefix, RefType rtype, FILE *f)
 {
-	RefAddr &ra = refs[curr_ref];
-	if (ra.label)
-		_lblName.copy(ra.label);
-	else
-		_lblName.sprintf("%s_%d", ra.local ? ".l" : (ra.data==DT_CODE ? "Code" :
-			(ra.address>=0 && ra.address<0x100 ? "zp" : "Data")), ra.number);
+	if (rtype != RT_FALLTHROUGH) {
+		RefAddr &ra = refs[curr_ref];
+		if (ra.label)
+			_lblName.copy(ra.label);
+		else
+			_lblName.sprintf("%s_%d", ra.local ? ".l" : (ra.data==DT_CODE ? "Code" :
+														 (ra.address>=0 && ra.address<0x100 ? "zp" : "Data")), ra.number);
 
-	fprintf(f, "%s" STRREF_FMT " ($%x) [%s]%s\n", prefix, STRREF_ARG(_lblName), pLookup[curr_ref].address, aRefStr[rtype], (visited[curr_ref>>3] & 1<<(curr_ref&7)) ? " ...":"");
-	if (visited[curr_ref>>3] & 1<<(curr_ref&7))
-		return;
+		fprintf(f, "%s" STRREF_FMT " ($%x) [%s]%s\n", prefix, STRREF_ARG(_lblName), pLookup[curr_ref].address, aRefStr[rtype], (visited[curr_ref>>3] & 1<<(curr_ref&7)) ? " ...":"");
+		if (visited[curr_ref>>3] & 1<<(curr_ref&7))
+			return;
+		strcpy(prefix+strlen(prefix), "  ");
+	}
 	visited[curr_ref>>3] |= 1<<(curr_ref&7);
 	included[curr_ref>>3] |= 1<<(curr_ref&7);
-	strcpy(prefix+strlen(prefix), "  ");
+
 	for (int j = 0; j<pLookup[curr_ref].num_calls_in_seg; j++) {
 		int next_ref = pCalls[pLookup[curr_ref].first_call_in_seg + j].seg_trg;
 		if ((visited[next_ref>>3] & 1<<(next_ref&7)) == 0) {
@@ -2057,7 +2060,8 @@ static void printCalls(const int curr_ref, const call_ref *pCalls, const int num
 			printCalls(next_ref, pCalls, num_calls, pLookup, num_lookup, visited, included, prefix, next_type, f);
 		}
 	}
-	prefix[strlen(prefix)-2] = 0;
+	if (rtype != RT_FALLTHROUGH)
+		prefix[strlen(prefix)-2] = 0;
 }
 
 
