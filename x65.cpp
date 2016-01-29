@@ -3982,6 +3982,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->reference = false;
 
 	MarkLabelLocal(label, true);
+	LabelAdded(pLabel, !!pool.scopeDepth);
 	return error;
 }
 
@@ -4014,7 +4015,7 @@ StatusCode LabelPool::Reserve(int numBytes, unsigned int &ret_addr)
 			for (int b = 0; b<numBytes; b++) {
 				*addr_map |= m;
 				unsigned int _m = m << 2;
-				if (!_m) { m <<= 30; addr_map++; } else { m = _m; }
+				if (!_m) { m >>= 30; addr_map++; } else { m = _m; }
 			}
 			ret_addr = addr;
 			return STATUS_OK;
