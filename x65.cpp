@@ -4152,22 +4152,30 @@ StatusCode Asm::IncludeSymbols(strref line)
 		strref symfile(buffer, strl_t(size));
 		while (symfile) {
 			symfile.skip_whitespace();
-			if (symfile[0]=='{')			// don't include local labels
-				symfile.scoped_block_skip();
-			if (strref symdef = symfile.line()) {
-				strref symtype = symdef.split_token(' ');
-				strref label = symdef.split_token_trim('=');
-				bool constant = symtype.same_str(".const");	// first word is either .label or .const
-				if (symlist) {
-					strref symchk = symlist;
-					while (strref symwant = symchk.split_token_trim(',')) {
-						if (symwant.same_str_case(label)) {
-							AssignLabel(label, symdef, constant);
-							break;
+			strref symstart = symfile;
+			if (strref symline = symfile.line()) {
+				int scope_start = symline.find('{');
+				if (scope_start > 0) {
+					strref symdef = symline.get_substr(0, scope_start);
+					symdef.clip_trailing_whitespace();
+					strref symtype = symdef.split_token(' ');
+					strref label = symdef.split_token_trim('=');
+					bool constant = symtype.same_str(".const");	// first word is either .label or .const
+					if (symlist) {
+						strref symchk = symlist;
+						while (strref symwant = symchk.split_token_trim(',')) {
+							if (symwant.same_str_case(label)) {
+								AssignLabel(label, symdef, constant);
+								break;
+							}
 						}
-					}
-				} else
-					AssignLabel(label, symdef, constant);
+					} else
+						AssignLabel(label, symdef, constant);
+				}
+				if (scope_start >= 0) {
+					symfile = symstart + scope_start;
+					symfile.scoped_block_skip();
+				}
 			}
 		}
 		loadedData.push_back(buffer);
