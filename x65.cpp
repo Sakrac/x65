@@ -4599,7 +4599,7 @@ StatusCode Asm::Directive_Incbin(strref line, int skip, int len)
 	size_t size = 0;
 	if (char *buffer = LoadBinary(line, size)) {
 		int bin_size = (int)size - skip;
-		if (bin_size>len)
+		if (len && bin_size>len)
 			bin_size = len;
 		if (bin_size>0)
 			AddBin((const unsigned char*)buffer+skip, bin_size);

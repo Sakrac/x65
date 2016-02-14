@@ -100,6 +100,9 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* INCBIN and IMPORT BINARY always failed (force 0 bytes length)
+* Using more than 16 bytes of Pool labels was flawed
+* Fixed STRUCT directive (failed if contained line was empty)
 * Adding x65macro.i
 * Vice symbols will generate breakpoints whenever label 'debugbreak' is encountered
 * Evaluating '==' was broken
