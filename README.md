@@ -19,20 +19,21 @@ Noteworthy features:
 * C style scoping within '{' and '}' with local and pool labels
   respecting scopes.
 * Conditional assembly with if/ifdef/else etc.
+* Recursible macro support
 * Assembler directives representing a variety of features.
 * Local labels can be defined in a number of ways, such as leading
   period (.label) or leading at-sign (@label) or terminating
-  dollar sign (label$).
+  dollar sign (label$), and leading colon for merlin (:label).
 * String Symbols system allows building user expressions and macros
   during assembly.
 * Reassignment of symbols and labels by default.
 * No indentation required for instructions, meaning that labels can't
-  be mnemonics, macros or directives.
+  be mnemonics, macros or directives (merlin requires indentation).
 * Supporting the syntax of other 6502 assemblers (Merlin syntax
   requires command line argument, -endm adds support for sources
   using macro/endmacro and repeat/endrepeat combos rather
   than scoeps).
-* Apple II GS executable output.
+* Apple II GS executable output (relocatable executable).
 
 ## Features
 
@@ -100,10 +101,10 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
-* INCSYM failed with local labels
+* INCSYM failed with local labels, this is now properly handled. (fixed again..)
 * INCBIN and IMPORT BINARY always failed (force 0 bytes length)
-* Using more than 16 bytes of Pool labels was flawed
-* Fixed STRUCT directive (failed if contained line was empty)
+* Using more than 16 bytes of Pool labels was flawed as byte 15 and 16 would be the same address.
+* Fixed STRUCT directive (failed if contained line was empty).
 * Adding x65macro.i
 * Vice symbols will generate breakpoints whenever label 'debugbreak' is encountered
 * Evaluating '==' was broken
