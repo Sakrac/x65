@@ -4155,7 +4155,7 @@ StatusCode Asm::IncludeSymbols(strref line)
 			strref symstart = symfile;
 			if (strref symline = symfile.line()) {
 				int scope_start = symline.find('{');
-				if (scope_start > 0) {
+				if (scope_start != 0) {
 					strref symdef = symline.get_substr(0, scope_start);
 					symdef.clip_trailing_whitespace();
 					strref symtype = symdef.split_token(' ');
