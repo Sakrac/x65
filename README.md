@@ -101,6 +101,7 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Labels can start with numbers and values will only be interpreted as decimal numbers if terminated by a character that is not an alphabetic character or underscore
 * INCSYM failed with local labels, this is now properly handled. (fixed again..)
 * INCBIN and IMPORT BINARY always failed (force 0 bytes length)
 * Using more than 16 bytes of Pool labels was flawed as byte 15 and 16 would be the same address.

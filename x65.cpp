@@ -3180,7 +3180,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			else if (c == '!' && !(expression + 1).len_label()) {
 				if (etx.scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
 				++expression; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
-			} else if (strref::is_number(c)) {
+			} else if (expression.match_chars_str("0-9", "!a-zA-Z_")) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
 				value = expression.atoi_skip(); return EVOP_VAL;
 			} else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
@@ -3245,8 +3245,8 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 			if (c == '!' && !(exp + 1).len_label()) {
 				if (etx.scope_pc < 0) return EVOP_NRY;
 				++exp; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
-			} else if (strref::is_number(c)) {
-				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
+			} else if (exp.match_chars_str("0-9", "!a-zA-Z_")) {
+				if (prev_op == EVOP_VAL) return EVOP_STP; // value followed by value doesn't make sense, stop
 				value = exp.atoi_skip(); return EVOP_VAL;
 			} else if (c == '!' || c == ':' || c=='.' || c=='@' || strref::is_valid_label(c)) {
 				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
@@ -5792,7 +5792,7 @@ StatusCode Asm::BuildLine(strref line)
 							line.clear();
 						} else if (syntax==SYNTAX_MERLIN && strref::is_ws(line_start[0])) {
 							error = ERROR_UNDEFINED_CODE;
-						} else if (label[0]=='$' || strref::is_number(label[0]))
+						} else if (label[0]=='$')
 							line.clear();
 						else {
 							if (label.get_last()==':')
@@ -7170,7 +7170,7 @@ int main(int argc, char **argv)
 					}
 				}
 
-				// export vice label file
+				// export vice monitor commands
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
