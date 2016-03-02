@@ -545,6 +545,9 @@ public:
 	// grab a block of text starting with (, [ or { and end with the corresponding number of ), ] or }
 	strref scoped_block_skip();
 
+	// check matching characters that are terminated by any character in term or ends
+	int match_chars_str(const strref match, const strref term = strref());
+
 	strref get_line() const; // return the current line even if empty,t don't change this line
 	strref get_line(strl_t line) const; // return line by index
 	strref next_line(); // return the current line even if empty and skip this to line after
@@ -3115,6 +3118,7 @@ int strref::find_any_not_in_range(const strref range, strl_t pos) const {
 	
 	return int_find_range(string+pos, length-pos, length, rng, !include);
 }
+
 // search of a character in a given range while also checking that
 // skipped characters are in another given range.
 int strref::find_range_char_within_range(const strref range_find, const strref range_within, strl_t pos) const {
@@ -3156,6 +3160,30 @@ bool strref::char_matches_ranges(unsigned char c) const {
 	bool match = int_char_match_range_case(c, rng.get(), rng.get_len());
 	return (match && include) || (!match && !include);
 }
+
+// count number of characters matching the range match as long
+// as it is terminated by a given character or empty
+int strref::match_chars_str(const strref match, const strref term)
+{
+	bool include_match, include_term;
+	strref rng = int_check_exclude(match, include_match);
+	strref trm = int_check_exclude(term, include_term);
+	int ret = 0;
+	const char *str = string;
+	int left = length;
+	while (left) {
+		char c = *str++;
+		if (include_match == int_char_match_range_case(c, rng.get(), rng.get_len())) {
+			ret++;
+		} else if (!term || include_term == int_char_match_range_case(c, trm.get(), trm.get_len())) {
+			return ret;
+		} else
+			return 0;
+		left--;
+	}
+	return ret;
+}
+
 
 // wildcard search
 
