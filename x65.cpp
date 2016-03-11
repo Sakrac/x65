@@ -1406,8 +1406,8 @@ typedef struct {
 // Context stack is a stack of currently processing text
 class ContextStack {
 private:
-	std::vector<SourceContext> stack;
-	SourceContext *currContext;
+	std::vector<SourceContext> stack;	// stack of contexts
+	SourceContext *currContext;			// current context
 public:
 	ContextStack() : currContext(nullptr) { stack.reserve(32); }
 	SourceContext& curr() { return *currContext; }
@@ -1652,6 +1652,9 @@ public:
 	// Change CPU
 	void SetCPU(CPUIndex CPU);
 
+	// Syntax
+	bool Merlin() const { return syntax == SYNTAX_MERLIN; }
+
 	// constructor
 	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502), num_instructions(0),
 		cpu(CPU_6502), list_cpu(CPU_6502) {
@@ -1761,7 +1764,7 @@ void Asm::SetCPU(CPUIndex CPU) {
 	opcode_table = aCPUs[CPU].opcodes;
 	opcode_count = aCPUs[CPU].num_opcodes;
 	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table,
-											 opcode_count, aCPUs[CPU].aliases, syntax == SYNTAX_MERLIN);
+											 opcode_count, aCPUs[CPU].aliases, Merlin());
 }
 
 // Read in text data (main source, include, etc.)
@@ -2745,7 +2748,7 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 	//
 	strref name;
 	bool params_first_line = false;
-	if (syntax == SYNTAX_MERLIN) {
+	if (Merlin()) {
 		if (Label *pLastLabel = GetLabel(last_label)) {
 			labels.remove((unsigned int)(pLastLabel - labels.getValues()));
 			name = last_label;
@@ -2781,7 +2784,7 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		pMacro = macros.getValues() + ins;
 	}
 	pMacro->name = name;
-	if (syntax == SYNTAX_MERLIN) {
+	if (Merlin()) {
 		strref source = macro;
 		while (strref next_line = macro.line()) {
 			next_line = next_line.before_or_full(';');
@@ -2846,7 +2849,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 		params = (macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
-	if (syntax == SYNTAX_MERLIN) {
+	if (Merlin()) {
 		// need to include comment field because separator is ;
 		if (contextStack.curr().read_source.is_substr(arg_list.get()))
 			arg_list = (contextStack.curr().read_source +
@@ -2867,6 +2870,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			int count = macro_src.substr_case_count(tag.get_strref());
 			dSize += count * ((int)a.get_len() - (int)tag.get_len());
 		}
+		macro_src.line();	// skip macro parameters
 		int mac_size = macro_src.get_len() + dSize + 32;
 		if (char *buffer = (char*)malloc(mac_size)) {
 			loadedData.push_back(buffer);
@@ -3326,7 +3330,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			if (!expression && exp_sp) {
 				expression = expression_stack[--exp_sp];
 				op = EVOP_RPR;
-			} else if (syntax == SYNTAX_MERLIN)
+			} else if (Merlin())
 				op = RPNToken_Merlin(expression, etx, prev_op, section, value);
 			else
 				op = RPNToken(expression, etx, prev_op, section, value, subexp);
@@ -4261,7 +4265,7 @@ StatusCode Asm::ParseStringOp(StringSymbol *pStr, strref line)
 			line += substr.get_len() + 2;
 			pStr->Append(substr);
 		} else {
-			strref label = line.split_range(syntax == SYNTAX_MERLIN ?
+			strref label = line.split_range(Merlin() ?
 				label_end_char_range_merlin : label_end_char_range);
 			if (StringSymbol *pStr2 = GetString(label))
 				pStr->Append(pStr2->get());
@@ -4451,7 +4455,7 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 	if (read_source.is_substr(line.get())) {
 		read_source.skip(strl_t(line.get() - read_source.get()));
 		strref expression;
-		if (syntax == SYNTAX_MERLIN || end_macro_directive) {
+		if (Merlin() || end_macro_directive) {
 			expression = line;			// Merlin repeat body begins next line
 			read_source.line();
 		} else {
@@ -4469,7 +4473,7 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 		if (STATUS_OK != EvalExpression(expression, etx, count))
 			return ERROR_REPT_COUNT_EXPRESSION;
 		strref recur;
-		if (syntax == SYNTAX_MERLIN || end_macro_directive) {
+		if (Merlin() || end_macro_directive) {
 			recur = read_source;		// Merlin repeat body ends at "--^"
 			while (strref next_line = read_source.line()) {
 				next_line = next_line.before_or_full(';');
@@ -4491,9 +4495,10 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 // macro: create an assembler macro
 StatusCode Asm::Directive_Macro(strref line, strref source_file)
 {
-	strref read_source = contextStack.curr().read_source;
-	if (read_source.is_substr(line.get())) {
-		read_source.skip(strl_t(line.get()-read_source.get()));
+	strref read_source = contextStack.curr().read_source.get_skip_ws();
+	if (!Merlin() && read_source.is_substr(line.get()))
+		read_source.skip(line.get()-read_source.get());
+	if (read_source) {
 		StatusCode error = AddMacro(read_source, contextStack.curr().source_name,
 									contextStack.curr().source_file, read_source);
 		contextStack.curr().next_source = read_source;
@@ -4532,7 +4537,7 @@ StatusCode Asm::Directive_String(strref line)
 
 StatusCode Asm::Directive_Undef(strref line)
 {
-	strref name = line.split_range_trim(syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+	strref name = line.split_range_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
 	unsigned int name_hash = name.fnv1a();
 	unsigned int index = FindLabelIndex(name_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && name_hash == labels.getKey(index)) {
@@ -4570,7 +4575,7 @@ StatusCode Asm::Directive_Include(strref line)
 		loadedData.push_back(buffer);
 		strref src(buffer, strl_t(size));
 		PushContext(file, src, src);
-	} else if (syntax == SYNTAX_MERLIN) {
+	} else if (Merlin()) {
 		// MERLIN include file name rules
 		if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
 			loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
@@ -4750,7 +4755,7 @@ StatusCode Asm::Directive_LNK(strref line)
 StatusCode Asm::Directive_XDEF(strref line)
 {
 	line.trim_whitespace();
-	if (strref xdef = line.split_range(syntax == SYNTAX_MERLIN ?
+	if (strref xdef = line.split_range(Merlin() ?
 			label_end_char_range_merlin : label_end_char_range)) {
 		char f = xdef.get_first();
 		char e = xdef.get_last();
@@ -4796,7 +4801,7 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 	while (strref exp_dc = line.split_token_trim(',')) {
 		int value = 0;
 		if (!CurrSection().IsDummySection()) {
-			if (syntax == SYNTAX_MERLIN && exp_dc.get_first() == '#')	// MERLIN allows for an immediate declaration on data
+			if (Merlin() && exp_dc.get_first() == '#')	// MERLIN allows for an immediate declaration on data
 				++exp_dc;
 			StatusCode error = EvalExpression(exp_dc, etx, value);
 			if (error > STATUS_XREF_DEPENDENT)
@@ -4883,7 +4888,7 @@ StatusCode Asm::Directive_EVAL(strref line)
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	strref lab1 = line;
-	lab1 = lab1.split_token_any_trim(syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+	lab1 = lab1.split_token_any_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
 	StringSymbol *pStr = line.same_str_case(lab1) ? GetString(lab1) : nullptr;
 
 	if (line && EvalExpression(line, etx, value) == STATUS_OK) {
@@ -5027,7 +5032,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_XREF:
 			Directive_XREF(line.split_range_trim(
-				syntax == SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range));
+				Merlin() ? label_end_char_range_merlin : label_end_char_range));
 			break;
 
 		case AD_ENT:	// MERLIN version of xdef, makes most recently defined label external
@@ -5476,9 +5481,9 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 			addrMode = AMB_ABS_L_X;
 		else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L))
 			addrMode = AMB_ZP_REL_L;
-		else if (syntax == SYNTAX_MERLIN && addrMode==AMB_IMM && validModes==AMM_ABS)
+		else if (Merlin() && addrMode==AMB_IMM && validModes==AMM_ABS)
 			addrMode = AMB_ABS;	// Merlin seems to allow this
-		else if (syntax == SYNTAX_MERLIN && addrMode==AMB_ABS && validModes==AMM_ZP_REL)
+		else if (Merlin() && addrMode==AMB_ABS && validModes==AMM_ZP_REL)
 			addrMode = AMB_ZP_REL;	// Merlin seems to allow this
 		else
 			return ERROR_INVALID_ADDRESSING_MODE;
@@ -5665,7 +5670,7 @@ StatusCode Asm::BuildLine(strref line)
 	StatusCode error = STATUS_OK;
 
 	// MERLIN: First char of line is * means comment
-	if (syntax==SYNTAX_MERLIN && line[0]=='*')
+	if (Merlin() && line[0]=='*')
 		return STATUS_OK;
 
 	// remember for listing
@@ -5673,6 +5678,10 @@ StatusCode Asm::BuildLine(strref line)
 	int start_address = CurrSection().address;
 	strref code_line = line;
 	list_flags = 0;
+
+	if (line.find("macro")>=0)
+		printf("HEY!");
+
 	while (line && error == STATUS_OK) {
 		strref line_start = line;
 		char char0 = line[0];				// first char including white space
@@ -5684,13 +5693,13 @@ StatusCode Asm::BuildLine(strref line)
 		if (line[0]==':' && syntax!=SYNTAX_MERLIN)	// Kick Assembler macro prefix (incompatible with merlin)
 			++line;
 		strref line_nocom = line;
-		strref operation = line.split_range(syntax==SYNTAX_MERLIN ? label_end_char_range_merlin : label_end_char_range);
+		strref operation = line.split_range(Merlin() ? label_end_char_range_merlin : label_end_char_range);
 		char char1 = operation[0];			// first char of first word
 		char charE = operation.get_last();	// end char of first word
 
 		line.trim_whitespace();
 		bool force_label = charE==':' || charE=='$';
-		if (!force_label && syntax==SYNTAX_MERLIN && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
+		if (!force_label && Merlin() && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
 			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
 		else if (!force_label && syntax!=SYNTAX_MERLIN && line[0]==':')
 			force_label = true;
@@ -5790,7 +5799,7 @@ StatusCode Asm::BuildLine(strref line)
 						if (StringSymbol *pStr = GetString(label)) {
 							StringAction(pStr, line);
 							line.clear();
-						} else if (syntax==SYNTAX_MERLIN && strref::is_ws(line_start[0])) {
+						} else if (Merlin() && strref::is_ws(line_start[0])) {
 							error = ERROR_UNDEFINED_CODE;
 						} else if (label[0]=='$')
 							line.clear();
@@ -5810,7 +5819,7 @@ StatusCode Asm::BuildLine(strref line)
 		// Check for unterminated condition in source
 		if (!contextStack.curr().next_source &&
 			(!ConditionalAsm() || ConditionalConsumed() || !conditional_depth)) {
-			if (syntax == SYNTAX_MERLIN) {	// this isn't a listed feature,
+			if (Merlin()) {	// this isn't a listed feature,
 				conditional_nesting[0] = 0;	//	some files just seem to get away without closing
 				conditional_consumed[0] = 0;
 				conditional_depth = 0;
@@ -6494,7 +6503,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 	size_t size;
 	strown<512> file;
 	file.copy(filename); // Merlin mostly uses extension-less files, append .x65 as a default
-	if ((syntax==SYNTAX_MERLIN && !file.has_suffix(".x65")) || filename.find('.')<0)
+	if ((Merlin() && !file.has_suffix(".x65")) || filename.find('.')<0)
 		file.append(".x65");
 	int file_index = (int)externals.size();
 	if (char *data = LoadBinary(file.get_strref(), size)) {
