@@ -34,6 +34,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include "struse.h"
 
 //
@@ -51,13 +52,13 @@ enum SectionType : char {
 };
 
 struct ObjFileHeader {
-	short id;	// 'x6'
-	short sections;
-	short relocs;
-	short labels;
-	short late_evals;
-	short map_symbols;
-	unsigned int stringdata;
+	int16_t id;	// 'x6'
+	int16_t sections;
+	int16_t relocs;
+	int16_t labels;
+	int16_t late_evals;
+	int16_t map_symbols;
+	uint32_t stringdata;
 	int bindata;
 };
 
@@ -77,19 +78,19 @@ struct ObjFileSection {
 	int end_address;
 	int output_size;		// assembled binary size
 	int align_address;
-	short next_group;		// next section of group
-	short first_group;		// first section of group
-	short relocs;
+	int16_t next_group;		// next section of group
+	int16_t first_group;		// first section of group
+	int16_t relocs;
 	SectionType type;
-	char flags;
+	int8_t flags;
 };
 
 struct ObjFileReloc {
 	int base_value;
 	int section_offset;
-	short target_section;
-	char bytes;
-	char shift;
+	int16_t target_section;
+	int8_t bytes;
+	int8_t shift;
 };
 
 struct ObjFileLabel {
@@ -102,8 +103,8 @@ struct ObjFileLabel {
 	struct ObjFileStr name;
 	int value;
 	int flags;				// 1<<(LabelFlags)
-	short section;			// -1 if resolved, file section # if section rel
-	short mapIndex;			// -1 if resolved, index into map if relative
+	int16_t section;			// -1 if resolved, file section # if section rel
+	int16_t mapIndex;			// -1 if resolved, index into map if relative
 };
 
 struct ObjFileLateEval {
@@ -111,16 +112,16 @@ struct ObjFileLateEval {
 	struct ObjFileStr expression;
 	int address;			// PC relative to section or fixed
 	int target;				// offset into section memory
-	short section;			// section to target
-	short rept;				// value of rept for this late eval
-	short scope;			// PC start of scope
-	short type;				// label, byte, branch, word (LateEval::Type)
+	int16_t section;			// section to target
+	int16_t rept;				// value of rept for this late eval
+	int16_t scope;			// PC start of scope
+	int16_t type;				// label, byte, branch, word (LateEval::Type)
 };
 
 struct ObjFileMapSymbol {
 	struct ObjFileStr name;	// symbol name
 	int value;
-	short section;
+	int16_t section;
 	bool local;				// local labels are probably needed
 };
 
@@ -181,7 +182,7 @@ static const char *section_type[] = {
 static const int section_type_str = sizeof(section_type) / sizeof(section_type[0]);
 
 
-void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
+void ReadObjectFile(const char *file, uint32_t show = SHOW_DEFAULT)
 {
 	size_t size;
 	if (char *data = LoadBinary(file, size)) {
@@ -204,7 +205,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 				int reloc_idx = 0;
 				for (int si = 0; si < hdr.sections; si++) {
 					struct ObjFileSection &s = aSect[si];
-					short f = s.flags;
+					int16_t f = s.flags;
 					const char *tstr = s.type > 0 && s.type < section_type_str ? section_type[s.type] : "error";
 					if (f & (1 << ObjFileSection::OFS_MERGED)) {
 						printf("Section %d: \"" STRREF_FMT "\": (Merged)",
@@ -265,7 +266,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 				for (int li = 0; li < hdr.labels; li++) {
 					struct ObjFileLabel &l = aLabels[li];
 					strref name = PoolStr(l.name, str_orig);
-					short f = l.flags;
+					int16_t f = l.flags;
 					int external = f & ObjFileLabel::OFL_XDEF;
 					printf("Label: " STRREF_FMT " %s base $%x", STRREF_ARG(name), external==ObjFileLabel::OFL_XDEF ? "external" : "protected", l.value);
 					if (external!=ObjFileLabel::OFL_XDEF)
@@ -309,7 +310,7 @@ void ReadObjectFile(const char *file, unsigned int show = SHOW_DEFAULT)
 int main(int argc, char **argv)
 {
 	const char *file = nullptr;
-	unsigned int show =  0;
+	uint32_t show =  0;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg = argv[a]+1;
