@@ -101,6 +101,9 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Removed the disassembler and put it into its own project [x65dsasm](http://github.com/sakrac/x65dsasm)
+* LUP/REPT directives clean up local symbols each iteration to avoid crossing over an iteration with branches to local labels.
+* Fixed Merlin MAC directive which is a little different from normal assembler macros
 * Labels can start with numbers and values will only be interpreted as decimal numbers if terminated by a character that is not an alphabetic character or underscore
 * INCSYM failed with local labels, this is now properly handled. (fixed again..)
 * INCBIN and IMPORT BINARY always failed (force 0 bytes length)
