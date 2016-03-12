@@ -101,6 +101,8 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Fixed REPT / LUP to not destroy local symbols in the scope it was used in while also destroying local symbols within the repeating block correctly
+* Switched over to inttypes.h from built-in types since the word unsigned was used a little too much in the code
 * Removed the disassembler and put it into its own project [x65dsasm](http://github.com/sakrac/x65dsasm)
 * LUP/REPT directives clean up local symbols each iteration to avoid crossing over an iteration with branches to local labels.
 * Fixed Merlin MAC directive which is a little different from normal assembler macros

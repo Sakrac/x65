@@ -38,6 +38,7 @@
 #include <vector>
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 // if the number of resolved labels exceed this in one late eval then skip
 //	checking for relevance and just eval all unresolved expressions.
@@ -314,10 +315,10 @@ enum EvalOperator {
 };
 
 // Opcode encoding
-typedef struct {
-	unsigned int op_hash;
-	unsigned char index;	// ground index
-	unsigned char type;		// mnemonic or
+typedef struct sOPLookup {
+	uint32_t op_hash;
+	uint8_t index;	// ground index
+	uint8_t type;		// mnemonic or
 } OPLookup;
 
 enum AddrMode {
@@ -449,8 +450,8 @@ enum AddrMode {
 
 struct mnem {
 	const char *instr;
-	unsigned int modes;
-	unsigned char aCodes[AMB_COUNT];
+	uint32_t modes;
+	uint8_t aCodes[AMB_COUNT];
 };
 
 struct mnem opcodes_6502[] = {
@@ -545,7 +546,7 @@ const char* aliases_6502[] = {
 	nullptr, nullptr
 };
 
-unsigned char timing_6502[] = {
+uint8_t timing_6502[] = {
 	0x0e, 0x0c, 0xff, 0xff, 0xff, 0x06, 0x0a, 0xff, 0x06, 0x04, 0x04, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
 	0x0c, 0x0c, 0xff, 0xff, 0x06, 0x06, 0x0a, 0xff, 0x08, 0x04, 0x04, 0xff, 0x08, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
 	0x0c, 0x0c, 0xff, 0xff, 0xff, 0x06, 0x0a, 0xff, 0x06, 0x04, 0x04, 0xff, 0x06, 0x08, 0x0c, 0xff, 0x05, 0x0b, 0xff, 0xff, 0xff, 0x08, 0x0c, 0xff, 0x04, 0x09, 0xff, 0xff, 0xff, 0x09, 0x0e, 0xff,
@@ -780,7 +781,7 @@ const char* aliases_65816[] = {
 
 static const int num_opcodes_65816 = sizeof(opcodes_65816) / sizeof(opcodes_65816[0]);
 
-unsigned char timing_65816[] = {
+uint8_t timing_65816[] = {
 	0x4e, 0x1c, 0x4e, 0x28, 0x3a, 0x26, 0x3a, 0x1c, 0x46, 0x24, 0x44, 0x48, 0x4c, 0x28, 0x5c, 0x2a,
 	0x44, 0x1a, 0x1a, 0x2e, 0x3a, 0x18, 0x6c, 0x1c, 0x44, 0x28, 0x44, 0x44, 0x4c, 0x28, 0x5e, 0x2a,
 	0x4c, 0x1c, 0x50, 0x28, 0x16, 0x26, 0x3a, 0x1c, 0x48, 0x24, 0x44, 0x4a, 0x28, 0x28, 0x4c, 0x2a,
@@ -800,7 +801,7 @@ unsigned char timing_65816[] = {
 };
 
 // m=0, i=0, dp!=0
-unsigned char timing_65816_plus[9][3] = {
+uint8_t timing_65816_plus[9][3] = {
 	{ 0, 0, 0 },	// 6502 plus timing check bit 0
 	{ 1, 0, 1 },	// acc 16 bit + dp!=0
 	{ 1, 0, 0 },	// acc 16 bit
@@ -847,7 +848,7 @@ struct CPUDetails {
 	int num_opcodes;
 	const char* name;
 	const char** aliases;
-	const unsigned char *timing;
+	const uint8_t *timing;
 } aCPUs[] = {
 	{ opcodes_6502, num_opcodes_6502 - NUM_ILLEGAL_6502_OPS, "6502", aliases_6502, timing_6502 },
 	{ opcodes_6502, num_opcodes_6502, "6502ill", aliases_6502, timing_6502 },
@@ -908,7 +909,7 @@ static const char *str_section_type[] = {
 };
 static const int num_section_type_str = sizeof(str_section_type) / sizeof(str_section_type[0]);
 
-typedef struct {
+typedef struct sDirectiveName {
 	const char *name;
 	AssemblerDirective directive;
 } DirectiveName;
@@ -1014,13 +1015,13 @@ static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNa
 static const int nDirectiveNamesMerlin = sizeof(aDirectiveNamesMerlin) / sizeof(aDirectiveNamesMerlin[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
-unsigned int FindLabelIndex(unsigned int hash, unsigned int *table, unsigned int count)
+uint32_t FindLabelIndex(uint32_t hash, uint32_t *table, uint32_t count)
 {
-	unsigned int max = count;
-	unsigned int first = 0;
+	uint32_t max = count;
+	uint32_t first = 0;
 	while (count!=first) {
 		int index = (first+count)/2;
-		unsigned int read = table[index];
+		uint32_t read = table[index];
 		if (hash==read) {
 			while (index && table[index-1]==hash)
 				index--;	// guarantee first identical index returned on match
@@ -1052,11 +1053,11 @@ template <class H, class V> class pairArray {
 protected:
 	H *keys;
 	V *values;
-	unsigned int _count;
-	unsigned int _capacity;
+	uint32_t _count;
+	uint32_t _capacity;
 public:
 	pairArray() : keys(nullptr), values(nullptr), _count(0), _capacity(0) {}
-	void reserve(unsigned int size) {
+	void reserve(uint32_t size) {
 		if (size>_capacity) {
 			H *new_keys = (H*)malloc(sizeof(H) * size); if (!new_keys) { return; }
 			V *new_values = (V*)malloc(sizeof(V) * size); if (!new_values) { free(new_keys); return; }
@@ -1070,7 +1071,7 @@ public:
 			_capacity = size;
 		}
 	}
-	bool insert(unsigned int pos) {
+	bool insert(uint32_t pos) {
 		if (pos>_count)
 			return false;
 		if (_count==_capacity)
@@ -1084,14 +1085,14 @@ public:
 		_count++;
 		return true;
 	}
-	bool insert(unsigned int pos, H key) {
+	bool insert(uint32_t pos, H key) {
 		if (insert(pos) && keys) {
 			keys[pos] = key;
 			return true;
 		}
 		return false;
 	}
-	void remove(unsigned int pos) {
+	void remove(uint32_t pos) {
 		if (pos<_count) {
 			_count--;
 			if (pos<_count) {
@@ -1101,11 +1102,11 @@ public:
 		}
 	}
 	H* getKeys() { return keys; }
-	H& getKey(unsigned int pos) { return keys[pos]; }
+	H& getKey(uint32_t pos) { return keys[pos]; }
 	V* getValues() { return values; }
-	V& getValue(unsigned int pos) { return values[pos]; }
-	unsigned int count() const { return _count; }
-	unsigned int capacity() const { return _capacity; }
+	V& getValue(uint32_t pos) { return values[pos]; }
+	uint32_t count() const { return _count; }
+	uint32_t capacity() const { return _capacity; }
 	void clear() {
 		if (keys!=nullptr)
 			free(keys);
@@ -1126,11 +1127,11 @@ struct Reloc {
 	int base_value;
 	int section_offset;		// offset into this section
 	int target_section;		// which section does this reloc target?
-	char bytes;				// number of bytes to write
-	char shift;				// number of bits to shift to get value
+	int8_t bytes;				// number of bytes to write
+	int8_t shift;				// number of bits to shift to get value
 
 	Reloc() : base_value(0), section_offset(-1), target_section(-1), bytes(0), shift(0) {}
-	Reloc(int base, int offs, int sect, char num_bytes, char bit_shift) :
+	Reloc(int base, int offs, int sect, int8_t num_bytes, int8_t bit_shift) :
 		base_value(base), section_offset(offs), target_section(sect), bytes(num_bytes), shift(bit_shift) {}
 };
 typedef std::vector<struct Reloc> relocList;
@@ -1156,7 +1157,7 @@ struct ListLine {
 };
 typedef std::vector<struct ListLine> Listing;
 
-enum SectionType : char {	// enum order indicates fixed address linking priority
+enum SectionType : int8_t {	// enum order indicates fixed address linking priority
 	ST_UNDEFINED,			// not set
 	ST_CODE,				// default type
 	ST_DATA,				// data section (matters for GS/OS OMF)
@@ -1186,8 +1187,8 @@ typedef struct Section {
 	int merged_section;		// which section merged with
 
 	// data output
-	unsigned char *output;	// memory for this section
-	unsigned char *curr;	// current pointer for this section
+	uint8_t *output;	// memory for this section
+	uint8_t *curr;	// current pointer for this section
 	size_t output_capacity;	// current output capacity
 
 	// reloc data
@@ -1221,7 +1222,7 @@ typedef struct Section {
 	int DataOffset() const { return int(curr - output); }
 	int size() const { return (int)(curr - output); }
 	int addr_size() const { return address - start_address; }
-	const unsigned char *get() { return output; }
+	const uint8_t *get() { return output; }
 
 	int GetPC() const { return address; }
 	void AddAddress(int value) { address += value; }
@@ -1232,7 +1233,7 @@ typedef struct Section {
 	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
 	bool IsMergedSection() const { return merged_offset >= 0; }
-	void AddReloc(int base, int offset, int section, char bytes, char shift);
+	void AddReloc(int base, int offset, int section, int8_t bytes, int8_t shift);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
 	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr) {
@@ -1246,11 +1247,11 @@ typedef struct Section {
 	~Section() { }
 
 	// Append data to a section
-	StatusCode CheckOutputCapacity(unsigned int addSize);
+	StatusCode CheckOutputCapacity(uint32_t addSize);
 	void AddByte(int b);
 	void AddWord(int w);
 	void AddTriple(int l);
-	void AddBin(unsigned const char *p, int size);
+	void AddBin(const uint8_t *p, int size);
 	void AddText(strref line, strref text_prefix);
 	void SetByte(size_t offs, int b) { output[offs] = b; }
 	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
@@ -1262,13 +1263,13 @@ typedef struct Section {
 struct MapSymbol {
 	strref name;    // string name
 	int value;
-	short section;
+	int16_t section;
 	bool local;     // local variables
 };
 typedef std::vector<struct MapSymbol> MapSymbolArray;
 
 // Data related to a label
-typedef struct {
+typedef struct sLabel {
 public:
 	strref label_name;		// the name of this label
 	strref pool_name;		// name of the pool that this label is related to
@@ -1284,7 +1285,7 @@ public:
 
 
 // String data
-typedef struct {
+typedef struct sStringSymbols {
 public:
 	strref string_name;		// name of the string
 	strref string_const;	// string contents if source reference
@@ -1302,7 +1303,7 @@ public:
 
 // If an expression can't be evaluated immediately, this is required
 // to reconstruct the result when it can be.
-typedef struct {
+typedef struct sLateEval {
 	enum Type {				// When an expression is evaluated late, determine how to encode the result
 		LET_LABEL,			// this evaluation applies to a label and not memory
 		LET_ABS_REF,		// calculate an absolute address and store at 0, +1
@@ -1316,8 +1317,8 @@ typedef struct {
 	int address;			// current pc
 	int scope;				// scope pc
 	int scope_depth;		// relevant for scope end
-	short section;			// which section to apply to.
-	short rept;				// value of rept
+	int16_t section;			// which section to apply to.
+	int16_t rept;				// value of rept
 	int file_ref;			// -1 if current or xdef'd otherwise index of file for label
 	strref label;			// valid if this is not a target but another label
 	strref expression;
@@ -1326,7 +1327,7 @@ typedef struct {
 } LateEval;
 
 // A macro is a text reference to where it was defined
-typedef struct {
+typedef struct sMacro {
 	strref name;
 	strref macro;
 	strref source_name;		// source file name (error output)
@@ -1335,42 +1336,42 @@ typedef struct {
 } Macro;
 
 // All local labels are removed when a global label is defined but some when a scope ends
-typedef struct {
+typedef struct sLocalLabelRecord {
 	strref label;
 	int scope_depth;
 	bool scope_reserve;		// not released for global label, only scope	
 } LocalLabelRecord;
 
 // Label pools allows C like stack frame label allocation
-typedef struct {
+typedef struct sLabelPool {
 	strref pool_name;
-	short numRanges;		// normally 1 range, support multiple for ease of use
-	short scopeDepth;		// Required for scope closure cleanup
-	unsigned short ranges[MAX_POOL_RANGES*2];		// 2 shorts per range
-	unsigned int usedMap[(MAX_POOL_BYTES+15)>>4];	// 2 bits per byte to store byte count of label
-	StatusCode Reserve(int numBytes, unsigned int &addr);
-	StatusCode Release(unsigned int addr);
+	int16_t numRanges;		// normally 1 range, support multiple for ease of use
+	int16_t scopeDepth;		// Required for scope closure cleanup
+	uint16_t ranges[MAX_POOL_RANGES*2];		// 2 shorts per range
+	uint32_t usedMap[(MAX_POOL_BYTES+15)>>4];	// 2 bits per byte to store byte count of label
+	StatusCode Reserve(int numBytes, uint32_t &addr);
+	StatusCode Release(uint32_t addr);
 } LabelPool;
 
 // One member of a label struct
 struct MemberOffset {
-	unsigned short offset;
-	unsigned int name_hash;
+	uint16_t offset;
+	uint32_t name_hash;
 	strref name;
 	strref sub_struct;
 };
 
 // Label struct
-typedef struct {
+typedef struct sLabelStruct {
 	strref name;
-	unsigned short first_member;
-	unsigned short numMembers;
-	unsigned short size;
+	uint16_t first_member;
+	uint16_t numMembers;
+	uint16_t size;
 } LabelStruct;
 
 // object file labels that are not xdef'd end up here
 struct ExtLabels {
-	pairArray<unsigned int, Label> labels;
+	pairArray<uint32_t, Label> labels;
 };
 
 // EvalExpression needs a location reference to work out some addresses
@@ -1389,15 +1390,15 @@ struct EvalContext {
 };
 
 // Source context is current file (include file, etc.) or current macro.
-typedef struct {
+typedef struct sSourceContext {
 	strref source_name;		// source file name (error output)
 	strref source_file;		// entire source file (req. for line #)
 	strref code_segment;	// the segment of the file for this context
 	strref read_source;		// current position/length in source file
 	strref next_source;		// next position/length in source file
-	short repeat;			// how many times to repeat this code segment
-	short repeat_total;		// initial number of repeats for this code segment
-	short conditional_ctx;	// conditional depth at root of this context
+	int16_t repeat;			// how many times to repeat this code segment
+	int16_t repeat_total;		// initial number of repeats for this code segment
+	int16_t conditional_ctx;	// conditional depth at root of this context
 	bool scoped_context;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
@@ -1434,12 +1435,12 @@ public:
 // The state of the assembler
 class Asm {
 public:
-	pairArray<unsigned int, Label> labels;
-	pairArray<unsigned int, StringSymbol> strings;
-	pairArray<unsigned int, Macro> macros;
-	pairArray<unsigned int, LabelPool> labelPools;
-	pairArray<unsigned int, LabelStruct> labelStructs;
-	pairArray<unsigned int, strref> xdefs;	// labels matching xdef names will be marked as external
+	pairArray<uint32_t, Label> labels;
+	pairArray<uint32_t, StringSymbol> strings;
+	pairArray<uint32_t, Macro> macros;
+	pairArray<uint32_t, LabelPool> labelPools;
+	pairArray<uint32_t, LabelStruct> labelStructs;
+	pairArray<uint32_t, strref> xdefs;	// labels matching xdef names will be marked as external
 
 	std::vector<LateEval> lateEval;
 	std::vector<LocalLabelRecord> localLabels;
@@ -1470,7 +1471,7 @@ public:
 	// Conditional assembly vars
 	int conditional_depth;		// conditional depth / base depth for context
 	strref conditional_source[MAX_CONDITIONAL_DEPTH];	// start of conditional for error report
-	char conditional_nesting[MAX_CONDITIONAL_DEPTH];
+	int8_t conditional_nesting[MAX_CONDITIONAL_DEPTH];
 	bool conditional_consumed[MAX_CONDITIONAL_DEPTH];
 
 	// Scope info
@@ -1480,14 +1481,14 @@ public:
 	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
 	int lastEvalValue;
-	char lastEvalShift;
+	int8_t lastEvalShift;
 
 	strref export_base_name;	// binary output name if available
 	strref last_label;			// most recently defined label for Merlin macro
-	char list_flags;			// listing flags accumulating for each line
+	int8_t list_flags;			// listing flags accumulating for each line
 	bool accumulator_16bit;		// 65816 specific software dependent immediate mode
 	bool index_reg_16bit;		// -"-
-	char cycle_counter_level;	// merlin toggles the cycle counter rather than hierarchically evals
+	int8_t cycle_counter_level;	// merlin toggles the cycle counter rather than hierarchically evals
 	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
@@ -1509,7 +1510,7 @@ public:
 	void Cleanup();
 
 	// Make sure there is room to write more code
-	StatusCode CheckOutputCapacity(unsigned int addSize);
+	StatusCode CheckOutputCapacity(uint32_t addSize);
 
 	// Operations on current section
 	void SetSection(strref name, int address);	// fixed address section
@@ -1526,7 +1527,7 @@ public:
 	void EndSection();							// pop current section
 	Section& CurrSection() { return *current_section; }
 	void AssignAddressToGroup();				// Merlin LNK support
-	unsigned char* BuildExport(strref append, int &file_size, int &addr);
+	uint8_t* BuildExport(strref append, int &file_size, int &addr);
 	int GetExportNames(strref *aNames, int maxNames);
 	StatusCode LinkZP();
 	int SectionId() { return int(current_section - &allSections[0]); }
@@ -1534,7 +1535,7 @@ public:
 	void AddByte(int b) { CurrSection().AddByte(b); }
 	void AddWord(int w) { CurrSection().AddWord(w); }
 	void AddTriple(int l) { CurrSection().AddTriple(l); }
-	void AddBin(unsigned const char *p, int size) { CurrSection().AddBin(p, size); }
+	void AddBin(const uint8_t *p, int size) { CurrSection().AddBin(p, size); }
 
 	// Object file handling
 	StatusCode WriteObjectFile(strref filename);	// write x65 object file
@@ -1558,9 +1559,9 @@ public:
 
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
-								 EvalOperator prev_op, short &section, int &value);
+								 EvalOperator prev_op, int16_t &section, int &value);
 	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
-		EvalOperator prev_op, short &section, int &value, strref &subexp);
+		EvalOperator prev_op, int16_t &section, int &value, strref &subexp);
 	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
 	void SetEvalCtxDefaults(struct EvalContext &etx);
 	int ReptCnt() const;
@@ -1568,7 +1569,7 @@ public:
 	// Access labels
 	Label* GetLabel(strref label);
 	Label* GetLabel(strref label, int file_ref);
-	Label* AddLabel(unsigned int hash);
+	Label* AddLabel(uint32_t hash);
 	bool MatchXDEF(strref label);
 	StatusCode AssignLabel(strref label, strref line, bool make_constant = false);
 	StatusCode AddressLabel(strref label);
@@ -1620,7 +1621,7 @@ public:
 	StatusCode Directive_ENUM_STRUCT(strref line, AssemblerDirective dir);
 
 	// Assembler steps
-	StatusCode GetAddressMode(strref line, bool flipXY, unsigned int validModes,
+	StatusCode GetAddressMode(strref line, bool flipXY, uint32_t validModes,
 							  AddrMode &addrMode, int &len, strref &expression);
 	StatusCode AddOpcode(strref line, int index, strref source_file);
 	StatusCode BuildLine(strref line);
@@ -1673,7 +1674,7 @@ void Asm::Cleanup() {
 	labels.clear();
 	macros.clear();
 	allSections.clear();
-	for (unsigned int i = 0; i < strings.count(); ++i) {
+	for (uint32_t i = 0; i < strings.count(); ++i) {
 		StringSymbol &str = strings.getValue(i);
 		if (str.string_value.cap())
 			free(str.string_value.charstr());
@@ -1738,7 +1739,7 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 	for (int d = 0; d<nDirectiveNames; d++) {
 		OPLookup &op_hash = pInstr[numInstructions++];
 		op_hash.op_hash = strref(aDirectiveNames[d].name).fnv1a_lower();
-		op_hash.index = (unsigned char)aDirectiveNames[d].directive;
+		op_hash.index = (uint8_t)aDirectiveNames[d].directive;
 		op_hash.type = OT_DIRECTIVE;
 	}
 	
@@ -1746,7 +1747,7 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 		for (int d = 0; d<nDirectiveNamesMerlin; d++) {
 			OPLookup &op_hash = pInstr[numInstructions++];
 			op_hash.op_hash = strref(aDirectiveNamesMerlin[d].name).fnv1a_lower();
-			op_hash.index = (unsigned char)aDirectiveNamesMerlin[d].directive;
+			op_hash.index = (uint8_t)aDirectiveNamesMerlin[d].directive;
 			op_hash.type = OT_DIRECTIVE;
 		}
 	}
@@ -1991,7 +1992,7 @@ void Asm::AssignAddressToGroup()
 //	- alloc & 0 memory
 //	- any matching relative sections gets linked in after
 //	- go through all section that matches export_append in order and copy over memory
-unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
+uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 {
 	int start_address = 0x7fffffff;
 	int end_address = 0;
@@ -2109,7 +2110,7 @@ unsigned char* Asm::BuildExport(strref append, int &file_size, int &addr)
 	while (last_data_export>0 && FixedExport[last_data_export]->type == ST_BSS)
 		last_data_export--;
 	end_address = FixedExport[last_data_export]->address;
-	unsigned char *output = (unsigned char*)calloc(1, end_address - start_address);
+	uint8_t *output = (uint8_t*)calloc(1, end_address - start_address);
 
 	// copy over in order
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
@@ -2143,7 +2144,7 @@ int Asm::GetExportNames(strref *aNames, int maxNames)
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if (!i->IsMergedSection()) {
 			bool found = false;
-			unsigned int hash = i->export_append.fnv1a_lower();
+			uint32_t hash = i->export_append.fnv1a_lower();
 			for (int n = 0; n < count; n++) {
 				if (aNames[n].fnv1a_lower() == hash) {
 					found = true;
@@ -2160,7 +2161,7 @@ int Asm::GetExportNames(strref *aNames, int maxNames)
 // Collect all unassigned ZP sections and link them
 StatusCode Asm::LinkZP()
 {
-	unsigned char min_addr = 0xff, max_addr = 0x00;
+	uint8_t min_addr = 0xff, max_addr = 0x00;
 	int num_addr = 0;
 	bool has_assigned = false, has_unassigned = false;
 	int first_unassigned = -1;
@@ -2277,7 +2278,7 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 					}
 					// only finalize the target value if fixed address
 					if (section_new == -1 || allSections[section_new].address_assigned) {
-						unsigned char *trg = trg_sect->output + output_offs + i->section_offset;
+						uint8_t *trg = trg_sect->output + output_offs + i->section_offset;
 						int value = i->base_value + section_address;
 						if (i->shift < 0)
 							value >>= -i->shift;
@@ -2285,7 +2286,7 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 							value <<= i->shift;
 
 						for (int b = 0; b < i->bytes; b++)
-							*trg++ = (unsigned char)(value >> (b * 8));
+							*trg++ = (uint8_t)(value >> (b * 8));
 						i = pList->erase(i);
 						if (i != pList->end())
 							++i;
@@ -2418,7 +2419,7 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 	}
 
 	// go through all labels referencing merging section
-	for (unsigned int i = 0; i<labels.count(); i++) {
+	for (uint32_t i = 0; i<labels.count(); i++) {
 		Label &lab = labels.getValue(i);
 		if (lab.section == section_merge && lab.evaluated) {
 			lab.value += addr_start;
@@ -2552,7 +2553,7 @@ StatusCode Asm::MergeAllSections(int first_section)
 
 // Section based output capacity
 // Make sure there is room to assemble in
-StatusCode Section::CheckOutputCapacity(unsigned int addSize) {
+StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 	if (dummySection || type == ST_ZEROPAGE || type == ST_BSS)
 		return STATUS_OK;
 	size_t currSize = curr - output;
@@ -2562,7 +2563,7 @@ StatusCode Section::CheckOutputCapacity(unsigned int addSize) {
 			newSize = 64*1024;
 		if ((addSize+currSize) > newSize)
 			newSize += newSize;
-		if (unsigned char *new_output = (unsigned char*)malloc(newSize)) {
+		if (uint8_t *new_output = (uint8_t*)malloc(newSize)) {
 			memcpy(new_output, output, size());
 			curr = new_output + (curr - output);
 			free(output);
@@ -2578,7 +2579,7 @@ StatusCode Section::CheckOutputCapacity(unsigned int addSize) {
 void Section::AddByte(int b) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		if (CheckOutputCapacity(1) == STATUS_OK)
-			*curr++ = (unsigned char)b;
+			*curr++ = (uint8_t)b;
 	}
 	address++;
 }
@@ -2587,8 +2588,8 @@ void Section::AddByte(int b) {
 void Section::AddWord(int w) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		if (CheckOutputCapacity(2) == STATUS_OK) {
-			*curr++ = (unsigned char)(w & 0xff);
-			*curr++ = (unsigned char)(w >> 8);
+			*curr++ = (uint8_t)(w & 0xff);
+			*curr++ = (uint8_t)(w >> 8);
 		}
 	}
 	address += 2;
@@ -2598,15 +2599,15 @@ void Section::AddWord(int w) {
 void Section::AddTriple(int l) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		if (CheckOutputCapacity(3) == STATUS_OK) {
-			*curr++ = (unsigned char)(l & 0xff);
-			*curr++ = (unsigned char)(l >> 8);
-			*curr++ = (unsigned char)(l >> 16);
+			*curr++ = (uint8_t)(l & 0xff);
+			*curr++ = (uint8_t)(l >> 8);
+			*curr++ = (uint8_t)(l >> 16);
 		}
 	}
 	address += 3;
 }
 // Add arbitrary length data to a section
-void Section::AddBin(unsigned const char *p, int size) {
+void Section::AddBin(const uint8_t *p, int size) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
 		if (CheckOutputCapacity(size) == STATUS_OK) {
 			memcpy(curr, p, size);
@@ -2625,7 +2626,7 @@ void Section::AddText(strref line, strref text_prefix) {
 
 	if (CheckOutputCapacity(line.get_len()) == STATUS_OK) {
 		if (!text_prefix || text_prefix.same_str("ascii")) {
-			AddBin((unsigned const char*)line.get(), line.get_len());
+			AddBin((const uint8_t*)line.get(), line.get_len());
 		} else if (text_prefix.same_str("petscii")) {
 			while (line) {
 				char c = line[0];
@@ -2644,7 +2645,7 @@ void Section::AddText(strref line, strref text_prefix) {
 }
 
 // Add a relocation marker to a section
-void Section::AddReloc(int base, int offset, int section, char bytes, char shift)
+void Section::AddReloc(int base, int offset, int section, int8_t bytes, int8_t shift)
 {
 	if (!pRelocs)
 		pRelocs = new relocList;
@@ -2654,7 +2655,7 @@ void Section::AddReloc(int base, int offset, int section, char bytes, char shift
 }
 
 // Make sure there is room to assemble in
-StatusCode Asm::CheckOutputCapacity(unsigned int addSize) {
+StatusCode Asm::CheckOutputCapacity(uint32_t addSize) {
 	return CurrSection().CheckOutputCapacity(addSize);
 }
 
@@ -2752,7 +2753,7 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 	bool params_first_line = false;
 	if (Merlin()) {
 		if (Label *pLastLabel = GetLabel(last_label)) {
-			labels.remove((unsigned int)(pLastLabel - labels.getValues()));
+			labels.remove((uint32_t)(pLastLabel - labels.getValues()));
 			name = last_label;
 			last_label.clear();
 			macro.skip_whitespace();
@@ -2771,8 +2772,8 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		if (left_line && left_line[0] != '(' && left_line[0] != '{')
 			params_first_line = true;
 	}
-	unsigned int hash = name.fnv1a();
-	unsigned int ins = FindLabelIndex(hash, macros.getKeys(), macros.count());
+	uint32_t hash = name.fnv1a();
+	uint32_t ins = FindLabelIndex(hash, macros.getKeys(), macros.count());
 	Macro *pMacro = nullptr;
 	while (ins < macros.count() && macros.getKey(ins)==hash) {
 		if (name.same_str_case(macros.getValue(ins).name)) {
@@ -2920,7 +2921,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				macexp.replace_bookend(param, a, label_end_char_range);
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
-			if (end_macro_directive) {
+			if (Merlin() || end_macro_directive) {
 				PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 				if (scope_depth>=(MAX_SCOPE_DEPTH-1))
 					return ERROR_TOO_DEEP_SCOPE;
@@ -2949,8 +2950,8 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 // Enums are Structs in disguise
 StatusCode Asm::BuildEnum(strref name, strref declaration)
 {
-	unsigned int hash = name.fnv1a();
-	unsigned int ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+	uint32_t hash = name.fnv1a();
+	uint32_t ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
 	LabelStruct *pEnum = nullptr;
 	while (ins < labelStructs.count() && labelStructs.getKey(ins)==hash) {
 		if (name.same_str_case(labelStructs.getValue(ins).name)) {
@@ -2964,7 +2965,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 	labelStructs.insert(ins, hash);
 	pEnum = labelStructs.getValues() + ins;
 	pEnum->name = name;
-	pEnum->first_member = (unsigned short)structMembers.size();
+	pEnum->first_member = (uint16_t)structMembers.size();
 	pEnum->numMembers = 0;
 	pEnum->size = 0;		// enums are 0 sized
 	int value = 0;
@@ -2998,8 +2999,8 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 
 StatusCode Asm::BuildStruct(strref name, strref declaration)
 {
-	unsigned int hash = name.fnv1a();
-	unsigned int ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+	uint32_t hash = name.fnv1a();
+	uint32_t ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
 	LabelStruct *pStruct = nullptr;
 	while (ins < labelStructs.count() && labelStructs.getKey(ins)==hash) {
 		if (name.same_str_case(labelStructs.getValue(ins).name)) {
@@ -3013,12 +3014,12 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 	labelStructs.insert(ins, hash);
 	pStruct = labelStructs.getValues() + ins;
 	pStruct->name = name;
-	pStruct->first_member = (unsigned short)structMembers.size();
+	pStruct->first_member = (uint16_t)structMembers.size();
 
-	unsigned int byte_hash = struct_byte.fnv1a();
-	unsigned int word_hash = struct_word.fnv1a();
-	unsigned short size = 0;
-	unsigned short member_count = 0;
+	uint32_t byte_hash = struct_byte.fnv1a();
+	uint32_t word_hash = struct_word.fnv1a();
+	uint16_t size = 0;
+	uint16_t member_count = 0;
 
 	while (strref line = declaration.line()) {
 		line.trim_whitespace();
@@ -3026,15 +3027,15 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		if (!type)
 			continue;
 		line.skip_whitespace();
-		unsigned int type_hash = type.fnv1a();
-		unsigned short type_size = 0;
+		uint32_t type_hash = type.fnv1a();
+		uint16_t type_size = 0;
 		LabelStruct *pSubStruct = nullptr;
 		if (type_hash==byte_hash && struct_byte.same_str_case(type))
 			type_size = 1;
 		else if (type_hash==word_hash && struct_word.same_str_case(type))
 			type_size = 2;
 		else {
-			unsigned int index = FindLabelIndex(type_hash, labelStructs.getKeys(), labelStructs.count());
+			uint32_t index = FindLabelIndex(type_hash, labelStructs.getKeys(), labelStructs.count());
 			while (index < labelStructs.count() && labelStructs.getKey(index)==type_hash) {
 				if (type.same_str_case(labelStructs.getValue(index).name)) {
 					pSubStruct = labelStructs.getValues() + index;
@@ -3084,10 +3085,10 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 StatusCode Asm::EvalStruct(strref name, int &value)
 {
 	LabelStruct *pStruct = nullptr;
-	unsigned short offset = 0;
+	uint16_t offset = 0;
 	while (strref struct_seg = name.split_token('.')) {
 		strref sub_struct = struct_seg;
-		unsigned int seg_hash = struct_seg.fnv1a();
+		uint32_t seg_hash = struct_seg.fnv1a();
 		if (pStruct) {
 			struct MemberOffset *member = &structMembers[pStruct->first_member];
 			bool found = false;
@@ -3104,8 +3105,8 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 				return ERROR_REFERENCED_STRUCT_NOT_FOUND;
 		}
 		if (sub_struct) {
-			unsigned int hash = sub_struct.fnv1a();
-			unsigned int index = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+			uint32_t hash = sub_struct.fnv1a();
+			uint32_t index = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
 			while (index < labelStructs.count() && labelStructs.getKey(index)==hash) {
 				if (sub_struct.same_str_case(labelStructs.getValue(index).name)) {
 					pStruct = labelStructs.getValues() + index;
@@ -3148,7 +3149,7 @@ void Asm::SetEvalCtxDefaults(struct EvalContext &etx)
 }
 
 // Get a single token from a merlin expression
-EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value)
+EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value)
 {
 	char c = expression.get_first();
 	switch (c) {
@@ -3212,7 +3213,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, short &section, int &value, strref &subexp)
+EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
 {
 	char c = exp.get_first();
 	switch (c) {
@@ -3314,9 +3315,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
-	short section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
-	short section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
-	short num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
+	int16_t section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
+	int16_t section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
+	int16_t num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	bool xrefd = false;
 	values[0] = 0;					// Initialize RPN if no expression
 	{
@@ -3326,7 +3327,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		expression.trim_whitespace();
 		while (expression || exp_sp) {
 			int value = 0;
-			short section = -1, index_section = -1;
+			int16_t section = -1, index_section = -1;
 			EvalOperator op = EVOP_NONE;
 			strref subexp;
 			if (!expression && exp_sp) {
@@ -3428,7 +3429,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		int ri = 0;		// RPN index (value)
 		int prev_val = values[0];
 		int shift_bits = 0; // special case for relative reference to low byte / high byte
-		short section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
+		int16_t section_counts[MAX_EVAL_SECTIONS][MAX_EVAL_VALUES] = { 0 };
 		for (int o = 0; o<numOps; o++) {
 			EvalOperator op = (EvalOperator)ops[o];
 			shift_bits = 0;
@@ -3780,8 +3781,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 // Get a label record if it exists
 Label *Asm::GetLabel(strref label)
 {
-	unsigned int label_hash = label.fnv1a();
-	unsigned int index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
+	uint32_t label_hash = label.fnv1a();
+	uint32_t index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && label_hash == labels.getKey(index)) {
 		if (label.same_str(labels.getValue(index).label_name))
 			return labels.getValues() + index;
@@ -3795,8 +3796,8 @@ Label *Asm::GetLabel(strref label, int file_ref)
 {
 	if (file_ref>=0 && file_ref<(int)externals.size()) {
 		ExtLabels &labs = externals[file_ref];
-		unsigned int label_hash = label.fnv1a();
-		unsigned int index = FindLabelIndex(label_hash, labs.labels.getKeys(), labs.labels.count());
+		uint32_t label_hash = label.fnv1a();
+		uint32_t index = FindLabelIndex(label_hash, labs.labels.getKeys(), labs.labels.count());
 		while (index < labs.labels.count() && label_hash == labs.labels.getKey(index)) {
 			if (label.same_str(labs.labels.getValue(index).label_name))
 				return labs.labels.getValues() + index;
@@ -3823,8 +3824,8 @@ void Asm::LabelAdded(Label *pLabel, bool local)
 }
 
 // Add a label entry
-Label* Asm::AddLabel(unsigned int hash) {
-	unsigned int index = FindLabelIndex(hash, labels.getKeys(), labels.count());
+Label* Asm::AddLabel(uint32_t hash) {
+	uint32_t index = FindLabelIndex(hash, labels.getKeys(), labels.count());
 	labels.insert(index, hash);
 	return labels.getValues() + index;
 }
@@ -3854,7 +3855,7 @@ StatusCode Asm::FlushLocalLabels(int scope_exit)
 		if (this_status>FIRST_ERROR)
 			status = this_status;
 		if (!i->scope_reserve || i->scope_depth<=scope_exit) {
-			unsigned int index = FindLabelIndex(label.fnv1a(), labels.getKeys(), labels.count());
+			uint32_t index = FindLabelIndex(label.fnv1a(), labels.getKeys(), labels.count());
 			while (index<labels.count()) {
 				if (label.same_str_case(labels.getValue(index).label_name)) {
 					if (i->scope_reserve) {
@@ -3877,8 +3878,8 @@ StatusCode Asm::FlushLocalLabels(int scope_exit)
 // Get a label pool by name
 LabelPool* Asm::GetLabelPool(strref pool_name)
 {
-	unsigned int pool_hash = pool_name.fnv1a();
-	unsigned int ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
+	uint32_t pool_hash = pool_name.fnv1a();
+	uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
 	while (ins < labelPools.count() && pool_hash == labelPools.getKey(ins)) {
 		if (pool_name.same_str(labelPools.getValue(ins).pool_name)) {
 			return &labelPools.getValue(ins);
@@ -3891,7 +3892,7 @@ LabelPool* Asm::GetLabelPool(strref pool_name)
 // When going out of scope, label pools are deleted.
 void Asm::FlushLabelPools(int scope_exit)
 {
-	unsigned int i = 0;
+	uint32_t i = 0;
 	while (i<labelPools.count()) {
 		if (labelPools.getValue(i).scopeDepth >= scope_exit)
 			labelPools.remove(i);
@@ -3903,9 +3904,9 @@ void Asm::FlushLabelPools(int scope_exit)
 // Add a label pool
 StatusCode Asm::AddLabelPool(strref name, strref args)
 {
-	unsigned int pool_hash = name.fnv1a();
-	unsigned int ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
-	unsigned int index = ins;
+	uint32_t pool_hash = name.fnv1a();
+	uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
+	uint32_t index = ins;
 	while (index < labelPools.count() && pool_hash == labelPools.getKey(index)) {
 		if (name.same_str(labelPools.getValue(index).pool_name))
 			return ERROR_LABEL_POOL_REDECLARATION;
@@ -3915,7 +3916,7 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	// check that there is at least one valid address
 	int ranges = 0;
 	int num32 = 0;
-	unsigned short aRng[256];
+	uint16_t aRng[256];
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	while (strref arg = args.split_token_trim(',')) {
@@ -3945,7 +3946,7 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	pool.numRanges = ranges>>1;
 	pool.scopeDepth = scope_depth;
 
-	memset(pool.usedMap, 0, sizeof(unsigned int) * num32);
+	memset(pool.usedMap, 0, sizeof(uint32_t) * num32);
 	for (int r = 0; r<ranges; r++)
 		pool.ranges[r] = aRng[r];
 
@@ -3970,7 +3971,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	}
 	if (GetLabel(label))
 		return ERROR_POOL_LABEL_ALREADY_DEFINED;
-	unsigned int addr;
+	uint32_t addr;
 	StatusCode error = pool.Reserve(bytes, addr);
 	if (error != STATUS_OK)
 		return error;
@@ -3993,16 +3994,16 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 }
 
 // Request a label from a pool
-StatusCode LabelPool::Reserve(int numBytes, unsigned int &ret_addr)
+StatusCode LabelPool::Reserve(int numBytes, uint32_t &ret_addr)
 {
-	unsigned int *map = usedMap;
-	unsigned short *pRanges = ranges;
+	uint32_t *map = usedMap;
+	uint16_t *pRanges = ranges;
 	for (int r = 0; r<numRanges; r++) {
 		int sequence = 0;
-		unsigned int a0 = *pRanges++, a1 = *pRanges++;
-		unsigned int addr = a1-1, *range_map = map;
+		uint32_t a0 = *pRanges++, a1 = *pRanges++;
+		uint32_t addr = a1-1, *range_map = map;
 		while (addr>=a0 && sequence<numBytes) {
-			unsigned int chk = *map++, m = 3;
+			uint32_t chk = *map++, m = 3;
 			while (m && addr >= a0) {
 				if ((m & chk)==0) {
 					sequence++;
@@ -4015,12 +4016,12 @@ StatusCode LabelPool::Reserve(int numBytes, unsigned int &ret_addr)
 			}
 		}
 		if (sequence == numBytes) {
-			unsigned int index = (a1-addr-numBytes);
-			unsigned int *addr_map = range_map + (index>>4);
-			unsigned int m = numBytes << (index << 1);
+			uint32_t index = (a1-addr-numBytes);
+			uint32_t *addr_map = range_map + (index>>4);
+			uint32_t m = numBytes << (index << 1);
 			for (int b = 0; b<numBytes; b++) {
 				*addr_map |= m;
-				unsigned int _m = m << 2;
+				uint32_t _m = m << 2;
 				if (!_m) { m >>= 30; addr_map++; } else { m = _m; }
 			}
 			ret_addr = addr;
@@ -4031,21 +4032,21 @@ StatusCode LabelPool::Reserve(int numBytes, unsigned int &ret_addr)
 }
 
 // Release a label from a pool (at scope closure)
-StatusCode LabelPool::Release(unsigned int addr) {
-	unsigned int *map = usedMap;
-	unsigned short *pRanges = ranges;
+StatusCode LabelPool::Release(uint32_t addr) {
+	uint32_t *map = usedMap;
+	uint16_t *pRanges = ranges;
 	for (int r = 0; r<numRanges; r++) {
-		unsigned short a0 = *pRanges++, a1 = *pRanges++;
+		uint16_t a0 = *pRanges++, a1 = *pRanges++;
 		if (addr>=a0 && addr<a1) {
-			unsigned int index = (a1-addr-1);
+			uint32_t index = (a1-addr-1);
 			map += index>>4;
 			index &= 0xf;
-			unsigned int u = *map, m = 3 << (index << 1);
-			unsigned int b = u & m, bytes = b >> (index << 1);
+			uint32_t u = *map, m = 3 << (index << 1);
+			uint32_t b = u & m, bytes = b >> (index << 1);
 			if (bytes) {
-				for (unsigned int f = 0; f<bytes; f++) {
+				for (uint32_t f = 0; f<bytes; f++) {
 					u &= ~m;
-					unsigned int _m = m>>2;
+					uint32_t _m = m>>2;
 					if (!_m) { m <<= 30; *map-- = u; } else { m = _m; }
 				}
 				*map = u;
@@ -4061,8 +4062,8 @@ StatusCode LabelPool::Release(unsigned int addr) {
 // Check if a label is marked as an xdef
 bool Asm::MatchXDEF(strref label)
 {
-	unsigned int hash = label.fnv1a();
-	unsigned int pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
+	uint32_t hash = label.fnv1a();
+	uint32_t pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
 	while (pos < xdefs.count() && xdefs.getKey(pos) == hash) {
 		if (label.same_str_case(xdefs.getValue(pos)))
 			return true;
@@ -4193,8 +4194,8 @@ StatusCode Asm::IncludeSymbols(strref line)
 // Get a string record if it exists
 StringSymbol *Asm::GetString(strref string_name)
 {
-	unsigned int string_hash = string_name.fnv1a();
-	unsigned int index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
+	uint32_t string_hash = string_name.fnv1a();
+	uint32_t index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
 	while (index < strings.count() && string_hash == strings.getKey(index)) {
 		if (string_name.same_str(strings.getValue(index).string_name))
 			return strings.getValues() + index;
@@ -4208,8 +4209,8 @@ StringSymbol *Asm::AddString(strref string_name, strref string_value)
 {
 	StringSymbol *pStr = GetString(string_name);
 	if (pStr==nullptr) {
-		unsigned int string_hash = string_name.fnv1a();
-		unsigned int index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
+		uint32_t string_hash = string_name.fnv1a();
+		uint32_t index = FindLabelIndex(string_hash, strings.getKeys(), strings.count());
 		strings.insert(index, string_hash);
 		pStr = strings.getValues() + index;
 		pStr->string_name = string_name;
@@ -4433,12 +4434,12 @@ void Asm::AddIncludeFolder(strref path)
 }
 
 // unique key binary search
-int LookupOpCodeIndex(unsigned int hash, OPLookup *lookup, int count)
+int LookupOpCodeIndex(uint32_t hash, OPLookup *lookup, int count)
 {
 	int first = 0;
 	while (count!=first) {
 		int index = (first+count)/2;
-		unsigned int read = lookup[index].op_hash;
+		uint32_t read = lookup[index].op_hash;
 		if (hash==read) {
 			return index;
 		} else if (hash>read)
@@ -4490,6 +4491,11 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 			recur = read_source.scoped_block_skip();
 		ctx.next_source = read_source;
 		PushContext(ctx.source_name, ctx.source_file, recur, count);
+		if (scope_depth>=(MAX_SCOPE_DEPTH-1))
+			return ERROR_TOO_DEEP_SCOPE;
+		else
+			scope_address[++scope_depth] = CurrSection().GetPC();
+		contextStack.curr().scoped_context = true;
 	}
 	return STATUS_OK;
 }
@@ -4540,8 +4546,8 @@ StatusCode Asm::Directive_String(strref line)
 StatusCode Asm::Directive_Undef(strref line)
 {
 	strref name = line.split_range_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
-	unsigned int name_hash = name.fnv1a();
-	unsigned int index = FindLabelIndex(name_hash, labels.getKeys(), labels.count());
+	uint32_t name_hash = name.fnv1a();
+	uint32_t index = FindLabelIndex(name_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && name_hash == labels.getKey(index)) {
 		if (name.same_str(labels.getValue(index).label_name)) {
 			labels.remove(index);
@@ -4617,7 +4623,7 @@ StatusCode Asm::Directive_Incbin(strref line, int skip, int len)
 		if (len && bin_size>len)
 			bin_size = len;
 		if (bin_size>0)
-			AddBin((const unsigned char*)buffer+skip, bin_size);
+			AddBin((const uint8_t*)buffer+skip, bin_size);
 		free(buffer);
 		return STATUS_OK;
 	}
@@ -4762,8 +4768,8 @@ StatusCode Asm::Directive_XDEF(strref line)
 		char f = xdef.get_first();
 		char e = xdef.get_last();
 		if (f != '.' && f != '!' && f != '@' && e != '$') {
-			unsigned int hash = xdef.fnv1a();
-			unsigned int pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
+			uint32_t hash = xdef.fnv1a();
+			uint32_t pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
 			while (pos < xdefs.count() && xdefs.getKey(pos) == hash) {
 				if (xdefs.getValue(pos).same_str_case(xdef))
 					return STATUS_OK;
@@ -4816,9 +4822,9 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 				CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, width, lastEvalShift);
 			}
 		}
-		unsigned char bytes[4] = {
-			(unsigned char)value, (unsigned char)(value >> 8),
-			(unsigned char)(value >> 16), (unsigned char)(value >> 24) };
+		uint8_t bytes[4] = {
+			(uint8_t)value, (uint8_t)(value >> 8),
+			(uint8_t)(value >> 16), (uint8_t)(value >> 24) };
 		AddBin(bytes, width);
 	}
 	return STATUS_OK;
@@ -4933,7 +4939,7 @@ StatusCode Asm::Directive_EVAL(strref line)
 
 StatusCode Asm::Directive_HEX(strref line)
 {
-	unsigned char b = 0, v = 0;
+	uint8_t b = 0, v = 0;
 	while (line) {	// indeterminable length, can't read hex to int
 		char c = *line.get();
 		++line;
@@ -5309,7 +5315,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 }
 
 // Make an educated guess at the intended address mode from an opcode argument
-StatusCode Asm::GetAddressMode(strref line, bool flipXY, unsigned int validModes, AddrMode &addrMode, int &len, strref &expression)
+StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t validModes, AddrMode &addrMode, int &len, strref &expression)
 {
 	bool force_zp = false;
 	bool force_24 = false;
@@ -5320,7 +5326,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, unsigned int validModes
 	len = 0;
 	while (need_more) {
 		need_more = false;
-		unsigned char c = line.get_first();
+		uint8_t c = line.get_first();
 		if (!c)
 			addrMode = AMB_NON;
 		else if (!force_abs && (c == '[' || (c == '(' &&
@@ -5389,7 +5395,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	strref expression;
 
 	// allowed modes
-	unsigned int validModes = opcode_table[index].modes;
+	uint32_t validModes = opcode_table[index].modes;
 
 	// instruction parameter length override
 	int op_param = 0;
@@ -5424,7 +5430,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 	int value = 0;
 	int target_section = -1;
 	int target_section_offs = -1;
-	char target_section_shift = 0;
+	int8_t target_section_shift = 0;
 	bool evalLater = false;
 	if (expression) {
 		struct EvalContext etx;
@@ -5493,7 +5499,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 
 	// Add the instruction and argument to the code
 	if (error == STATUS_OK || error == STATUS_RELATIVE_SECTION) {
-		unsigned char opcode = opcode_table[index].aCodes[addrMode];
+		uint8_t opcode = opcode_table[index].aCodes[addrMode];
 		StatusCode cap_status = CheckOutputCapacity(4);
 		if (cap_status != STATUS_OK)
 			return error;
@@ -5613,7 +5619,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
 				else if (((int)value - (int)CurrSection().GetPC()-1) < -128 || ((int)value - (int)CurrSection().GetPC()-1) > 127)
 					error = ERROR_BRANCH_OUT_OF_RANGE;
-				AddByte(evalLater ? 0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
+				AddByte(evalLater ? 0 : (uint8_t)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 
 			case CA_BRANCH_16:
@@ -5638,7 +5644,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 				else if (((int)value - (int)CurrSection().GetPC() - 1) < -128 || ((int)value - (int)CurrSection().GetPC() - 1) > 127)
 					error = ERROR_BRANCH_OUT_OF_RANGE;
 				AddByte((error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) ?
-						0 : (unsigned char)((int)value - (int)CurrSection().GetPC()) - 1);
+						0 : (uint8_t)((int)value - (int)CurrSection().GetPC()) - 1);
 				break;
 			}
 			case CA_NONE:
@@ -5773,8 +5779,8 @@ StatusCode Asm::BuildLine(strref line)
 				list_flags |= ListLine::KEYWORD;
 			}
 			else {
-				unsigned int nameHash = label.fnv1a();
-				unsigned int macro = FindLabelIndex(nameHash, macros.getKeys(), macros.count());
+				uint32_t nameHash = label.fnv1a();
+				uint32_t macro = FindLabelIndex(nameHash, macros.getKeys(), macros.count());
 				bool gotConstruct = false;
 				while (macro < macros.count() && nameHash==macros.getKey(macro)) {
 					if (macros.getValue(macro).name.same_str_case(label)) {
@@ -5786,7 +5792,7 @@ StatusCode Asm::BuildLine(strref line)
 					macro++;
 				}
 				if (!gotConstruct) {
-					unsigned int labPool = FindLabelIndex(nameHash, labelPools.getKeys(), labelPools.count());
+					uint32_t labPool = FindLabelIndex(nameHash, labelPools.getKeys(), labelPools.count());
 					gotConstruct = false;
 					while (labPool < labelPools.count() && nameHash==labelPools.getKey(labPool)) {
 						if (labelPools.getValue(labPool).pool_name.same_str_case(label)) {
@@ -5889,9 +5895,9 @@ StatusCode Asm::BuildSegment()
 
 struct cycleCnt {
 	int base;
-	short plus, a16, x16, dp;
+	int16_t plus, a16, x16, dp;
 	void clr() { base = 0; plus = a16 = x16 = dp = 0; }
-	void add(unsigned char c) {
+	void add(uint8_t c) {
 		if (c != 0xff) {
 			base += (c >> 1) & 7;
 			plus += c & 1;
@@ -5912,10 +5918,10 @@ struct cycleCnt {
 		base += o.base; plus += o.plus; a16 += o.a16; x16 += o.x16; dp += o.dp;
 	}
 	bool complex() const { return a16 != 0 || x16 != 0 || dp != 0; }
-	static int get_base(unsigned char c) {
+	static int get_base(uint8_t c) {
 		return (c & 0xf) >> 1;
 	}
-	static int sum_plus(unsigned char c) {
+	static int sum_plus(uint8_t c) {
 		if (c == 0xff)
 			return 0;
 		int i = c >> 4;
@@ -5941,14 +5947,14 @@ bool Asm::List(strref filename)
 		SetCPU(list_cpu);
 
 	// Build a disassembly lookup table
-	unsigned char mnemonic[256];
-	unsigned char addrmode[256];
+	uint8_t mnemonic[256];
+	uint8_t addrmode[256];
 	memset(mnemonic, 255, sizeof(mnemonic));
 	memset(addrmode, 255, sizeof(addrmode));
 	for (int i = 0; i < opcode_count; i++) {
 		for (int j = AMB_COUNT-1; j >= 0; j--) {
 			if (opcode_table[i].modes & (1 << j)) {
-				unsigned char op = opcode_table[i].aCodes[j];
+				uint8_t op = opcode_table[i].aCodes[j];
 				if (addrmode[op]==255) {
 					mnemonic[op] = i;
 					addrmode[op] = j;
@@ -5958,7 +5964,7 @@ bool Asm::List(strref filename)
 	}
 
 	struct cycleCnt cycles[MAX_DEPTH_CYCLE_COUNTER];
-	short cycles_depth = 0;
+	int16_t cycles_depth = 0;
 	memset(cycles, 0, sizeof(cycles));
 
 	strref prev_src;
@@ -6031,9 +6037,9 @@ bool Asm::List(strref filename)
 			}
 			if (lst.size && lst.wasMnemonic()) {
 				out.append_to(' ', 18);
-				unsigned char *buf = si->output + lst.address;
-				unsigned char op = mnemonic[*buf];
-				unsigned char am = addrmode[*buf];
+				uint8_t *buf = si->output + lst.address;
+				uint8_t op = mnemonic[*buf];
+				uint8_t am = addrmode[*buf];
 				if (op != 255 && am != 255 && am<(sizeof(aAddrModeFmt)/sizeof(aAddrModeFmt[0]))) {
 					const char *fmt = aAddrModeFmt[am];
 					if (opcode_table[op].modes & AMM_FLIPXY) {
@@ -6045,7 +6051,7 @@ bool Asm::List(strref filename)
 					else if (opcode_table[op].modes & AMM_BRANCH)
 						out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
 					else if (opcode_table[op].modes & AMM_BRANCH_L)
-						out.sprintf_append(fmt, opcode_table[op].instr, (short)(buf[1] | (buf[2] << 8)) + lst.address + si->start_address + 3);
+						out.sprintf_append(fmt, opcode_table[op].instr, (int16_t)(buf[1] | (buf[2] << 8)) + lst.address + si->start_address + 3);
 					else if (am == AMB_NON || am == AMB_ACC)
 						out.sprintf_append(fmt, opcode_table[op].instr);
 					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL || am == AMB_REL_X || am == AMB_REL_L)
@@ -6102,7 +6108,7 @@ bool Asm::AllOpcodes(strref filename)
 		opened = true;
 	}
 	for (int i = 0; i < opcode_count; i++) {
-		unsigned int modes = opcode_table[i].modes;
+		uint32_t modes = opcode_table[i].modes;
 		for (int a = 0; a < AMB_COUNT; a++) {
 			if (modes & (1 << a)) {
 				const char *fmt = aAddrModeFmt[a];
@@ -6200,13 +6206,13 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 //
 
 struct ObjFileHeader {
-	short id;	// 'x6'
-	short sections;
-	short relocs;
-	short labels;
-	short late_evals;
-	short map_symbols;
-	unsigned int stringdata;
+	int16_t id;	// 'x6'
+	int16_t sections;
+	int16_t relocs;
+	int16_t labels;
+	int16_t late_evals;
+	int16_t map_symbols;
+	uint32_t stringdata;
 	int bindata;
 };
 
@@ -6226,61 +6232,61 @@ struct ObjFileSection {
 	int end_address;		// address size
 	int output_size;		// assembled binary size
 	int align_address;
-	short next_group;		// next section of group
-	short first_group;		// first section of group
-	short relocs;
+	int16_t next_group;		// next section of group
+	int16_t first_group;	// first section of group
+	int16_t relocs;
 	SectionType type;
-	char flags;
+	int8_t flags;
 };
 
 struct ObjFileReloc {
 	int base_value;
 	int section_offset;
-	short target_section;
-	char bytes;
-	char shift;
+	int16_t target_section;
+	int8_t bytes;
+	int8_t shift;
 };
 
 struct ObjFileLabel {
 	enum LabelFlags {
-		OFL_EVAL = (1<<15),			// Evaluated (may still be relative)
-		OFL_ADDR = (1<<14),			// Address or Assign
-		OFL_CNST = (1<<13),			// Constant
-		OFL_XDEF = OFL_CNST-1		// External (index into file array)
+		OFL_EVAL = (1<<15),		// Evaluated (may still be relative)
+		OFL_ADDR = (1<<14),		// Address or Assign
+		OFL_CNST = (1<<13),		// Constant
+		OFL_XDEF = OFL_CNST-1	// External (index into file array)
 	};
 	struct ObjFileStr name;
 	int value;
-	int flags;				// 1<<(LabelFlags)
-	short section;			// -1 if resolved, file section # if section rel
-	short mapIndex;			// -1 if resolved, index into map if relative
+	int flags;					// 1<<(LabelFlags)
+	int16_t section;			// -1 if resolved, file section # if section rel
+	int16_t mapIndex;			// -1 if resolved, index into map if relative
 };
 
 struct ObjFileLateEval {
 	struct ObjFileStr label;
 	struct ObjFileStr expression;
-	int address;			// PC relative to section or fixed
-	int target;				// offset into section memory
-	short section;			// section to target
-	short rept;				// value of rept for this late eval
-	short scope;			// PC start of scope
-	short type;				// label, byte, branch, word (LateEval::Type)
+	int address;				// PC relative to section or fixed
+	int target;					// offset into section memory
+	int16_t section;			// section to target
+	int16_t rept;				// value of rept for this late eval
+	int16_t scope;				// PC start of scope
+	int16_t type;				// label, byte, branch, word (LateEval::Type)
 };
 
 struct ObjFileMapSymbol {
-	struct ObjFileStr name;	// symbol name
+	struct ObjFileStr name;		// symbol name
 	int value;
-	short section;
-	bool local;				// local labels are probably needed
+	int16_t section;
+	bool local;					// local labels are probably needed
 };
 
 // Simple string pool, converts strref strings to zero terminated strings and returns the offset to the string in the pool.
-static int _AddStrPool(const strref str, pairArray<unsigned int, int> *pLookup, char **strPool, unsigned int &strPoolSize, unsigned int &strPoolCap)
+static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char **strPool, uint32_t &strPoolSize, uint32_t &strPoolCap)
 {
 	if (!str.get() || !str.get_len())
 		return -1;	// empty string
 
-	unsigned int hash = str.fnv1a();
-	unsigned int index = FindLabelIndex(hash, pLookup->getKeys(), pLookup->count());
+	uint32_t hash = str.fnv1a();
+	uint32_t index = FindLabelIndex(hash, pLookup->getKeys(), pLookup->count());
 	if (index<pLookup->count() && str.same_str_case(*strPool + pLookup->getValue(index)))
 		return pLookup->getValue(index);
 
@@ -6316,29 +6322,29 @@ StatusCode Asm::WriteObjectFile(strref filename)
 	if (FILE *f = fopen(strown<512>(filename).c_str(), "wb")) {
 		struct ObjFileHeader hdr = { 0 };
 		hdr.id = 0x7836;
-		hdr.sections = (short)allSections.size();
+		hdr.sections = (int16_t)allSections.size();
 		hdr.relocs = 0;
 		hdr.bindata = 0;
 		
 		for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
 			if (s->type != ST_REMOVED) {
 				if (s->pRelocs)
-					hdr.relocs += short(s->pRelocs->size());
+					hdr.relocs += int16_t(s->pRelocs->size());
 				hdr.bindata += s->size();
 			}
 		}
-		hdr.late_evals = (short)lateEval.size();
-		hdr.map_symbols = (short)map.size();
+		hdr.late_evals = (int16_t)lateEval.size();
+		hdr.map_symbols = (int16_t)map.size();
 		hdr.stringdata = 0;
 
 		// labels don't include XREF labels
 		hdr.labels = 0;
-		for (unsigned int l = 0; l<labels.count(); l++) {
+		for (uint32_t l = 0; l<labels.count(); l++) {
 			if (!labels.getValue(l).reference)
 				hdr.labels++;
 		}
 
-		short *aRemapSects = hdr.sections ? (short*)malloc(sizeof(short) * hdr.sections) : nullptr;
+		int16_t *aRemapSects = hdr.sections ? (int16_t*)malloc(sizeof(int16_t) * hdr.sections) : nullptr;
 		if (!aRemapSects) {
 			fclose(f);
 			return ERROR_OUT_OF_MEMORY;
@@ -6349,8 +6355,8 @@ StatusCode Asm::WriteObjectFile(strref filename)
 			hdr.labels += el->labels.count();
 
 		char *stringPool = nullptr;
-		unsigned int stringPoolCap = 0;
-		pairArray<unsigned int, int> stringArray;
+		uint32_t stringPoolCap = 0;
+		pairArray<uint32_t, int> stringArray;
 		stringArray.reserve(hdr.labels * 2 + hdr.sections + hdr.late_evals*2);
 
 		struct ObjFileSection *aSects = hdr.sections ? (struct ObjFileSection*)calloc(hdr.sections, sizeof(struct ObjFileSection)) : nullptr;
@@ -6360,7 +6366,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		struct ObjFileMapSymbol *aMapSyms = hdr.map_symbols ? (struct ObjFileMapSymbol*)calloc(hdr.map_symbols, sizeof(struct ObjFileMapSymbol)) : nullptr;
 		int sect = 0, reloc = 0, labs = 0, late = 0, map_sym = 0;
 
-		memset(aRemapSects, 0xff, sizeof(short) * hdr.sections);
+		memset(aRemapSects, 0xff, sizeof(int16_t) * hdr.sections);
 
 		// discard the removed sections by making a table of skipped indices
 		for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
@@ -6381,7 +6387,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				s.align_address = si->align_address;
 				s.next_group = si->next_group >= 0 ? aRemapSects[si->next_group] : -1;
 				s.first_group = si->first_group >= 0 ? aRemapSects[si->first_group] : -1;
-				s.relocs = si->pRelocs ? (short)(si->pRelocs->size()) : 0;
+				s.relocs = si->pRelocs ? (int16_t)(si->pRelocs->size()) : 0;
 				s.start_address = si->start_address;
 				s.end_address = si->address;
 				s.type = si->type;
@@ -6405,7 +6411,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 
 		// write out labels
 		if (hdr.labels) {
-			for (unsigned int li = 0; li<labels.count(); li++) {
+			for (uint32_t li = 0; li<labels.count(); li++) {
 				Label &lo = labels.getValue(li);
 				if (!lo.reference) {
 					struct ObjFileLabel &l = aLabels[labs++];
@@ -6426,7 +6432,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		if (hdr.labels) {
 			int file_index = 1;
 			for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el) {
-				for (unsigned int li = 0; li < el->labels.count(); ++li) {
+				for (uint32_t li = 0; li < el->labels.count(); ++li) {
 					Label &lo = el->labels.getValue(li);
 					struct ObjFileLabel &l = aLabels[labs++];
 					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
@@ -6451,7 +6457,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				le.expression.offs = _AddStrPool(lei->expression, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				le.section = lei->section >= 0 ? aRemapSects[lei->section] : -1;
 				le.rept = lei->rept;
-				le.target = (short)lei->target;
+				le.target = (int16_t)lei->target;
 				le.address = lei->address;
 				le.scope = lei->scope;
 				le.type = lei->type;
@@ -6534,7 +6540,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 
 			int prevSection = SectionId();
 
-			short *aSctRmp = (short*)malloc(hdr.sections * sizeof(short));
+			int16_t *aSctRmp = (int16_t*)malloc(hdr.sections * sizeof(int16_t));
 			int last_linked_section = link_to_section;
 			while (last_linked_section>=0 && allSections[last_linked_section].next_group >= 0)
 				last_linked_section = allSections[last_linked_section].next_group;
@@ -6543,7 +6549,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 
 			// sections
 			for (int si = 0; si < hdr.sections; si++) {
-				short f = aSect[si].flags;
+				int16_t f = aSect[si].flags;
 				if (f & (1 << ObjFileSection::OFS_MERGED))
 					continue;
 				if (f & (1 << ObjFileSection::OFS_DUMMY)) {
@@ -6566,7 +6572,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 					s.address = aSect[si].end_address;
 					s.type = aSect[si].type;
 					if (aSect[si].output_size) {
-						s.output = (unsigned char*)malloc(aSect[si].output_size);
+						s.output = (uint8_t*)malloc(aSect[si].output_size);
 						memcpy(s.output, bin_data, aSect[si].output_size);
 						s.curr = s.output + aSect[si].output_size;
 						s.output_capacity = aSect[si].output_size;
@@ -6579,7 +6585,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 						last_linked_section = SectionId();
 					}
 				}
-				aSctRmp[si] = (short)allSections.size()-1;
+				aSctRmp[si] = (int16_t)allSections.size()-1;
 			}
 
 			// fix up groups and relocs
@@ -6614,7 +6620,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				struct ObjFileLabel &l = aLabels[li];
 				strref name = l.name.offs >= 0 ? strref(str_pool + l.name.offs) : strref();
 				Label *lbl = GetLabel(name);
-				short f = l.flags;
+				int16_t f = l.flags;
 				int external = f & ObjFileLabel::OFL_XDEF;
 				if (external == ObjFileLabel::OFL_XDEF) {
 					if (!lbl)
@@ -6627,8 +6633,8 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 							externals.reserve(externals.size() + 32);
 						externals.push_back(ExtLabels());
 					}
-					unsigned int hash = name.fnv1a();
-					unsigned int index = FindLabelIndex(hash, externals[file_index].labels.getKeys(), externals[file_index].labels.count());
+					uint32_t hash = name.fnv1a();
+					uint32_t index = FindLabelIndex(hash, externals[file_index].labels.getKeys(), externals[file_index].labels.count());
 					externals[file_index].labels.insert(index, hash);
 					lbl = externals[file_index].labels.getValues() + index;
 				}
@@ -6691,33 +6697,32 @@ enum OMFRecCode {
 	OMFR_SUPER = 0xf7,
 };
 
-typedef unsigned char u8;
 struct OMFSegHdr {
-	u8 SegTotal[4];				// + Segment Segment Header size Body size
-	u8 ResSpc[4];				// Number of 0x00 to add to the end of Body
-	u8 Length[4];				// Memory Size Segment
-	u8 pad1[1];
-	u8 LabLen[1];				// Length Names: 10
-	u8 NumLen[1];				// Size = 4 numbers uint8s
-	u8 Version[1];				// OMF Version: 2
-	u8 BankSize[4];				// Size of a Bank: 64 KB code if, between 0 and 64 KB for Data
-	u8 Kind[2];					// Type Segment
-	u8 pad2[2];
-	u8 Org[4];
-	u8 Align[4];				// Alignment: 0, 64 or 256 KB
-	u8 NumSEx[1];				// Little Endian: 0 for IIgs
-	u8 pad3[1];
-	u8 SegNum[2];				// Segment Number: 1-> N
-	u8 EntryPointOffset[4];		// Entry point in the Segment
-	u8 DispNameOffset[2];		// Where the offset is located LoadName
-	u8 DispDataOffset[2];		// Offset begins the Body Segment
-	u8 tempOrg[4];				// 
+	uint8_t SegTotal[4];				// + Segment Segment Header size Body size
+	uint8_t ResSpc[4];				// Number of 0x00 to add to the end of Body
+	uint8_t Length[4];				// Memory Size Segment
+	uint8_t pad1[1];
+	uint8_t LabLen[1];				// Length Names: 10
+	uint8_t NumLen[1];				// Size = 4 numbers uint8s
+	uint8_t Version[1];				// OMF Version: 2
+	uint8_t BankSize[4];				// Size of a Bank: 64 KB code if, between 0 and 64 KB for Data
+	uint8_t Kind[2];					// Type Segment
+	uint8_t pad2[2];
+	uint8_t Org[4];
+	uint8_t Align[4];				// Alignment: 0, 64 or 256 KB
+	uint8_t NumSEx[1];				// Little Endian: 0 for IIgs
+	uint8_t pad3[1];
+	uint8_t SegNum[2];				// Segment Number: 1-> N
+	uint8_t EntryPointOffset[4];		// Entry point in the Segment
+	uint8_t DispNameOffset[2];		// Where the offset is located LoadName
+	uint8_t DispDataOffset[2];		// Offset begins the Body Segment
+	uint8_t tempOrg[4];				// 
 };
 
 // write a number of bytes of a value
-static void _writeNBytes(unsigned char *dest, int bytes, int value) {
+static void _writeNBytes(uint8_t *dest, int bytes, int value) {
 	while (bytes--) {
-		*dest++ = (unsigned char)value;
+		*dest++ = (uint8_t)value;
 		value >>= 8;
 	}
 }
@@ -6795,7 +6800,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	for (std::vector<int>::iterator i = SegNum.begin(); i != SegNum.end(); ++i)
 		SegLookup[*i] = (int)(&*i - &SegNum[0]);
 
-	unsigned char *instructions = (unsigned char*)malloc(reloc_max * 16);
+	uint8_t *instructions = (uint8_t*)malloc(reloc_max * 16);
 	if (!instructions)
 		return ERROR_OUT_OF_MEMORY;
 	
@@ -6865,7 +6870,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 						} else
 							instructions[count_offs]++;
 						prev_page = r->section_offset>>8;
-						instructions[inst_curr++] = (unsigned char)r->section_offset;	// write patch offset into binary
+						instructions[inst_curr++] = (uint8_t)r->section_offset;	// write patch offset into binary
 						_writeNBytes(s.output + r->section_offset, b + 2, r->base_value);	// patch binary with base value
 						r = s.pRelocs->erase(r);
 					} else
@@ -6914,7 +6919,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 		if (num_bytes_file == 0)
 			segSize -= 5;
 		_writeNBytes(hdr.SegTotal, 4, segSize);
-		u8 lenSegName = (u8)segName.get_len();
+		uint8_t lenSegName = (uint8_t)segName.get_len();
 		fwrite(&hdr, sizeof(hdr), 1, f);
 		fwrite(segfile, 10, 1, f);
 		fwrite(&lenSegName, 1, 1, f);
@@ -7131,14 +7136,14 @@ int main(int argc, char **argv)
 							file.append(ext);
 							int size;
 							int addr;
-							if (unsigned char *buf = assembler.BuildExport(aAppendNames[e], size, addr)) {
+							if (uint8_t *buf = assembler.BuildExport(aAppendNames[e], size, addr)) {
 								if (FILE *f = fopen(file.c_str(), "wb")) {
 									if (load_header) {
-										char load_addr[2] = { (char)addr, (char)(addr >> 8) };
+										uint8_t load_addr[2] = { (uint8_t)addr, (uint8_t)(addr >> 8) };
 										fwrite(load_addr, 2, 1, f);
 									}
 									if (size_header) {
-										char byte_size[2] = { (char)size, (char)(size >> 8) };
+										uint8_t byte_size[2] = { (uint8_t)size, (uint8_t)(size >> 8) };
 										fwrite(byte_size, 2, 1, f);
 									}
 									fwrite(buf, size, 1, f);
@@ -7176,7 +7181,7 @@ int main(int argc, char **argv)
 					if (FILE *f = fopen(sym_file, "w")) {
 						bool wasLocal = false;
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							unsigned int value = (unsigned int)i->value;
+							uint32_t value = (uint32_t)i->value;
 							int section = i->section;
 							while (section >= 0 && section < (int)assembler.allSections.size()) {
 								if (assembler.allSections[section].IsMergedSection()) {
@@ -7200,7 +7205,7 @@ int main(int argc, char **argv)
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							unsigned int value = (unsigned int)i->value;
+							uint32_t value = (uint32_t)i->value;
 							int section = i->section;
 							while (section >= 0 && section < (int)assembler.allSections.size()) {
 								if (assembler.allSections[section].IsMergedSection()) {
