@@ -2677,7 +2677,9 @@ StatusCode Asm::EnterScope()
 StatusCode Asm::ExitScope()
 {
 	CheckLateEval(strref(), CurrSection().GetPC());
-	FlushLocalLabels(scope_depth);
+	StatusCode error = FlushLocalLabels(scope_depth);
+	if (error >= FIRST_ERROR)
+		return error;
 	FlushLabelPools(scope_depth);
 	--scope_depth;
 	if (scope_depth<0)
@@ -2695,7 +2697,7 @@ StatusCode Asm::ExitScope()
 
 StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, int rept)
 {
-	if (conditional_depth>=MAX_CONDITIONAL_DEPTH)
+	if (conditional_depth>=(MAX_CONDITIONAL_DEPTH-1))
 		return ERROR_CONDITION_TOO_NESTED;
 	conditional_depth++;
 	conditional_nesting[conditional_depth] = 0;
@@ -6150,8 +6152,11 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 		if (contextStack.curr().complete())
 			error = PopContext();
 		else {
-			FlushLocalLabels(scope_depth);
+			error = FlushLocalLabels(scope_depth);
+			if (error >= FIRST_ERROR)
+				break;
 			contextStack.curr().restart();
+			error = STATUS_OK;
 		}
 	}
 	if (error == STATUS_OK) {
@@ -6782,6 +6787,11 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 				reloc_max = (int)s->pRelocs->size();
 		}
 	}
+
+	// reloc_max needs to greater than zero
+	if (reloc_max < 1)
+		return ERROR_ABORTED;
+
 	for (std::vector<int>::iterator i = SegNum.begin(); i != SegNum.end(); ++i)
 		SegLookup[*i] = (int)(&*i - &SegNum[0]);
 
@@ -6849,8 +6859,11 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 							instructions[inst_curr++] = 0x80 | ((r->section_offset >> 8) - prev_page - 1);
 							count_offs = -1;
 						}	// update patch counter for current page or add a new counter
-						if (count_offs < 0) { count_offs = inst_curr; instructions[inst_curr++] = 0; }
-						else instructions[count_offs]++;
+						if (count_offs < 0) {
+							count_offs = inst_curr;
+							instructions[inst_curr++] = 0;
+						} else
+							instructions[count_offs]++;
 						prev_page = r->section_offset>>8;
 						instructions[inst_curr++] = (unsigned char)r->section_offset;	// write patch offset into binary
 						_writeNBytes(s.output + r->section_offset, b + 2, r->base_value);	// patch binary with base value
