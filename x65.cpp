@@ -4499,7 +4499,7 @@ StatusCode Asm::Directive_Macro(strref line, strref source_file)
 {
 	strref read_source = contextStack.curr().read_source.get_skip_ws();
 	if (!Merlin() && read_source.is_substr(line.get()))
-		read_source.skip(line.get()-read_source.get());
+		read_source.skip(strl_t(line.get()-read_source.get()));
 	if (read_source) {
 		StatusCode error = AddMacro(read_source, contextStack.curr().source_name,
 									contextStack.curr().source_file, read_source);
