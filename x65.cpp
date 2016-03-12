@@ -6149,8 +6149,10 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 		error = BuildSegment();
 		if (contextStack.curr().complete())
 			error = PopContext();
-		else
+		else {
+			FlushLocalLabels(scope_depth);
 			contextStack.curr().restart();
+		}
 	}
 	if (error == STATUS_OK) {
 		if (!obj_target)
@@ -7007,6 +7009,8 @@ int main(int argc, char **argv)
 					assembler.default_org = (arg + 1).ahextoui();
 				else if (arg.is_number())
 					assembler.default_org = arg.atoi();
+				// force the current section to be org'd
+				assembler.AssignAddressToSection(assembler.SectionId(), assembler.default_org);
 			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
 				assembler.accumulator_16bit = arg.after('=').atoi() == 16;
 			} else if (arg.has_prefix(xy) && arg[xy.get_len()] == '=') {
@@ -7052,7 +7056,7 @@ int main(int argc, char **argv)
 			 "  * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu\n"
 			 "  * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits\n"
 			 "  * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits\n"
-			 "  * -org = $2000 or - org = 4096: set the default start address of fixed address code\n"
+			 "  * -org = $2000 or - org = 4096: force fixed address code at address\n"
 			 "  * -obj (file.x65) : generate object file for later linking\n"
 			 "  * -bin : Raw binary\n"
 			 "  * -c64 : Include load address(default)\n"
