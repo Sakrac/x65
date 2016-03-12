@@ -43,6 +43,17 @@ Noteworthy features:
 * Apple II GS executable output.
 
 
+The x65 assembler co-exists with two related projects, both of which can
+be used independently with other assembers.
+
+* Step6502 - http://gitbub.com/sakrac/Step6502 is a visual debugger for
+  6502 in Windows that draws heavily from the Visual Studio debugger.
+* x65dsasm - http://github.com/sakrac/x65dsasm is a symbolic disassembler
+  for 6502/65C02/65816 that is primarily used for reviewing changes to
+  the x65 assembler, but can also revive old projects where some source
+  may be missing.
+
+
 -0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0--0-
 
 
@@ -142,8 +153,7 @@ Options include:
 * -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
 * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
 * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
-* -org = $2000 or - org = 4096: set the default start address of
-   fixed address code
+* -org = $2000 or - org = 4096: force fixed address code at address
 * -obj (file.x65) : generate object file for later linking
 * -bin : Raw binary
 * -c64 : Include load address (default)
@@ -1012,6 +1022,7 @@ LUP
 
 LUP is Merlingo for loop. The lines following the LUP directive to
 the keyword --^ are repeated the number of times that follows LUP.
+LUP is the same as REPT in normal syntax.
 
 
 MAC
