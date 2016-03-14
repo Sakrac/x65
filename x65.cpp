@@ -1397,9 +1397,8 @@ typedef struct sSourceContext {
 	strref read_source;		// current position/length in source file
 	strref next_source;		// next position/length in source file
 	int16_t repeat;			// how many times to repeat this code segment
-	int16_t repeat_total;		// initial number of repeats for this code segment
+	int16_t repeat_total;	// initial number of repeats for this code segment
 	int16_t conditional_ctx;	// conditional depth at root of this context
-	bool scoped_context;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
 } SourceContext;
@@ -1424,7 +1423,6 @@ public:
 		context.next_source = code_seg;
 		context.repeat = rept;
 		context.repeat_total = rept;
-		context.scoped_context = false;
 		stack.push_back(context);
 		currContext = &stack[stack.size()-1];
 	}
@@ -2705,12 +2703,16 @@ StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, i
 	conditional_consumed[conditional_depth] = false;
 	contextStack.push(src_name, src_file, code_seg, rept);
 	contextStack.curr().conditional_ctx = conditional_depth;
+	if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
+		return ERROR_TOO_DEEP_SCOPE;
+	else
+		scope_address[++scope_depth] = CurrSection().GetPC();
 	return STATUS_OK;
 }
 
 StatusCode Asm::PopContext()
 {
-	if (contextStack.curr().scoped_context && scope_depth) {
+	if (scope_depth) {
 		StatusCode ret = ExitScope();
 		if (ret != STATUS_OK)
 			return ret;
@@ -2841,7 +2843,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 {
 	strref macro_src = m.macro, params;
 	if (m.params_first_line) {
-		if (end_macro_directive)
+		if (end_macro_directive || Merlin())
 			params = macro_src.line();
 		else {
 			params = macro_src.before('{');
@@ -2873,7 +2875,6 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			int count = macro_src.substr_case_count(tag.get_strref());
 			dSize += count * ((int)a.get_len() - (int)tag.get_len());
 		}
-		macro_src.line();	// skip macro parameters
 		int mac_size = macro_src.get_len() + dSize + 32;
 		if (char *buffer = (char*)malloc(mac_size)) {
 			loadedData.push_back(buffer);
@@ -2888,11 +2889,6 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				}
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
-			if (scope_depth>=(MAX_SCOPE_DEPTH-1))
-				return ERROR_TOO_DEEP_SCOPE;
-			else
-				scope_address[++scope_depth] = CurrSection().GetPC();
-			contextStack.curr().scoped_context = true;
 			return STATUS_OK;
 		} else
 			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
@@ -2921,14 +2917,6 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				macexp.replace_bookend(param, a, label_end_char_range);
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
-			if (Merlin() || end_macro_directive) {
-				PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
-				if (scope_depth>=(MAX_SCOPE_DEPTH-1))
-					return ERROR_TOO_DEEP_SCOPE;
-				else
-					scope_address[++scope_depth] = CurrSection().GetPC();
-				contextStack.curr().scoped_context = true;
-			}
 			return STATUS_OK;
 		} else
 			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
@@ -3389,7 +3377,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					else if (op == EVOP_ADD)
 						skip = true;
 				}
-				if (op == EVOP_SUB && sp && op_stack[sp-1]== EVOP_SUB)
+				if (op == EVOP_SUB && sp && prev_op == EVOP_SUB)
 					sp--;
 				else {
 					while (sp && !skip) {
@@ -4313,11 +4301,6 @@ StatusCode Asm::StringAction(StringSymbol *pStr, strref line)
 		mac.replace("\\n", "\n");
 		loadedData.push_back(macro);
 		PushContext(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
-		if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
-			return ERROR_TOO_DEEP_SCOPE;
-		else
-			scope_address[++scope_depth] = CurrSection().GetPC();
-		contextStack.curr().scoped_context = true;
 		return STATUS_OK;
 
 	}
@@ -4491,11 +4474,6 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 			recur = read_source.scoped_block_skip();
 		ctx.next_source = read_source;
 		PushContext(ctx.source_name, ctx.source_file, recur, count);
-		if (scope_depth>=(MAX_SCOPE_DEPTH-1))
-			return ERROR_TOO_DEEP_SCOPE;
-		else
-			scope_address[++scope_depth] = CurrSection().GetPC();
-		contextStack.curr().scoped_context = true;
 	}
 	return STATUS_OK;
 }
@@ -5686,9 +5664,6 @@ StatusCode Asm::BuildLine(strref line)
 	int start_address = CurrSection().address;
 	strref code_line = line;
 	list_flags = 0;
-
-	if (line.find("macro")>=0)
-		printf("HEY!");
 
 	while (line && error == STATUS_OK) {
 		strref line_start = line;

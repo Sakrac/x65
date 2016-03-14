@@ -101,6 +101,8 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* First line of a Merlin macro was sometimes ignored, two sequential subtractions were ignored in expressions.
+* Pushing source contexts (macro, rept, include etc.) will always increment the scope depth.
 * Fixed REPT / LUP to not destroy local symbols in the scope it was used in while also destroying local symbols within the repeating block correctly
 * Switched over to inttypes.h from built-in types since the word unsigned was used a little too much in the code
 * Removed the disassembler and put it into its own project [x65dsasm](http://github.com/sakrac/x65dsasm)
