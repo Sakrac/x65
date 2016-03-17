@@ -3194,6 +3194,7 @@ enum WILDCARD_SEGMENT_TYPE {
 	WCST_END,
 	WCST_FIND_SUBSTR,
 	WCST_FIND_SUBSTR_RANGE,
+	WCST_SUBSTR_MATCH_RANGE,
 	WCST_FIND_RANGE_CHAR,
 	WCST_FIND_RANGE_CHAR_RANGED,
 	WCST_FIND_WORD_START,
@@ -3258,11 +3259,14 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 		int next_pos = wild.find_any_char_of(_wildcard_control, pos);
 		if (next_pos<0) { // completed? (found no wildcard token)
 			// add last segment if there was one
-			if (wild.get_len() >(strl_t)last) {
+			if (wild.get_len() > (strl_t)last) {
 				segs[numSeg++] = wild.get_substr(last, wild.get_len()-last);
 				if (search && range)
 					segs[numSeg++] = range;
 				type[numType++] = search ? (range ? WCST_FIND_SUBSTR_RANGE : WCST_FIND_SUBSTR) : WCST_NEXT_SUBSTR;
+			} else if (range) {
+				segs[numSeg++] = range;
+				type[numType++] = WCST_SUBSTR_MATCH_RANGE;
 			}
 			range.clear();
 			break;
@@ -3482,6 +3486,12 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 					found_pos = pos;
 					pos += segs[seg].length;
 					seg += 2;
+					break;
+
+				case WCST_SUBSTR_MATCH_RANGE:
+					while ((strl_t)pos < length && segs[seg].char_matches_ranges(get_at(pos)))
+						pos++;
+					seg++;
 					break;
 
 				case WCST_FIND_RANGE_CHAR:

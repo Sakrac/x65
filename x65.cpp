@@ -124,6 +124,7 @@ enum StatusCode {
 	ERROR_BAD_MACRO_FORMAT,
 	ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION,
+	ERROR_MACRO_ARGUMENT,
 	ERROR_CONDITION_COULD_NOT_BE_RESOLVED,
 	ERROR_ENDIF_WITHOUT_CONDITION,
 	ERROR_ELSE_WITHOUT_IF,
@@ -194,6 +195,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Unexpected macro formatting",
 	"Align must evaluate immediately",
 	"Out of memory for macro expansion",
+	"Problem with macro argument",
 	"Conditional could not be resolved",
 	"#endif encountered outside conditional block",
 	"#else or #elif outside conditional block",
@@ -2882,10 +2884,24 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			macexp.copy(macro_src);
 			arg = arg_list;
 			if (tag) {
-				for (int t=1; t<t_max; t++) {
-					tag.sprintf("]%d", t);
-					strref a = arg.split_token_trim(';');
-					macexp.replace_bookend(tag.get_strref(), a, label_end_char_range_merlin);
+				strref match("]*{0-9}");
+				strl_t pos = 0;
+				while (strref tag = macexp.find_wildcard(match, pos)) {
+					bool success = false;
+					strl_t offs = strl_t(tag.get() - macexp.get());
+					if (!offs || !strref::is_valid_label(macexp[offs])) {
+						int t = (tag + 1).atoi();
+						strref args = arg;
+						if (t > 0) {
+							for (int skip = 1; skip < t; skip++)
+								args.split_token_trim(';');
+							strref a = args.split_token_trim(';');
+							macexp.exchange(offs, tag.get_len(), a);
+							success = true;
+						}
+					}
+					if (!success)
+						return ERROR_MACRO_ARGUMENT;
 				}
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
@@ -5673,7 +5689,7 @@ StatusCode Asm::BuildLine(strref line)
 		line = line.before_or_full(';');	// clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
-		if (line[0]==':' && syntax!=SYNTAX_MERLIN)	// Kick Assembler macro prefix (incompatible with merlin)
+		if (line[0]==':' && !Merlin())	// Kick Assembler macro prefix (incompatible with merlin)
 			++line;
 		strref line_nocom = line;
 		strref operation = line.split_range(Merlin() ? label_end_char_range_merlin : label_end_char_range);
@@ -5684,7 +5700,7 @@ StatusCode Asm::BuildLine(strref line)
 		bool force_label = charE==':' || charE=='$';
 		if (!force_label && Merlin() && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
 			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
-		else if (!force_label && syntax!=SYNTAX_MERLIN && line[0]==':')
+		else if (!Merlin() && line[0]==':')
 			force_label = true;
 		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
@@ -5720,7 +5736,7 @@ StatusCode Asm::BuildLine(strref line)
 		} else {
 			// ignore leading period for instructions and directives - not for labels
 			strref label = operation;
-			if ((syntax != SYNTAX_MERLIN && operation[0]==':') || operation[0]=='.')
+			if ((!Merlin() && operation[0]==':') || operation[0]=='.')
 				++operation;
 			operation = operation.before_or_full('.');
 
