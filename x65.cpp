@@ -2897,6 +2897,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 								args.split_token_trim(';');
 							strref a = args.split_token_trim(';');
 							macexp.exchange(offs, tag.get_len(), a);
+							pos += a.get_len();
 							success = true;
 						}
 					}
