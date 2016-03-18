@@ -101,6 +101,7 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Merlin macro parameters are not required on the MAC line, scope braces ('{', '}') can be used in the first column in Merlin.
 * First line of a Merlin macro was sometimes ignored, two sequential subtractions were ignored in expressions.
 * Pushing source contexts (macro, rept, include etc.) will always increment the scope depth.
 * Fixed REPT / LUP to not destroy local symbols in the scope it was used in while also destroying local symbols within the repeating block correctly

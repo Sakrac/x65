@@ -5700,7 +5700,7 @@ StatusCode Asm::BuildLine(strref line)
 		line.trim_whitespace();
 		bool force_label = charE==':' || charE=='$';
 		if (!force_label && Merlin() && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
-			force_label = !strref::is_ws(char0) || char1==']' || charE=='?';
+			force_label = (!strref::is_ws(char0) && char0!='{' && char0!='}') || char1==']' || charE=='?';
 		else if (!Merlin() && line[0]==':')
 			force_label = true;
 		if (!operation && !force_label) {
