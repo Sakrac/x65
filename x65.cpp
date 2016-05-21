@@ -1873,7 +1873,7 @@ void Asm::SetSection(strref line)
 	int align = 1;
 	strref name;
 	while (strref arg = line.split_token_any_trim(",:")) {
-		if (arg.get_first() == '$') { ++arg; align = arg.ahextoui(); }
+		if (arg.get_first() == '$') { ++arg; align = (int)arg.ahextoui(); }
 		else if (arg.is_number()) align = arg.atoi();
 		else if (arg.get_first() == '"') name = (arg + 1).before_or_full('"');
 		else if (!name) name = arg;
@@ -2624,9 +2624,9 @@ void Section::AddText(strref line, strref text_prefix) {
 	// shifted: a-z => $41.. A-Z => $61..
 	// unshifted: a-z, A-Z => $41
 
-	if (CheckOutputCapacity(line.get_len()) == STATUS_OK) {
+	if (CheckOutputCapacity((uint32_t)line.get_len()) == STATUS_OK) {
 		if (!text_prefix || text_prefix.same_str("ascii")) {
-			AddBin((const uint8_t*)line.get(), line.get_len());
+			AddBin((const uint8_t*)line.get(), (int)line.get_len());
 		} else if (text_prefix.same_str("petscii")) {
 			while (line) {
 				char c = line[0];
@@ -2877,7 +2877,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			int count = macro_src.substr_case_count(tag.get_strref());
 			dSize += count * ((int)a.get_len() - (int)tag.get_len());
 		}
-		int mac_size = macro_src.get_len() + dSize + 32;
+		int mac_size = (int)macro_src.get_len() + dSize + 32;
 		if (char *buffer = (char*)malloc(mac_size)) {
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
@@ -2924,7 +2924,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 				dSize += count * ((int)a.get_len() - (int)param.get_len());
 			}
 		}
-		int mac_size = macro_src.get_len() + dSize + 32;
+		int mac_size = (int)macro_src.get_len() + dSize + 32;
 		if (char *buffer = (char*)malloc(mac_size)) {
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
@@ -3158,7 +3158,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 {
 	char c = expression.get_first();
 	switch (c) {
-		case '$': ++expression; value = expression.ahextoui_skip(); return EVOP_VAL;
+		case '$': ++expression; value = (int)expression.ahextoui_skip(); return EVOP_VAL;
 		case '-': ++expression; return EVOP_SUB;
 		case '+': ++expression;	return EVOP_ADD;
 		case '*': // asterisk means both multiply and current PC, disambiguate!
@@ -3173,7 +3173,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 				  ++expression; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (expression[1]=='0' || expression[1]=='1') {
-				++expression; value = expression.abinarytoui_skip(); return EVOP_VAL; }
+				++expression; value = (int)expression.abinarytoui_skip(); return EVOP_VAL; }
 			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
 			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|':
@@ -3222,7 +3222,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 {
 	char c = exp.get_first();
 	switch (c) {
-		case '$': ++exp; value = exp.ahextoui_skip(); return EVOP_VAL;
+		case '$': ++exp; value = (int)exp.ahextoui_skip(); return EVOP_VAL;
 		case '-': ++exp; return EVOP_SUB;
 		case '+': ++exp;	return EVOP_ADD;
 		case '*': // asterisk means both multiply and current PC, disambiguate!
@@ -3241,7 +3241,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 					if (exp[0] == '=') { ++exp; return EVOP_LTE; } return EVOP_LT; }
 				  ++exp; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
-			if (exp[1] == '0' || exp[1] == '1') { ++exp; value = exp.abinarytoui_skip(); return EVOP_VAL; }
+			if (exp[1] == '0' || exp[1] == '1') { ++exp; value = (int)exp.abinarytoui_skip(); return EVOP_VAL; }
 			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
 			++exp; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
 		case '|': ++exp; return EVOP_OR;
@@ -6284,7 +6284,7 @@ static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char
 
 	int strOffs = strPoolSize;
 	if ((strOffs + str.get_len() + 1) > strPoolCap) {
-		strPoolCap = strOffs + str.get_len() + 4096;
+		strPoolCap = strOffs + (uint32_t)str.get_len() + 4096;
 		char *strPoolGrow = (char*)malloc(strPoolCap);
 		if (strPoolGrow) {
 			if (*strPool) {
@@ -6300,7 +6300,7 @@ static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char
 		char *dest = *strPool + strPoolSize;
 		memcpy(dest, str.get(), str.get_len());
 		dest[str.get_len()] = 0;
-		strPoolSize += str.get_len()+1;
+		strPoolSize += (uint32_t)str.get_len()+1;
 		pLookup->insert(index, hash);
 		pLookup->getValues()[index] = strOffs;
 	}
@@ -6829,7 +6829,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 
 		_writeNBytes(hdr.SegNum, 2, SegLookup[*i] + 1);
 		_writeNBytes(hdr.Kind, 2, s.type == ST_CODE ? 0x1000 : (s.type == ST_ZEROPAGE ? 0x12 : 0x1001));
-		_writeNBytes(hdr.DispDataOffset, 2, sizeof(hdr) + 10 + 1 + segName.get_len());
+		_writeNBytes(hdr.DispDataOffset, 2, sizeof(hdr) + 10 + 1 + (int)segName.get_len());
 		_writeNBytes(hdr.Length, 4, num_bytes_file + num_zeroes_at_end);
 		_writeNBytes(hdr.ResSpc, 4, num_zeroes_at_end);
 		_writeNBytes(hdr.Align, 4, s.align_address > 1 ? 256 : 0);
@@ -6907,7 +6907,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 		instructions[instruction_offs++] = OMFR_END;
 
 		// size of seg = file header + 10 bytes file name + 1 byte seg name length + seg nameh + seg.addr_size() + instruction_size 
-		int segSize = sizeof(hdr) + 10 + 1 + segName.get_len() + num_bytes_file + instruction_offs;
+		int segSize = sizeof(hdr) + 10 + 1 + (int)segName.get_len() + num_bytes_file + instruction_offs;
 		if (num_bytes_file == 0)
 			segSize -= 5;
 		_writeNBytes(hdr.SegTotal, 4, segSize);
@@ -6926,14 +6926,14 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	// if there is a size of the direct page & stack, write it
 	if (DP_Stack_Size) {
 		strref segName("DPStack");
-		char lenSegName = segName.get_len();
+		char lenSegName = (char)segName.get_len();
 		_writeNBytes(hdr.SegNum, 2, (int)SegNum.size()+1);
 		_writeNBytes(hdr.Kind, 2, 0x12);
-		_writeNBytes(hdr.DispDataOffset, 2, sizeof(hdr) + 10 + 1 + segName.get_len());
+		_writeNBytes(hdr.DispDataOffset, 2, sizeof(hdr) + 10 + 1 + (int)segName.get_len());
 		_writeNBytes(hdr.Length, 4, DP_Stack_Size);
 		_writeNBytes(hdr.ResSpc, 4, DP_Stack_Size);
 		_writeNBytes(hdr.Align, 4, 256);
-		int segSize = sizeof(hdr) + 10 + 1 + segName.get_len() + 1;
+		int segSize = sizeof(hdr) + 10 + 1 + (int)segName.get_len() + 1;
 		_writeNBytes(hdr.SegTotal, 4, segSize);
 		instructions[0] = 0;
 		fwrite(&hdr, sizeof(hdr), 1, f);
@@ -7016,7 +7016,7 @@ int main(int argc, char **argv)
 			} else if (arg.has_prefix(org)) {
 				arg = arg.after('=');
 				if (arg && arg.get_first() == '$' && arg.get_len()>1)
-					assembler.default_org = (arg + 1).ahextoui();
+					assembler.default_org = (int)(arg + 1).ahextoui();
 				else if (arg.is_number())
 					assembler.default_org = arg.atoi();
 				// force the current section to be org'd
@@ -7050,6 +7050,8 @@ int main(int argc, char **argv)
 				obj_out_file = argv[++a];
 			else if (arg.same_str("vice") && (a + 1) < argc)
 				vs_file = argv[++a];
+			else
+				printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg));
 		} else if (!source_filename)
 			source_filename = arg.get();
 		else if (!binary_out_name)
