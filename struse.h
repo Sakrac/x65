@@ -35,6 +35,7 @@ Add this #define to *one* C++ file before #include "struse.h" to create the impl
 #ifndef __STRUSE_H__
 #define __STRUSE_H__
 
+#include <inttypes.h>
 #include <string.h> // memcpy, memmove
 #include <stdio.h> // printf, vsnprintf
 #include <stdarg.h> // va_list
@@ -75,13 +76,16 @@ protected:
 public:
 	strref() { clear(); }
 	strref(const char *str);
+	strref(char *str) : strref((const char*)str) {}
 	strref(const char *str, strl_t len) : string(str), length(len) {}
 	strref(const char *str, int len) : string(str), length(strl_t(len)) {}
+	strref(char *str, int len) : string((const char*)str), length(strl_t(len)) {}
+	strref(char *str, strl_t len) : string((const char*)str), length(len) {}
 
 	bool valid() const { return string && length; }
 	void clear() { string = nullptr; length = 0; }
 	const char* get() const { return string; }
-	const unsigned char* get_u() const { return (const unsigned char*)string; }
+	const uint8_t* get_u() const { return (const uint8_t*)string; }
 	strl_t get_len() const { return length; }
 	char get_first() const { return (string && length) ? *string : 0; }
 	char get_last() const { return (string && length) ? string[length-1] : 0; }
@@ -99,12 +103,14 @@ public:
 	unsigned int fnv1a(unsigned int seed = 2166136261) const;
 	unsigned int fnv1a_lower(unsigned int seed = 2166136261) const;
 	unsigned int fnv1a_append(unsigned int base_fnv1a_hash) const { return fnv1a(base_fnv1a_hash); }
-    
+	uint64_t fnv1a_64(uint64_t seed = 0xcbf29ce484222325ULL) const;
+
     // whitespace ignore fnv1a (any sequence whitespace is replaced by one space)
     unsigned int fnv1a_ws(unsigned int seed = 2166136261) const;
 
 	// convert string to basic integer
-	int atoi() const;
+	int64_t atoi() const;
+	uint64_t atoui() const;
 
 	// convert string to floating point
 	float atof() const;
@@ -125,28 +131,32 @@ public:
 	void writeln();
 
 	// is character empty such as space, tab, linefeed etc.?
-	static bool is_ws(unsigned char c) { return c <= ' '; }
+	static bool is_ws(uint8_t c) { return c <= ' '; }
+	static bool is_ws(char c) { return (uint8_t)c <= ' '; }
 
 	// is character a number?
-	static bool is_number(unsigned char c) { return c>='0' && c<='9'; }
+	static bool is_number(uint8_t c) { return c>='0' && c<='9'; }
+	static bool is_number(char c) { return (uint8_t)c>='0' && (uint8_t)c<='9'; }
 
 	// is character a hexadecimal number?
-	static bool is_hex(char c) { return is_number(c) || (c>='A' && c<='F') || (c>='a' && c<='f'); }
+	static bool is_hex(uint8_t c) { return is_number(c) || (c>='A' && c<='F') || (c>='a' && c<='f'); }
+	static bool is_hex(char c) { return is_hex(uint8_t(c)); }
 
 	// is character alphabetic (A-Z or a-z)?
-	static bool is_alphabetic(unsigned char c) { return (c>='a' && c<='z') || (c>='A' && c<='Z'); }
+	static bool is_alphabetic(uint8_t c) { return (c>='a' && c<='z') || (c>='A' && c<='Z'); }
 
 	// is character alphabetic or numeric?
-	static bool is_alphanumeric(char c) { return is_number(c) || is_alphabetic(c); }
+	static bool is_alphanumeric(uint8_t c) { return is_number(c) || is_alphabetic(c); }
 
 	// is character valid as part of a label? (num, _, A-Z, a-z)
-	static bool is_valid_label(unsigned char c) { return c=='_' || is_alphanumeric(c); }
+	static bool is_valid_label(uint8_t c) { return c=='_' || is_alphanumeric(c); }
 
 	// word separators are non-alphanumeric characters except apostrophe.
-	static bool is_sep_ws(unsigned char c) { return c!='\'' && !is_alphanumeric(c); }
+	static bool is_sep_ws(uint8_t c) { return c!='\'' && !is_alphanumeric(c); }
+	static bool is_sep_ws(char c) { return is_sep_ws(uint8_t(c)); }
 
 	// is control character? (!-/, ?-@, [-^, {-~)
-	static bool is_control(unsigned char c) { return !is_ws(c) && !is_alphanumeric(c) && c!='_'; }
+	static bool is_control(uint8_t c) { return !is_ws(c) && !is_alphanumeric(c) && c!='_'; }
 
 	// choice of upper/lowercase conversions
 	static char tolower(char c);
@@ -163,6 +173,7 @@ public:
 	// operators
 	// strref += int: move string forward (skip)
 	void operator+=(const strl_t skip) { if (skip<length) { string += skip; length -= skip; } else clear(); }
+	void operator+=(const int skip) { if (strl_t(skip)<length) { string += skip; length -= strl_t(skip); } else clear(); }
 
 	// strref + int: return a string that is moved forward (skip)
 	strref operator+(const strl_t skip) { if (skip<length) return strref(string+skip, length-skip); return strref(); }
@@ -179,7 +190,8 @@ public:
 	bool operator<(const strref o) const;
 
 	// strref[int]: get character at position
-	char operator[](size_t pos) const { return pos<length ? string[pos] : 0; }
+	char operator[](strl_t pos) const { return pos<length ? string[pos] : 0; }
+	char operator[](int pos) const { return (strl_t)pos<length ? string[pos] : 0; }
 
 	// remove from start or end
 	void skip(strl_t count) { if (count<length) { string += count; length -= count; } else clear(); }
@@ -196,12 +208,13 @@ public:
 
 	// return character at position
 	char get_at(strl_t pos) const { return string && pos<length ? string[pos] : 0; }
+	char get_at(int pos) const { return string && (strl_t)pos<length ? string[pos] : 0; }
 
-	// return unsigned character at position
-	unsigned char get_u_at(strl_t pos) const { return (unsigned char)get_at(pos); }
+	// return uint8_tacter at position
+	uint8_t get_u_at(strl_t pos) const { return (uint8_t)get_at(pos); }
 
 	// is there a whitespace at position offs in the string?
-	bool whitespace_at(strl_t pos) const { return is_ws(get_at(pos)); }
+	bool whitespace_at(strl_t pos) const { return is_ws(get_u_at(pos)); }
 
 	// count occurrences of char c
 	int count_char(char c) const;
@@ -216,7 +229,7 @@ public:
 	strl_t len_float_number() const;
 
 	// count characters that can be converted to a hexadecimal number
-	strl_t len_hex() const { for (strl_t i = 0; i < length; i++) { if (!is_hex(string[i])) return i; } return length; }
+	strl_t len_hex() const { for (strl_t i = 0; i < length; i++) { if (!is_hex((uint8_t)string[i])) return i; } return length; }
 
 	// check if string is a valid floating point number
 	bool is_float_number() const { return valid() && len_float_number() == length; }
@@ -229,7 +242,8 @@ public:
 		return find_wildcard(wild, is_substr(prev.get()) ? strl_t(prev.get()+prev.get_len()-get()) : 0, case_sensitive); }
 
 	// character filter by string, as in a wildcard [] operator
-	bool char_matches_ranges(unsigned char c) const;
+	bool char_matches_ranges(uint8_t c) const;
+	bool char_matches_ranges(char c) const { return char_matches_ranges((uint8_t)c); }
 
 	// whole string compare (_case indicates case sensitive)
 	bool same_str(const strref str) const;
@@ -246,6 +260,7 @@ public:
 	bool same_substr_esc(const strref str, strl_t pos) const;
 	bool same_substr_case(const strref str, strl_t pos) const;
 	bool same_substr_case_esc(const strref str, strl_t pos) const;
+	bool same_substr_case_esc(const strref str, int pos) const { return same_substr_case_esc(str, (strl_t)pos); }
 	bool same_substr_case_esc_range(const strref str, const strref range, strl_t pos) const;
 
 	// prefix compare
@@ -260,7 +275,7 @@ public:
 	bool is_prefix_of(const strref str, char same1, char same2) const {
 		return prefix_len(str, same1, same2)==get_len(); }
 	bool is_prefix_word(const strref str) const { return prefix_len(str)==get_len() &&
-			(str.get_len()==length || !is_alphanumeric(str[length])); }
+			(str.get_len()==length || !is_alphanumeric((uint8_t)str[length])); }
 	bool is_prefix_case_of(const strref str) const { return prefix_len_case(str)==get_len(); }
 	bool is_prefix_float_number() const { return len_float_number() > 0; }
 
@@ -300,7 +315,7 @@ public:
 	int find_last(char c, char d) const;
 
 	// find first <b> after last <a> in string
-	int find_after_last(char a, char b) const { return find_after(b, find_last(a)+1); }
+	int find_after_last(char a, char b) const { return find_after(b, (strl_t)(find_last(a)+1)); }
 	int find_after_last(char a1, char a2, char b) const {
 		int w = find_last(a1, a2)+1; int l = strref(string+w, length-w).find(b); return l>=0?l+w:-1; }
 
@@ -382,27 +397,31 @@ public:
 
 	// number of white space characters from start of string
 	strl_t len_whitespace() const { if (!valid()) return 0;
-		strl_t o = 0; while (o<length && is_ws(string[o])) o++; return o; }
+		strl_t o = 0; while (o<length && is_ws((uint8_t)string[o])) o++; return o; }
 
 	// number of white space characters from pos
 	strl_t len_whitespace(strl_t pos) const {
-		strl_t o = pos; while (o<length && is_ws(string[o])) o++; return o-pos; }
+		strl_t o = pos; while (o<length && is_ws((uint8_t)string[o])) o++; return o-pos; }
 
 	// number of separator or white space characters from pos
 	strl_t len_sep_ws(strl_t pos) const {
-		strl_t o = pos; while (o<length && is_sep_ws(string[o])) o++; return o-pos; }
+		strl_t o = pos; while (o<length && is_sep_ws((uint8_t)string[o])) o++; return o-pos; }
+
+	strl_t len_sep_ws(int pos) const { return len_sep_ws((strl_t)pos); }
 
 	// number of non white space characters from start of string
 	strl_t len_grayspace() const { if (!valid()) return 0;
-		strl_t o = 0; while (o<length && !is_ws(string[o])) o++; return o; }
+		strl_t o = 0; while (o<length && !is_ws((uint8_t)string[o])) o++; return o; }
 
 	// number of non white space characters from pos
 	strl_t len_grayspace(strl_t pos) const {
-		strl_t o = pos; while (o<length && !is_ws(string[o])) o++; return o-pos; }
+		strl_t o = pos; while (o<length && !is_ws((uint8_t)string[o])) o++; return o-pos; }
 
 	// number of non separating non white space characters from pos
 	strl_t len_non_sep_ws(strl_t pos) const {
-		strl_t o = pos; while (o<length && !is_sep_ws(string[o])) o++; return o-pos; }
+		strl_t o = pos; while (o<length && !is_sep_ws((uint8_t)string[o])) o++; return o-pos; }
+
+	strl_t len_non_sep_ws(int pos) const { return len_non_sep_ws((strl_t)pos); }
 
 	// move string forward to the first non-whitespace character
 	void skip_whitespace() { skip(len_whitespace()); }
@@ -431,7 +450,7 @@ public:
 	// string content
 	// count number of alphanumeric characters from p
 	strl_t len_alphanumeric(strl_t p = 0) const { if (valid()) {
-		const char *s = string+p; strl_t r = length-p; while (is_alphanumeric(*s) && r) { s++; r--; }
+		const char *s = string+p; strl_t r = length-p; while (is_alphanumeric((uint8_t)*s) && r) { s++; r--; }
 		return length-r; } return 0; }
 
 	// length of word consisting of alphanumeric characters
@@ -441,11 +460,11 @@ public:
 	strl_t len_esc() const;
 
 	// return number of characters that can be a label
-	strl_t len_label() const { if (valid()) { const char *s = string; strl_t r = length;
+	strl_t len_label() const { if (valid()) { const uint8_t *s = get_u(); strl_t r = length;
 		while (is_valid_label(*s) && r) { s++; r--; } return length-r; } return 0; }
 
 	// return whether or not this string is a number
-	bool is_number() const { if (strl_t r = length) { if (const char *s = string) {
+	bool is_number() const { if (strl_t r = length) { if (const uint8_t *s = get_u()) {
 		while (r) { if (!is_number(*s)) return false; s++; r--; } return true; } } return false; }
 
 	// go to the next word
@@ -458,7 +477,10 @@ public:
 	strref get_substr(strl_t pos, strl_t len) const { return pos<length ?
 		(strref(string+pos, (pos+len)<length?len : (length-pos))) : strref(); }
 
-	strref get_skipped(strl_t len) const { if (len>=0 && len<length)
+	strref get_substr(int pos, int len) const { return get_substr((strl_t)pos, (strl_t)len); }
+	strref get_substr(int pos, strl_t len) const { return get_substr((strl_t)pos, len); }
+
+	strref get_skipped(strl_t len) const { if (len<length)
 		return strref(string+len, length-len); return strref(); }
 
 	// get this strref without leading whitespace
@@ -477,8 +499,8 @@ public:
 		strl_t w = len_whitespace(), g = len_grayspace(w); return get_substr(w, g - w); }
 
 	strref get_valid_json_string() const {
-		const char *s = string; strl_t l = length; while (l) {
-		char c = *s++; if (!(c=='+' || c=='.' || c=='-' || is_number(c) || c>='A'))
+		const uint8_t *s = get_u(); strl_t l = length; while (l) {
+		uint8_t c = *s++; if (!(c=='+' || c=='.' || c=='-' || is_number(c) || c>='A'))
 		break; l--;	} return strref(string, length-l); }
 
 	strref before(char c) const {
@@ -531,12 +553,13 @@ public:
 	strref after_or_full_case(const strref str) const { int o = find_case(str);
 		if (o<0) return *this; return strref(string+o, length-o); }
 
-    strref between(char c, char d) { int s = find(c); if (s>=0) { int e = find_after(d, s);
-        if (e>=0) return get_substr(s+1, e-s-1); } return strref(); }
+    strref between(char c, char d) { int s = find(c); if (s>=0) { int e = find_after(d, (strl_t)s);
+        if (e>=0) return get_substr(strl_t(s+1), strl_t(e-s-1)); } return strref(); }
 
 	// tokenization
 	strref split(strl_t pos) { pos = limit_pos(pos); strref ret = strref(string, pos); *this += pos; return ret; }
-	strref split_token(char c) { int t = find(c); if (t<0) t = (int)length; strref r = strref(string, t); *this += t+1; return r; }
+	strref split(int pos) { split(strl_t(pos)); }
+	strref split_token(char c) { int t = find(c); if (t<0) t = (int)length; strref r = strref(string, strl_t(t)); *this += t+1; return r; }
 	strref split_token_any(const strref chars) { strref r; int t = find_any_char_of(chars);
 		if (t>=0) { r = strref(string, t); *this += t; } return r; }
 	strref split_token_trim(char c) { strref r = split_token(c); skip_whitespace(); r.trim_whitespace(); return r; }
@@ -578,9 +601,9 @@ public:
 	int find_quoted(char d) const; // returns length up to the delimiter d with c/c++ quotation rules, or -1 if delimiter not found
 
 	strref next_chunk_xml(char open, char close) const { int s = find_quoted_xml(open);
-		if (s<0) return strref(); strref left = get_skipped(s+1); return left.get_clipped(left.find_quoted_xml(close)); }
+		if (s<0) return strref(); strref left = get_skipped(strl_t(s+1)); return left.get_clipped(strl_t(left.find_quoted_xml(close))); }
 	strref next_chunk_quoted(char open, char close) const { int s = find_quoted(open);
-		if (s<0) return strref(); strref left = get_skipped(s+1); return left.get_clipped(left.find_quoted(close)); }
+		if (s<0) return strref(); strref left = get_skipped(strl_t(s+1)); return left.get_clipped(strl_t(left.find_quoted(close))); }
 	void skip_chunk(const strref chunk) { strl_t add = strl_t(chunk.string-string)+chunk.length+1UL;
 		if (add<length) { string += add; length -= add; } else { clear(); } }
 };
@@ -727,12 +750,12 @@ public:
 	// whitespace management
 	int len_whitespace() const { return get_strref().len_whitespace(); }
 	int len_grayspace() const { return get_strref().len_grayspace(); }
-	int find_whitespace_or_full() const { return get_strref().find_whitespace_or_full(); }
+	strl_t find_whitespace_or_full() const { return get_strref().find_whitespace_or_full(); }
 	int find_whitespace() const { return get_strref().find_whitespace(); }
 
 	// string content
-	int len_alphanumeric(strl_t p = 0) const { return get_strref().len_alphanumeric(p); }
-	int len_word() const { return get_strref().len_word(); }
+	strl_t len_alphanumeric(strl_t p = 0) const { return get_strref().len_alphanumeric(p); }
+	strl_t len_word() const { return get_strref().len_word(); }
 	int len_label() const { return get_strref().len_label(); }
 	bool is_number() const { return get_strref().is_number(); }
 
@@ -820,8 +843,8 @@ public:
 		const char *e = end(); while (*--e<=0x20 && len()) { dec_len_int(); } } }
 
 	// copy a substring internally while checking for overlap
-	void substrcopy(int pos, int target, int length) { 
-		_strmod_substrcopy(charstr(), len(), cap(), pos, target, length); }
+	void substrcopy(strl_t pos, strl_t target, strl_t _length) { 
+		_strmod_substrcopy(charstr(), len(), cap(), pos, target, _length); }
 
 	// insert a substring and expand the string to fit it
 	bool insert(const strref sub, strl_t pos) { 
@@ -875,13 +898,13 @@ public:
 	// c style sprintf (work around windows _s preference)
 #ifdef _WIN32
 	int sprintf(const char *format, ...) { va_list args; va_start(args, format);
-		set_len_int(vsnprintf_s(charstr(), cap(), _TRUNCATE, format, args)); va_end(args); return (int)len(); }
+		set_len_int((strl_t)vsnprintf_s(charstr(), cap(), _TRUNCATE, format, args)); va_end(args); return (int)len(); }
 	int sprintf_at(strl_t pos, const char *format, ...) { va_list args; va_start(args, format);
 		int l = vsnprintf_s(charstr()+pos, cap()-pos, _TRUNCATE, format, args);
         if (l+pos>len()) set_len(l+pos); va_end(args); return l; }
-	int sprintf_append(const char *format, ...) { va_list args; va_start(args, format); int l = 0;
-		if (len()<cap()) { l = vsnprintf_s(end(), cap()-len(), _TRUNCATE, format, args); va_end(args);
-			add_len_int(l);	} return l; }
+	int sprintf_append(const char *format, ...) { va_list args; va_start(args, format); strl_t l = 0;
+		if (len()<cap()) { l = (strl_t)vsnprintf_s(end(), cap()-len(), _TRUNCATE, format, args); va_end(args);
+			add_len_int(l);	} return (int)l; }
 #else
 	int sprintf(const char *format, ...) { va_list args; va_start(args, format);
 		set_len_int(vsnprintf(charstr(), cap(), format, args)); va_end(args); return len(); }
@@ -911,13 +934,11 @@ public:
         if (is_substr(original.get())) { exchange(strl_t(original.get()-get()), original.get_len(), insert); } }
             
     // remove a part of this string
-	strref remove(strl_t start, strl_t length) {
-		set_len_int(_strmod_remove(charstr(), len(), start, length));
-		return get_strref(); return get_strref(); }
+	strref remove(strl_t start, strl_t _length) {
+		set_len_int(_strmod_remove(charstr(), len(), start, _length)); return get_strref(); }
 
 	// remove all instances of a character from this string
-	strl_t remove(char a) { set_len_int(_strmod_remove(charstr(), len(), cap(), a));
-		return get_strref(); }
+	strref remove(char a) { set_len_int(_strmod_remove(charstr(), len(), a)); return get_strref(); }
 
 	// zero terminate this string and return it
 	const char *c_str() { charstr()[len()<cap()?len():(cap()-1)] = 0; return charstr(); }
@@ -1066,7 +1087,7 @@ public:
 // Mac OS Roman ascii: https://en.wikipedia.org/wiki/Mac_OS_Roman
 // Amiga ascii: http://www.amigacoding.com/index.php/AMOSi:ASCII_Table
 
-static const unsigned char _aMacOSRomanHigh_ToLower[0x80] = {
+static const uint8_t _aMacOSRomanHigh_ToLower[0x80] = {
 	0x8a, 0x8c, 0x8d, 0x8e, 0x96, 0x9a, 0x9f, 0x87,
 	0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
 	0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
@@ -1083,7 +1104,7 @@ static const unsigned char _aMacOSRomanHigh_ToLower[0x80] = {
 	0x91, 0x8f, 0x92, 0x94, 0x95, 0x93, 0x97, 0x99,
 	0xf0, 0x98, 0x9c, 0x9e, 0x9d, 0xfd, 0xfe, 0xff };
 
-static const unsigned char _aMacOSRomanHigh_ToUpper[0x80] = {
+static const uint8_t _aMacOSRomanHigh_ToUpper[0x80] = {
 	0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0xe7,
 	0xcb, 0xe5, 0x80, 0xcc, 0x81, 0x82, 0x83, 0xe9,
 	0xe6, 0xe8, 0xea, 0xed, 0xeb, 0xec, 0x84, 0xee,
@@ -1102,43 +1123,43 @@ static const unsigned char _aMacOSRomanHigh_ToUpper[0x80] = {
 	0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff };
 
 
-unsigned char int_tolower_macos_roman_ascii(unsigned char c) {
+uint8_t int_tolower_macos_roman_ascii(uint8_t c) {
 	if (c>='A' && c<='Z')
-		return c+'a'-'A';
+		return (uint8_t)(c+'a'-'A');
 	if (c>=0x80)
 		return _aMacOSRomanHigh_ToLower[c&0x7f];
 	return c;
 }
 
-unsigned char int_toupper_macos_roman_ascii(unsigned char c) {
+uint8_t int_toupper_macos_roman_ascii(uint8_t c) {
 	if (c>='a' && c<='z')
-		return c+'A'-'a';
+		return (uint8_t)(c+'A'-'a');
 	if (c>=0x80)
 		return _aMacOSRomanHigh_ToUpper[c&0x7f];
 	return c;
 }
 
-unsigned char int_tolower_amiga_ascii(unsigned char c) {
+uint8_t int_tolower_amiga_ascii(uint8_t c) {
 	if (c>='A' && c<='Z')
-		return c+'a'-'A';
+		return (uint8_t)(c+'a'-'A');
 	if (c>=0xc0 && c<0xe0)
-		return c+0x20;
+		return (uint8_t)(c+0x20);
 	return c;
 }
 
-unsigned char int_toupper_amiga_ascii(unsigned char c) {
+uint8_t int_toupper_amiga_ascii(uint8_t c) {
 	if (c>='a' && c<='z')
-		return c+'A'-'a';
+		return (uint8_t)(c+'A'-'a');
 	if (c>=0xe0)
-		return c-0x20;
+		return (uint8_t)(c-0x20);
 	return c;
 }
 
-unsigned char int_toupper_win_ascii(unsigned char c) {
+uint8_t int_toupper_win_ascii(uint8_t c) {
 	if (c<'a')
 		return c;
 	if (c<='z')
-		return c+'A'-'a';
+		return (uint8_t)(c+'A'-'a');
 	switch (c) {
 		case 0x84:
 			return 0x83;
@@ -1156,11 +1177,11 @@ unsigned char int_toupper_win_ascii(unsigned char c) {
 	return c;
 }
 
-unsigned char int_tolower_win_ascii(unsigned char c) {
+uint8_t int_tolower_win_ascii(uint8_t c) {
 	if (c<'A')
 		return c;
 	if (c<='Z')
-		return c+'a'-'A';
+		return (uint8_t)(c+'a'-'A');
 	switch (c) {
 		case 0x8e:
 			return 0x84;
@@ -1249,40 +1270,40 @@ size_t int_toupper_unicode(size_t c)
 }
 
 // english latin lowercase
-unsigned char int_tolower_ascii7(unsigned char c)
+uint8_t int_tolower_ascii7(uint8_t c)
 {
 	if (c<='Z' && c>='A')
-		return c+'a'-'A';
+		return (uint8_t)(c+'a'-'A');
 	return c;
 }
 
 // english latin uppercase
-unsigned char int_toupper_ascii7(unsigned char c)
+uint8_t int_toupper_ascii7(uint8_t c)
 {
 	if (c>='a' && c<='z')
-		return c+'A'-'a';
+		return (uint8_t)(c+'A'-'a');
 	return c;
 }
 
 // convert escape codes to characters
 // supports: \a, \b, \f, \n, \r, \t, \v, \000, \x00
 // any other character is returned as same
-static strl_t int_get_esc_code(const unsigned char *buf, strl_t left, unsigned char &code)
+static strl_t int_get_esc_code(const uint8_t *buf, strl_t left, uint8_t &code)
 {
 	strl_t step = 0;
 	if (!left)
 		return step;
-    char c = *buf++;
+    uint8_t c = *buf++;
 	left--;
 	step++;
 	if (c=='x' && left && strref::is_hex(*buf)) {
 		// parse hex char code
 		c = 0;
 		for (int r = 0; r<2 && left; r++) {
-			char n = *buf++;
+			uint8_t n = *buf++;
 			if (!strref::is_hex(n))
 				break;
-			c = (c<<4) + n - (n<='9' ? '0' : (n<='F'?('A'-0xA) : ('a'-0xa)));
+			c = (uint8_t)((c<<4) + n - (n<='9' ? '0' : (n<='F'?('A'-0xA) : ('a'-0xa))));
 			step++;
 			left--;
 		}
@@ -1290,10 +1311,10 @@ static strl_t int_get_esc_code(const unsigned char *buf, strl_t left, unsigned c
 		// parse octal char code
 		c -= '0';
 		for (int r = 0; r<2 && left; r++) {
-			char n = *buf++;
+			uint8_t n = *buf++;
 			if (n<'0' || n>'7')
 				break;
-			c = c*8 + n-'0';
+			c = (uint8_t)(c*8 + n-'0');
 			step++;
 			left--;
 		}
@@ -1328,16 +1349,16 @@ static strl_t int_get_esc_code(const unsigned char *buf, strl_t left, unsigned c
 }
 
 // tolower/toupper implementation
-char strref::tolower(char c) { return int_tolower_ascii7(c); }
-char strref::toupper(char c) { return int_toupper_ascii7(c); }
-char strref::tolower_win(char c) { return int_tolower_win_ascii(c); }
-char strref::toupper_win(char c) { return int_toupper_win_ascii(c); }
-char strref::tolower_amiga(char c) { return int_tolower_amiga_ascii(c); }
-char strref::toupper_amiga(char c) { return int_toupper_amiga_ascii(c); }
-char strref::tolower_macos(char c) { return int_tolower_macos_roman_ascii(c); }
-char strref::toupper_macos(char c) { return int_toupper_macos_roman_ascii(c); }
-size_t strref::tolower_unicode(int c) { return int_tolower_unicode(c); }
-size_t strref::toupper_unicode(int c) { return int_toupper_unicode(c); }
+char strref::tolower(char c) { return (char)int_tolower_ascii7((uint8_t)c); }
+char strref::toupper(char c) { return (char)int_toupper_ascii7((uint8_t)c); }
+char strref::tolower_win(char c) { return (char)int_tolower_win_ascii((uint8_t)c); }
+char strref::toupper_win(char c) { return (char)int_toupper_win_ascii((uint8_t)c); }
+char strref::tolower_amiga(char c) { return (char)int_tolower_amiga_ascii((uint8_t)c); }
+char strref::toupper_amiga(char c) { return (char)int_toupper_amiga_ascii((uint8_t)c); }
+char strref::tolower_macos(char c) { return (char)int_tolower_macos_roman_ascii((uint8_t)c); }
+char strref::toupper_macos(char c) { return (char)int_toupper_macos_roman_ascii((uint8_t)c); }
+size_t strref::tolower_unicode(int c) { return int_tolower_unicode((size_t)c); }
+size_t strref::toupper_unicode(int c) { return int_toupper_unicode((size_t)c); }
 
 // use printf to print current string on a single line
 void strref::writeln()
@@ -1376,6 +1397,18 @@ unsigned int strref::fnv1a(unsigned int seed) const
 	return hash;
 }
 
+uint64_t strref::fnv1a_64(uint64_t seed) const
+{
+	uint64_t hash = seed;
+	if (string) {
+		unsigned const char *scan = (unsigned const char*)string;
+		strl_t left = length;
+		while (left--)
+			hash = (*scan++ ^ hash) * 0x100000001b3ULL;
+	}
+	return hash;
+}
+
 // get lowercase fnv1a hash of a string
 unsigned int strref::fnv1a_lower(unsigned int seed) const
 {
@@ -1394,7 +1427,7 @@ unsigned int strref::fnv1a_ws(unsigned int seed) const
     unsigned int hash = seed;
     strl_t left = length;
     while (left--) {
-        unsigned char c = *scan++;
+        uint8_t c = *scan++;
         if (c<' ')
             c = ' ';
         hash = (*scan++ ^ hash) * 16777619;
@@ -1409,33 +1442,44 @@ unsigned int strref::fnv1a_ws(unsigned int seed) const
 }
 
 // convert numeric string to integer
-int strref::atoi() const
+int64_t strref::atoi() const
 {
-	if (!string)
-		return 0;
-	const char *s = string;
-	strl_t l = length;
-	while (l && s && *s<=0x20) {
-		s++;
-		l--;
+	if (string) {
+		const unsigned char *s = get_u();
+		const unsigned char *e = s + length;
+		while (s!=e && *s<=0x20) s++;
+		if (s<e) {
+			int64_t v = 0;
+			bool neg = *s=='-';
+			if (neg) s++;
+			while (s!=e) {
+				unsigned char c = *s++;
+				if (c<'0' || c>'9') break;
+				v = c-'0' + v*10;
+			}
+			return neg ? -v : v;
+		}
 	}
-	if (!l)
-		return 0;
-	bool neg = false;
-	if (*s=='-') {
-		neg = true;
-		l--;
-		s++;
+	return 0;
+}
+
+uint64_t strref::atoui() const
+{
+	if (string) {
+		const unsigned char *s = get_u();
+		const unsigned char *e = s + length;
+		while (s!=e && *s<=0x20) s++;
+		if (s<e) {
+			uint64_t v = 0;
+			while (s!=e) {
+				unsigned char c = *s++;
+				if (c<'0' || c>'9') break;
+				v = c-'0' + v*10;
+			}
+			return v;
+		}
 	}
-	int v = 0;
-	while (l) {
-		char c = *s++;
-		l--;
-		if (c<'0' || c>'9')
-			break;
-		v = c-'0' + v*10;
-	}
-	return neg ? -v : v;
+	return 0;
 }
 
 // convert numeric string into floating point value
@@ -1559,7 +1603,7 @@ size_t strref::abinarytoui_skip()
 		return 0;
 	strl_t bin = 0;
 	while (left) {
-		unsigned char c = (unsigned char)*scan;
+		uint8_t c = (uint8_t)*scan;
 		if (c<'0' || c>'1')
 			break;
 		scan++;
@@ -1758,7 +1802,7 @@ static bool int_compare_substr_case(const char *scan, strl_t length, const char 
 }
 
 // compare a string with a substring case sensitive
-static bool int_compare_substr(const char *scan, strl_t length, const char *check, strl_t chk_len)
+static bool int_compare_substr(const uint8_t *scan, strl_t length, const uint8_t *check, strl_t chk_len)
 {
     if (length < chk_len)
         return false;
@@ -1807,7 +1851,7 @@ int _find_rh_case(const char *text, strl_t length, const char *comp, strl_t comp
 }
 
 // case ignore rolling hash find substring
-int _find_rh(const char *text, strl_t length, const char *comp, strl_t comp_length)
+int _find_rh(const uint8_t *text, strl_t length, const uint8_t *comp, strl_t comp_length)
 {
 	if (length < comp_length)
 		return -1;
@@ -1815,7 +1859,7 @@ int _find_rh(const char *text, strl_t length, const char *comp, strl_t comp_leng
 	size_t roll_hash = 0;
 	size_t hash = 0;
 	size_t hash_remove = 1;
-	const char *rem = text;
+	const uint8_t *rem = text;
 
 	// generate compare hash
 	for (strl_t cl = 0; cl<comp_length; cl++) {
@@ -1903,8 +1947,8 @@ bool strref::same_str(const strref str) const
 	if (length!=str.length)
 		return false;
 
-	const char *scan = string;
-	const char *compare = str.string;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = str.get_u();
 	if (scan==nullptr || compare==nullptr)
 		return scan==compare;
 	strl_t compare_left = length;
@@ -1921,7 +1965,7 @@ bool strref::same_substr(const strref str, strl_t pos) const {
 	if ((str.length+pos) > length)
 		return false;
 
-	return int_compare_substr(string + pos, length - pos, str.string, str.length);
+	return int_compare_substr(get_u() + pos, length - pos, str.get_u(), str.length);
 }
 
 // allow escape codes in search string
@@ -1929,11 +1973,11 @@ bool strref::same_substr_esc(const strref str, strl_t pos) const {
 	if (pos >= length)
 		return false;
 
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 	strl_t compare_left = str.length;
 	while (compare_left) {
-		unsigned char c = (unsigned char)*compare++;
+		uint8_t c = (uint8_t)*compare++;
 		compare_left--;
 		if (c=='\\' && compare_left) {
 			strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -1959,11 +2003,11 @@ bool strref::same_substr_case_esc(const strref str, strl_t pos) const {
 	if (pos >= length)
 		return false;
 
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 	strl_t compare_left = str.length;
 	while (compare_left) {
-		unsigned char c = (unsigned char)*compare++;
+		uint8_t c = (uint8_t)*compare++;
 		compare_left--;
 		if (c=='\\' && compare_left) {
 			strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -2066,12 +2110,12 @@ bool strref::same_str(const strref str, char same1, char same2) const
 	if (length!=str.length)
 		return false;
 
-	const char *scan = string;
-	const char *compare = str.string;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = str.get_u();
 	strl_t left = length;
 	while (left) {
-		char c1 = int_tolower_ascii7(*scan++);
-		char c2 = int_tolower_ascii7(*compare++);
+		uint8_t c1 = int_tolower_ascii7(*scan++);
+		uint8_t c2 = int_tolower_ascii7(*compare++);
 		if (c1!=c2 && !(c1==same1 && c2==same2) && !(c1==same2 && c2==same1))
 			return false;
 		left--;
@@ -2085,10 +2129,14 @@ bool strref::same_str(const char *compare) const
 	if (!*compare || !valid())
 		return false;
 
-	const char *scan = string;
+	const uint8_t *scan = get_u();
+	const uint8_t *cmp = (const uint8_t*)compare;
 	strl_t left = length;
-	char c;
-	while ((c = *compare++) && left) {
+	uint8_t c;
+	for (;;) {
+		c = *cmp++;
+		if (c == 0 || !left)
+			break;
 		if (int_tolower_ascii7(*scan++)!=int_tolower_ascii7(c))
 			return false;
 		left--;
@@ -2133,7 +2181,10 @@ bool strref::same_str_case(const char *str)
 	const char *scan = string;
 	strl_t left = length;
 	char c;
-	while ((c = *str++) && left) {
+	for (;;) {
+		c = *str++;
+		if (c == 0 || !left)
+			break;
 		if (*scan++!=c)
 			return false;
 		left--;
@@ -2144,8 +2195,8 @@ bool strref::same_str_case(const char *str)
 // count how many characters match from start between two strings
 strl_t strref::prefix_len(const strref str) const
 {
-	const char *scan = string;
-	const char *compare = str.string;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = str.get_u();
 
 	if (!scan || !compare)
 		return 0;
@@ -2165,14 +2216,14 @@ strl_t strref::prefix_len(const strref str) const
 // character same1 is considered equal to same2
 strl_t strref::prefix_len(const strref str, char same1, char same2) const
 {
-	const char *scan = string;
-	const char *compare = str.string;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = str.get_u();
 
 	strl_t left = length<str.length ? length : str.length;
 	strl_t count = 0;
 	while (left) {
-		char c1 = int_tolower_ascii7(*scan++);
-		char c2 = int_tolower_ascii7(*compare++);
+		uint8_t c1 = int_tolower_ascii7(*scan++);
+		uint8_t c2 = int_tolower_ascii7(*compare++);
 		if (c1!=c2 && !(c1==same1 && c2==same2) && !(c1==same2 && c2==same1))
 			break;
 		count++;
@@ -2187,11 +2238,11 @@ strl_t strref::prefix_len(const char *str) const
 	if (!str)
 		return 0;
 
-	const char *scan = string;
-
+	const uint8_t *scan = get_u();
+	const uint8_t *stru = (const uint8_t*)str;
 	strl_t left = length;
-	char c;
-	while ((c = *str++) && left) {
+	uint8_t c;
+	while ((c = *stru++) && left) {
 		if (int_tolower_ascii7(*scan++)!=int_tolower_ascii7(c))
 			break;
 		left--;
@@ -2202,8 +2253,8 @@ strl_t strref::prefix_len(const char *str) const
 // count how many characters match from start between two strings case sensitive
 strl_t strref::prefix_len_case(const strref str) const
 {
-	const char *scan = string;
-	const char *compare = str.string;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = str.get_u();
 
 	strl_t left = length<str.length ? length : str.length;
 	strl_t count = 0;
@@ -2235,8 +2286,8 @@ strl_t strref::prefix_len_case(const char *str) const
 // count how many characters match from the end between two strings case ignored
 strl_t strref::suffix_len(const strref str) const
 {
-	const char *scan = string+length;
-	const char *compare = str.string+str.length;
+	const uint8_t *scan = get_u()+length;
+	const uint8_t *compare = str.get_u()+str.length;
 
 	strl_t left = length<str.length ? length : str.length;
 	strl_t count = 0;
@@ -2252,8 +2303,8 @@ strl_t strref::suffix_len(const strref str) const
 // count how many characters match from the end between two strings case sensitive
 strl_t strref::suffix_len_case(const strref str) const
 {
-	const char *scan = string+length;
-	const char *compare = str.string+str.length;
+	const uint8_t *scan = get_u()+length;
+	const uint8_t *compare = str.get_u()+str.length;
 
 	strl_t left = length<str.length ? length : str.length;
 	strl_t count = 0;
@@ -2272,13 +2323,13 @@ int strref::find(const strref str) const
 	if (!str.valid() || !valid() || length<str.length)
 		return -1;
 
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length;
 
-	const char *compare = str.string;
+	const uint8_t *compare = str.get_u();
 	strl_t find_len = str.length;
 
-	char c = int_tolower_ascii7(*compare++);
+	uint8_t c = int_tolower_ascii7(*compare++);
 
 	while (left>=find_len) {
 		if (int_tolower_ascii7(*scan++)==c) {
@@ -2296,17 +2347,17 @@ int strref::find_bookend(const strref str, const strref bookend) const
 	if (!str.valid() || !valid() || length<str.length)
 		return -1;
 
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length;
 
-	const char *compare = str.string;
+	const uint8_t *compare = str.get_u();
 	strl_t find_len = str.length;
 
-	char p = 0;
-	char c = int_tolower_ascii7(*compare++);
+	uint8_t p = 0;
+	uint8_t c = int_tolower_ascii7(*compare++);
 
 	while (left >= find_len) {
-		char d = int_tolower_ascii7(*scan++);
+		uint8_t d = int_tolower_ascii7(*scan++);
 		if (d == c && (left == length || bookend.char_matches_ranges(p)) &&
 			(left == find_len || bookend.char_matches_ranges(int_tolower_ascii7(scan[find_len-1])))) {
 			if (int_compare_substr(scan, left - 1, compare, find_len - 1))
@@ -2323,13 +2374,13 @@ int strref::find(const strref str, strl_t pos) const
 	if (!str.valid() || !valid() || length<str.length)
 		return -1;
 
-	const char *scan = string + pos;
+	const uint8_t *scan = get_u() + pos;
 	strl_t left = length - pos;
 
-	const char *compare = str.string;
+	const uint8_t *compare = str.get_u();
 	strl_t find_len = str.length;
 
-	char c = int_tolower_ascii7(*compare++);
+	uint8_t c = int_tolower_ascii7(*compare++);
 	while (left >= find_len) {
 		if (int_tolower_ascii7(*scan++) == c) {
 			if (int_compare_substr(scan, left - 1, compare, find_len - 1))
@@ -2348,15 +2399,15 @@ int strref::find_esc(const strref str, strl_t pos) const
 		return -1;
 
 	// start scan buffer pointers
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 
 	// number of characters left in each buffer
 	strl_t scan_left = length - pos;
 	strl_t compare_left = str.length;
 
 	// get first character
-	unsigned char c = (unsigned char)*compare++;
+	uint8_t c = (uint8_t)*compare++;
 	compare_left--;
 	if (c=='\\' && compare_left) {
 		strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -2367,12 +2418,12 @@ int strref::find_esc(const strref str, strl_t pos) const
 	// sweep the scan buffer for the matching string
 	while (scan_left) {
 		if (*scan++ == c) {
-			const unsigned char *chk_scan = scan;
-			const unsigned char *chk_compare = compare;
+			const uint8_t *chk_scan = scan;
+			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
-				unsigned char d = *chk_compare++;
+				uint8_t d = *chk_compare++;
 				chk_compare_left--;
 				if (d=='\\' && compare_left) {
 					strl_t skip = int_get_esc_code(compare, compare_left, d);
@@ -2399,21 +2450,22 @@ int strref::find(const char *str) const
 	if (!str || !valid())
 		return -1;
 
-	char c = int_tolower_ascii7(*str++);
+	const uint8_t *stru = (const uint8_t*)str;
+	uint8_t c = int_tolower_ascii7(*stru++);
 	if (!c)
 		return 0;
 
-	const char *scan = string;
-	const char *compare = str;
+	const uint8_t *scan = get_u();
+	const uint8_t *compare = stru;
 
 	strl_t l = length;
 	while (l) {
 		if (int_tolower_ascii7(*scan++)==c) {
 			bool equal = true;
-			const char *scan_chk = scan;
-			while (char c2 = *compare++) {
+			const uint8_t *scan_chk = scan;
+			while (uint8_t c2 = *compare++) {
 				if (int_tolower_ascii7(*scan_chk++)!=int_tolower_ascii7(c2)) {
-					compare = str;
+					compare = stru;
 					equal = false;
 					break;
 				}
@@ -2463,15 +2515,15 @@ int strref::find_case_esc(const strref str, strl_t pos) const
 		return -1;
 
 	// start scan buffer pointers
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 
 	// number of characters left in each buffer
 	strl_t scan_left = length - pos;
 	strl_t compare_left = str.length;
 
 	// get first character
-	unsigned char c = *compare++;
+	uint8_t c = *compare++;
 	compare_left--;
 	if (c=='\\' && compare_left) {
 		strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -2482,12 +2534,12 @@ int strref::find_case_esc(const strref str, strl_t pos) const
 	// sweep the scan buffer for the matching string
 	while (scan_left) {
 		if (*scan++ == c) {
-			const unsigned char *chk_scan = scan;
-			const unsigned char *chk_compare = compare;
+			const uint8_t *chk_scan = scan;
+			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
-				unsigned char d = *chk_compare++;
+				uint8_t d = *chk_compare++;
 				chk_compare_left--;
 				if (d=='\\' && chk_compare_left) {
 					strl_t skip = int_get_esc_code(chk_compare, chk_compare_left, d);
@@ -2522,12 +2574,12 @@ static strref int_check_exclude(strref range, bool &include)
 }
 
 // checks if character c matches range
-static bool int_char_match_range_case(char c, const unsigned char *rng_chk, strl_t rng_lft)
+static bool int_char_match_range_case(uint8_t c, const uint8_t *rng_chk, strl_t rng_lft)
 {
 	// no match yet, check skipped character against allowed range
 	bool match = false;
 	while (rng_lft) {
-		unsigned char m = *rng_chk++;
+		uint8_t m = *rng_chk++;
 		rng_lft--;
 		// escape code?
 		if (m == '\\' && rng_lft) {
@@ -2539,7 +2591,7 @@ static bool int_char_match_range_case(char c, const unsigned char *rng_chk, strl
 		if (rng_lft>1 && *rng_chk == '-') {
 			rng_chk++;
 			rng_lft--;
-			unsigned char n = (unsigned char)*rng_chk++;
+			uint8_t n = (uint8_t)*rng_chk++;
 			rng_lft--;
 			// escape code for range end?
 			if (n == '\\' && rng_lft) {
@@ -2561,12 +2613,12 @@ static bool int_char_match_range_case(char c, const unsigned char *rng_chk, strl
 }
 
 // checks if character c matches range
-static bool int_char_match_range(char c, const unsigned char *rng_chk, strl_t rng_lft)
+static bool int_char_match_range(uint8_t c, const uint8_t *rng_chk, strl_t rng_lft)
 {
 	// no match yet, check skipped character against allowed range
 	bool match = false;
 	while (rng_lft) {
-		unsigned char m = (unsigned char)*rng_chk++;
+		uint8_t m = (uint8_t)*rng_chk++;
 		rng_lft--;
 		// escape code?
 		if (m == '\\' && rng_lft) {
@@ -2578,7 +2630,7 @@ static bool int_char_match_range(char c, const unsigned char *rng_chk, strl_t rn
 		if (rng_lft>1 && *rng_chk == '-') {
 			rng_chk++;
 			rng_lft--;
-			unsigned char n = (unsigned char)*rng_chk++;
+			uint8_t n = (uint8_t)*rng_chk++;
 			rng_lft--;
 			// escape code for range end?
 			if (n == '\\' && rng_lft) {
@@ -2606,15 +2658,15 @@ int strref::find_case_esc_range(const strref str, const strref range, strl_t pos
 		return -1;
 
 	// start scan buffer pointers
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 
 	// number of characters left in each buffer
 	strl_t scan_left = length - pos;
 	strl_t compare_left = str.length;
 
 	// get first character
-	unsigned char c = *compare++;
+	uint8_t c = *compare++;
 	compare_left--;
 	if (c=='\\' && compare_left) {
 		strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -2628,24 +2680,24 @@ int strref::find_case_esc_range(const strref str, const strref range, strl_t pos
 
 	// sweep the scan buffer for the matching string
 	while (scan_left) {
-		unsigned char b = (unsigned char)*scan++;
+		uint8_t b = (uint8_t)*scan++;
 		// check for string match
 		if (b == c) {
-			const unsigned char *chk_scan = scan;
-			const unsigned char *chk_compare = compare;
+			const uint8_t *chk_scan = scan;
+			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
-				unsigned char d = *chk_compare++;
+				uint8_t d = *chk_compare++;
 				chk_compare_left--;
-				unsigned char e = *chk_scan++;
+				uint8_t e = *chk_scan++;
 				chk_scan_left--;
 				if (d=='\\' && compare_left) {
 					strl_t skip = int_get_esc_code(compare, compare_left, d);
 					compare += skip;
 					compare_left -= skip;
 				}
-				if (c!=d) {
+				if (e!=d) {
 					chk_compare_left = 1;
 					break;
 				}
@@ -2672,15 +2724,15 @@ int strref::find_esc_range(const strref str, const strref range, strl_t pos) con
 		return -1;
 
 	// start scan buffer pointers
-	const unsigned char *scan = get_u() + pos;
-	const unsigned char *compare = str.get_u();
+	const uint8_t *scan = get_u() + pos;
+	const uint8_t *compare = str.get_u();
 
 	// number of characters left in each buffer
 	strl_t scan_left = length - pos;
 	strl_t compare_left = str.length;
 
 	// get first character
-	unsigned char c = *compare++;
+	uint8_t c = *compare++;
 	compare_left--;
 	if (c=='\\' && compare_left) {
 		strl_t skip = int_get_esc_code(compare, compare_left, c);
@@ -2694,24 +2746,24 @@ int strref::find_esc_range(const strref str, const strref range, strl_t pos) con
 
 	// sweep the scan buffer for the matching string
 	while (scan_left) {
-		unsigned char b = int_tolower_ascii7(*scan++);
+		uint8_t b = int_tolower_ascii7(*scan++);
 		// check for string match
 		if (b == c) {
-			const unsigned char *chk_scan = scan;
-			const unsigned char *chk_compare = compare;
+			const uint8_t *chk_scan = scan;
+			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
-				unsigned char d = int_tolower_ascii7(*chk_compare++);
+				uint8_t d = int_tolower_ascii7(*chk_compare++);
 				chk_compare_left--;
-				unsigned char e = int_tolower_ascii7(*chk_scan++);
+				uint8_t e = int_tolower_ascii7(*chk_scan++);
 				chk_scan_left--;
 				if (d=='\\' && compare_left) {
 					strl_t skip = int_get_esc_code(compare, compare_left, d);
 					compare += skip;
 					compare_left -= skip;
 				}
-				if (c!=d) {
+				if (e!=d) {
 					chk_compare_left = 1;
 					break;
 				}
@@ -2771,17 +2823,17 @@ int strref::find_last(const strref str) const
 	if (!str.valid() || !valid() || length<str.length)
 		return -1;
 
-	const char *scan = string+length;
-	const char *compare = str.string+str.length;
+	const uint8_t *scan = get_u() + length;
+	const uint8_t *compare = str.get_u() + str.length;
 
-	char c = int_tolower_ascii7(*--compare);
+	uint8_t c = int_tolower_ascii7(*--compare);
 
 	int left = (int)length;
 	while (left>0) {
 		left--;
 		if (int_tolower_ascii7(*--scan)==c) {
-			const char *scan_chk = scan;
-			const char *cmp_chk = compare;
+			const uint8_t *scan_chk = scan;
+			const uint8_t *cmp_chk = compare;
 			strl_t left_check = str.length;
 			while (--left_check) {
 				if (int_tolower_ascii7(*--scan_chk)!=int_tolower_ascii7(*--cmp_chk)) {
@@ -2802,18 +2854,18 @@ int strref::find_last_bookend(const strref str, const strref bookend) const
 	if (!str.valid() || !valid() || length<str.length)
 		return -1;
 
-	const char *scan = string + length;
-	const char *compare = str.string + str.length;
+	const uint8_t *scan = get_u() + length;
+	const uint8_t *compare = str.get_u() + str.length;
 
-	char c = int_tolower_ascii7(*--compare);
-	char p = 0;
+	uint8_t c = int_tolower_ascii7(*--compare);
+	uint8_t p = 0;
 	strl_t left = length;
 	while (left>0) {
 		left--;
-		char d = int_tolower_ascii7(*--scan);
+		uint8_t d = int_tolower_ascii7(*--scan);
 		if (d == c && (left==length || bookend.char_matches_ranges(p))) {
-			const char *scan_chk = scan;
-			const char *cmp_chk = compare;
+			const uint8_t *scan_chk = scan;
+			const uint8_t *cmp_chk = compare;
 			strl_t left_check = str.length;
 			while (--left_check) {
 				if (int_tolower_ascii7(*--scan_chk) != int_tolower_ascii7(*--cmp_chk)) {
@@ -2822,7 +2874,7 @@ int strref::find_last_bookend(const strref str, const strref bookend) const
 				}
 			}
 			if (!left_check) {
-				if (string == scan_chk || bookend.char_matches_ranges(int_tolower_ascii7(*--scan_chk)))
+				if (get_u() == scan_chk || bookend.char_matches_ranges(int_tolower_ascii7(*--scan_chk)))
 					return int(left - str.length + 1);
 			}
 		}
@@ -2837,23 +2889,23 @@ int strref::find_last(const char *str) const
 	if (!str || !*str || !valid())
 		return -1;
 
-	const char *scan = string+length;
-	const char *compare = str + strlen(str);
-	unsigned char c = int_tolower_ascii7(*--compare);
+	const uint8_t *scan = get_u()+length;
+	const uint8_t *compare = (const uint8_t*)str + strlen(str);
+	uint8_t c = int_tolower_ascii7(*--compare);
 	int l = (int)length;
 	while (l>=0) {
 		l--;
 		if (int_tolower_ascii7(*--scan)==c) {
-			const char *scan_chk = scan;
-			const char *cmp_chk = compare;
-			while (cmp_chk>str) {
+			const uint8_t *scan_chk = scan;
+			const uint8_t *cmp_chk = compare;
+			while (cmp_chk>(const uint8_t*)str) {
 				if (int_tolower_ascii7(*--scan_chk)!=int_tolower_ascii7(*--cmp_chk)) {
 					cmp_chk = compare;
 					break;
 				}
 			}
-			if (cmp_chk==str)
-				return int(scan_chk-string);
+			if (cmp_chk==(const uint8_t*)str)
+				return int(scan_chk-(const uint8_t*)string);
 		}
 	}
 	return -1;
@@ -2896,19 +2948,19 @@ int strref::substr_count(const strref str) const
 		return 0;
 
 	int count = 0;
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length;
 	strl_t substrlen = str.length;
-	char c = int_tolower_ascii7(str.get_first());
+	uint8_t c = int_tolower_ascii7((uint8_t)str.get_first());
 
 	while (left>=substrlen) {
 		while (left && int_tolower_ascii7(*scan++)!=c)
 			left--;
 		if (left && left>=substrlen) {
 			// first character matches and enough characters remain for a potential match
-			const char *compare = str.string+1;
+			const uint8_t *compare = str.get_u()+1;
 			strl_t sr = substrlen-1;
-			const char *scan_chk = scan;
+			const uint8_t *scan_chk = scan;
 			while (sr && int_tolower_ascii7(*compare++)==int_tolower_ascii7(*scan_chk++))
 				sr--;
 			if (sr==0) {
@@ -2928,16 +2980,16 @@ int strref::substr_count_bookend(const strref str, const strref bookend) const
 		return 0;
 
 	int count = 0;
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length;
 	strl_t substrlen = str.length;
-	char c = int_tolower_ascii7(str.get_first());
-	char p = 0;
+	uint8_t c = int_tolower_ascii7((uint8_t)str.get_first());
+	uint8_t p = 0;
 
 	while (left >= substrlen) {
 
 		while (left) {
-			char d = int_tolower_ascii7(*scan++);
+			uint8_t d = int_tolower_ascii7(*scan++);
 			if (d == c && bookend.char_matches_ranges(p))
 				break;
 			p = d;
@@ -2945,12 +2997,12 @@ int strref::substr_count_bookend(const strref str, const strref bookend) const
 		}
 		if (left && left >= substrlen) {
 			// first character matches and enough characters remain for a potential match
-			const char *compare = str.string + 1;
+			const uint8_t *compare = str.get_u() + 1;
 			strl_t sr = substrlen - 1;
-			const char *scan_chk = scan;
+			const uint8_t *scan_chk = scan;
 			while (sr && int_tolower_ascii7(*compare++) == int_tolower_ascii7(*scan_chk++))
 				sr--;
-			if (sr == 0 && (scan_chk == (string + length) || bookend.char_matches_ranges(int_tolower_ascii7(*scan_chk++)))) {
+			if (sr == 0 && (scan_chk == (get_u() + length) || bookend.char_matches_ranges(int_tolower_ascii7(*scan_chk++)))) {
 				scan = scan_chk;
 				left -= substrlen - 1;
 				count++;
@@ -2999,14 +3051,14 @@ int strref::substr_label_case_count(const strref str) const
 		return 0;
 	
 	int count = 0;
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length;
 	strl_t substrlen = str.length;
-	char c = str.get_first(), p=0;
+	uint8_t c = (uint8_t)str.get_first(), p=0;
 	
 	while (left>=substrlen) {
 		while (left) {
-			char d = *scan++;
+			uint8_t d = *scan++;
 			if (d==c)
 				break;
 			left--;
@@ -3016,7 +3068,7 @@ int strref::substr_label_case_count(const strref str) const
 			// first character matches and enough characters remain for a potential match
 			const char *compare = str.string+1;
 			strl_t sr = substrlen-1;
-			const char *scan_chk = scan;
+			const uint8_t *scan_chk = scan;
 			while (sr && *compare++==*scan_chk++)
 				sr--;
 			if (sr==0) {
@@ -3110,7 +3162,7 @@ int strref::find_any_char_of(const strref range, strl_t pos) const {
 static int int_find_range(const char *scan, strl_t left, strl_t length, strref rng, bool include)
 {
 	while (left) {
-		unsigned char c = (unsigned char)*scan++;
+		uint8_t c = (uint8_t)*scan++;
 		bool match = int_char_match_range_case(c, rng.get_u(), rng.get_len());
 		if ((match && include) || (!match && !include))
 			return int(length - left);
@@ -3140,7 +3192,7 @@ strref strref::get_range_word(const strref range, strl_t pos) const
 	bool include;
 	strref rng = int_check_exclude(range, include);
 
-	return get_substr(0, int_find_range(string + pos, length - pos, length, rng, !include));
+	return get_substr(0, (strl_t)int_find_range(string + pos, length - pos, length, rng, !include));
 }
 
 int strref::find_any_not_in_range(const strref range, strl_t pos) const {
@@ -3173,7 +3225,7 @@ int strref::find_range_char_within_range(const strref range_find, const strref r
 	strref rng_w = int_check_exclude(range_within, include_within);
 
 	while (l) {
-		unsigned char c = (unsigned char)*scan++;
+		uint8_t c = (uint8_t)*scan++;
 		bool match_find = int_char_match_range_case(c, rng_f.get_u(), rng_f.get_len());
 		if ((match_find && include_find) || (!match_find && !include_find))
 			return int(length - l);
@@ -3190,7 +3242,7 @@ int strref::find_range_char_within_range(const strref range_find, const strref r
 }
 
 // check if character matches a given range (this)
-bool strref::char_matches_ranges(unsigned char c) const {
+bool strref::char_matches_ranges(uint8_t c) const {
 	// check if range is inclusive or exclusive
 	bool include;
 	strref rng = int_check_exclude(*this, include);
@@ -3205,11 +3257,11 @@ strl_t strref::match_chars_str(const strref match, const strref term)
 	bool include_match, include_term;
 	strref rng = int_check_exclude(match, include_match);
 	strref trm = int_check_exclude(term, include_term);
-	int ret = 0;
-	const char *str = string;
+	strl_t ret = 0;
+	const uint8_t *str = get_u();
 	strl_t left = length;
 	while (left) {
-		char c = *str++;
+		uint8_t c = *str++;
 		if (include_match == int_char_match_range_case(c, rng.get_u(), rng.get_len())) {
 			ret++;
 		} else if (!term || include_term == int_char_match_range_case(c, trm.get_u(), trm.get_len())) {
@@ -3293,11 +3345,11 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 		// check for number of search segments / number of search steps overflow
 		if (numSeg > (MAX_WILDCARD_SEGMENTS-4) || numType > (MAX_WILDCARD_STEPS-2))
 			return strref();
-		int next_pos = wild.find_any_char_of(_wildcard_control, pos);
+		int next_pos = wild.find_any_char_of(_wildcard_control, (strl_t)pos);
 		if (next_pos<0) { // completed? (found no wildcard token)
 			// add last segment if there was one
 			if (wild.get_len() > (strl_t)last) {
-				segs[numSeg++] = wild.get_substr(last, wild.get_len()-last);
+				segs[numSeg++] = wild.get_substr((strl_t)last, wild.get_len()-(strl_t)last);
 				if (search && range)
 					segs[numSeg++] = range;
 				type[numType++] = (char)(search ? (range ? WCST_FIND_SUBSTR_RANGE : WCST_FIND_SUBSTR) : WCST_NEXT_SUBSTR);
@@ -3308,10 +3360,10 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 			range.clear();
 			break;
 		}
-		switch (wild.get_at(next_pos)) {
+		switch (wild.get_at((strl_t)next_pos)) {
 			case '*':	// * => any substring with optional filter
 				if (next_pos > last) {
-					segs[numSeg++] = wild.get_substr(last, next_pos-last);
+					segs[numSeg++] = wild.get_substr((strl_t)last, (strl_t)(next_pos-last));
 					if (search && range)
 						segs[numSeg++] = range;
 					type[numType++] = (char)(search ? (range ? WCST_FIND_SUBSTR_RANGE : WCST_FIND_SUBSTR) : WCST_NEXT_SUBSTR);
@@ -3322,9 +3374,9 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 				if (strl_t(pos) < wild.get_len()) {
 					switch (wild[pos]) {
 						case '{': {	// user defined character filter
-							int range_end = wild.find_after('}', pos);
+							int range_end = wild.find_after('}', (strl_t)pos);
 							if (range_end > 0) {
-								range = wild.get_substr(pos+1, range_end-pos-1);
+								range = wild.get_substr(strl_t(pos+1), strl_t(range_end-pos-1));
 								last = pos = range_end + 1;
 							} else
 								pos++;
@@ -3349,7 +3401,7 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 
 			case '<': // < = first character of word
 				if (next_pos > last) {
-					segs[numSeg++] = wild.get_substr(last, next_pos-last);
+					segs[numSeg++] = wild.get_substr((strl_t)last, strl_t(next_pos-last));
 					if (search && range)
 						segs[numSeg++] = range;
 					type[numType++] = (char)(search ? (range ? WCST_FIND_SUBSTR_RANGE : WCST_FIND_SUBSTR) : WCST_NEXT_SUBSTR);
@@ -3366,7 +3418,7 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 
 			case '>': // > = first character after word
 				if (next_pos > last) {
-					segs[numSeg++] = wild.get_substr(last, next_pos-last);
+					segs[numSeg++] = wild.get_substr(strl_t(last), strl_t(next_pos-last));
 					if (search && range)
 						segs[numSeg++] = range;
 					type[numType++] = (char)(search ? (range ? WCST_FIND_SUBSTR_RANGE : WCST_FIND_SUBSTR) : WCST_NEXT_SUBSTR);
@@ -3444,7 +3496,7 @@ static int _build_wildcard_steps(const strref wild, strref *segs, char *type, in
 				break;
 
 			case '[': {	// [..] = limited range character
-				int close_pos = wild.find_after(']', next_pos+1);
+				int close_pos = wild.find_after(']', strl_t(next_pos+1));
 				if (close_pos>=1) {
 					if (next_pos > last) {
 						segs[numSeg++] = wild.get_substr(last, next_pos-last);
@@ -3496,7 +3548,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 		int step = 0;
 		while (step<numType) {
 			bool find = false;
-			strl_t found_pos = first_pos;
+			strl_t found_pos = (strl_t)first_pos;
 			int seg_step = seg;
 			switch (type[step]) {
 				case WCST_END:	// success!
@@ -3504,30 +3556,30 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 
 				case WCST_FIND_SUBSTR:
 					find = true;
-					pos = case_sensitive ? find_case_esc(segs[seg], pos) : find_esc(segs[seg], pos);
+					pos = case_sensitive ? find_case_esc(segs[seg], (strl_t)pos) : find_esc(segs[seg], (strl_t)pos);
 					if (pos<0) {
 						valid = false;
 						break;
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					pos += (int)segs[seg++].len_esc();
 					break;
 
 				case WCST_FIND_SUBSTR_RANGE:
 					find = true;
-					pos = case_sensitive ? find_case_esc_range(segs[seg], segs[seg + 1], pos) : find_esc_range(segs[seg], segs[seg + 1], pos);
+					pos = case_sensitive ? find_case_esc_range(segs[seg], segs[seg + 1], (strl_t)pos) : find_esc_range(segs[seg], segs[seg + 1], (strl_t)pos);
 					if (pos<0) {
 						valid = false;
 						break;
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					pos += (int)segs[seg].length;
 					seg += 2;
 					break;
 
 				case WCST_SUBSTR_MATCH_RANGE:
 					valid = false;
-					while ((strl_t)pos < length && segs[seg].char_matches_ranges(get_at(pos))) {
+					while ((strl_t)pos < length && segs[seg].char_matches_ranges((uint8_t)get_at(pos))) {
 						pos++;
 						valid = true;
 					}
@@ -3536,23 +3588,23 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 
 				case WCST_FIND_RANGE_CHAR:
 					find = true;
-					pos = find_any_char_or_range(segs[seg++], pos);
+					pos = find_any_char_or_range(segs[seg++], (strl_t)pos);
 					if (pos<0) {
 						valid = false;
 						break;
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					pos++;
 					break;
 
 				case WCST_FIND_RANGE_CHAR_RANGED:
 					find = true;
-					pos = find_range_char_within_range(segs[seg], segs[seg + 1], pos);
+					pos = find_range_char_within_range(segs[seg], segs[seg + 1], (strl_t)pos);
 					if (pos<0) {
 						valid = false;
 						break;
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					pos++;
 					seg += 2;
 					break;
@@ -3600,7 +3652,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 							pos += (int)len_sep_ws(pos);
 					}
 					valid = strl_t(pos) < length;
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					break;
 
 				case WCST_FIND_WORD_START_RANGED:
@@ -3622,7 +3674,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 						}
 					}
                     valid = valid && strl_t(pos) < length;
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					seg++;
 					break;
 
@@ -3641,7 +3693,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 								pos += (int)len_non_sep_ws(pos);
 						}
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					break;
 
 				case WCST_FIND_WORD_END_RANGED:
@@ -3667,7 +3719,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 							}
 						}
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					seg++;
 					break;
 
@@ -3695,7 +3747,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 							break;
 						}
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					break;
 
 				case WCST_FIND_LINE_START_RANGED:
@@ -3721,7 +3773,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 							break;
 						}
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					seg++;
 					break;
 
@@ -3752,7 +3804,7 @@ strref strref::find_wildcard(const strref wild, strl_t start, bool case_sensitiv
 						}
 						pos++;
 					}
-					found_pos = pos;
+					found_pos = (strl_t)pos;
 					seg++;
 					break;
 			}
@@ -3793,14 +3845,14 @@ size_t strref::get_utf8() const
 {
 	if (!valid())
 		return 0;
-	const char *scan = string;
+	const uint8_t *scan = get_u();
 	strl_t left = length-1;
 	if (left>5)
 		left = 5;
-	unsigned char f = *scan++;
+	uint8_t f = *scan++;
 	size_t c = f, mask = 0x80;
 	while ((mask&c) && left) {
-		unsigned char n = *scan++;
+		uint8_t n = *scan++;
 		c = (c<<6)|(n&0x3f);
 		mask <<= 5;
 		left--;
@@ -3813,22 +3865,22 @@ size_t strref::get_utf8() const
 size_t strref::pop_utf8()
 {
 	if (!valid())
-return 0;
-const char *scan = string;
-strl_t left = length-1;
-if (left>5)
-left = 5;
-unsigned char f = *scan++;
-size_t c = f, m = 0x80;
-while ((m&c) && left) {
-	unsigned char n = *scan++;
-	c = (c<<6)|(n&0x3f);
-	m <<= 5;
-	left--;
-}
-length -= strl_t(scan-string);
-string = scan;
-return c;
+		return 0;
+	const uint8_t *scan = get_u();
+	strl_t left = length-1;
+	if (left>5)
+		left = 5;
+	uint8_t f = *scan++;
+	size_t c = f, m = 0x80;
+	while ((m&c) && left) {
+		uint8_t n = *scan++;
+		c = (c<<6)|(n&0x3f);
+		m <<= 5;
+		left--;
+	}
+	length -= strl_t((const char*)scan - string);
+	string = (const char*)scan;
+	return c;
 }
 
 bool strref::valid_ascii7() const
@@ -4127,11 +4179,11 @@ strl_t _strmod_insert(char *string, strl_t length, strl_t cap, const strref sub,
 			*--dst = *--src;
 	}
 	const char *src = sub.get();
-	char *dst = string + pos;
-	const char *e = string + cap;
+	uint8_t *dst = (uint8_t*)string + pos;
+	const uint8_t *e = (uint8_t*)string + cap;
 	strl_t left = sub.get_len();
 	while (left && dst < e) {
-		unsigned char c = (unsigned char)*src++;
+		uint8_t c = (uint8_t)*src++;
 		left--;
 		*dst++ = c;
 	}
@@ -4140,11 +4192,11 @@ strl_t _strmod_insert(char *string, strl_t length, strl_t cap, const strref sub,
 }
 
 // determine the size of this string with evaluated escape codes
-static strl_t int_string_size_esc(const unsigned char *string, strl_t length)
+static strl_t int_string_size_esc(const uint8_t *string, strl_t length)
 {
 	strl_t size = 0;
 	while (length) {
-		unsigned char c = *string++;
+		uint8_t c = *string++;
 		length--;
 		if (c=='\\' && length) {
 			strl_t skip = int_get_esc_code(string, length, c);
@@ -4182,12 +4234,12 @@ strl_t _strmod_insert_esc(char *string, strl_t length, strl_t cap, const strref 
 		for (; move; move--)
 			*--dst = *--src;
 	}
-	const unsigned char *src = sub.get_u();
-	char *dst = string + pos;
-	const char *e = string + cap;
+	const uint8_t *src = sub.get_u();
+	uint8_t *dst = (uint8_t*)string + pos;
+	const uint8_t *e = (uint8_t*)string + cap;
 	strl_t left = sub.get_len();
 	while (left && dst < e) {
-		unsigned char c = *src++;
+		uint8_t c = *src++;
 		left--;
 		if (c=='\\' && left) {
 			strl_t skip = int_get_esc_code(src, left, c);
@@ -4227,7 +4279,7 @@ strl_t _strmod_format_insert(char *string, strl_t length, strl_t cap, strl_t pos
 
 		// if there was a {} process that..
 		if (format.get_first()=='{' && close>0) {
-			int which = format.get_substr(1, close-ins).atoi();
+			int64_t which = format.get_substr(1, close-ins).atoi();
 			strl_t prev = length;
 			length = _strmod_insert(string, length, cap, args[which], pos);
 			pos += length - prev;
@@ -4446,7 +4498,7 @@ strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t c
 void _strmod_tolower(char *string, strl_t length)
 {
 	if (string) {
-		char *s = string;
+		uint8_t *s = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*s = int_tolower_ascii7(*s);
 			s++;
@@ -4458,7 +4510,7 @@ void _strmod_tolower(char *string, strl_t length)
 void _strmod_tolower_win_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *s = string;
+		uint8_t *s = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*s = int_tolower_win_ascii(*s);
 			s++;
@@ -4470,7 +4522,7 @@ void _strmod_tolower_win_ascii(char *string, strl_t length)
 void _strmod_tolower_amiga_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*scan = int_tolower_amiga_ascii(*scan);
 			scan++;
@@ -4482,7 +4534,7 @@ void _strmod_tolower_amiga_ascii(char *string, strl_t length)
 void _strmod_tolower_macos_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t r = length; r>0; r--) {
 			*scan = int_tolower_macos_roman_ascii(*scan);
 			scan++;
@@ -4494,7 +4546,7 @@ void _strmod_tolower_macos_ascii(char *string, strl_t length)
 void _strmod_toupper(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*scan = int_toupper_ascii7(*scan);
 			scan++;
@@ -4506,7 +4558,7 @@ void _strmod_toupper(char *string, strl_t length)
 void _strmod_toupper_win_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*scan = int_toupper_win_ascii(*scan);
 			scan++;
@@ -4518,7 +4570,7 @@ void _strmod_toupper_win_ascii(char *string, strl_t length)
 void _strmod_toupper_amiga_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*scan = int_toupper_amiga_ascii(*scan);
 			scan++;
@@ -4531,7 +4583,7 @@ void _strmod_toupper_amiga_ascii(char *string, strl_t length)
 void _strmod_toupper_macos_ascii(char *string, strl_t length)
 {
 	if (string) {
-		char *scan = string;
+		uint8_t *scan = (uint8_t*)string;
 		for (strl_t left = length; left>0; left--) {
 			*scan = int_toupper_macos_roman_ascii(*scan);
 			scan++;
@@ -4625,7 +4677,7 @@ size_t _strmod_read_utf8(char *string, strl_t length, strl_t pos, strl_t &skip) 
 	size_t c = (size_t)*string++;
 	c &= 0x7f;
 	for (size_t m = 0x40; (m & c) && string<end; m <<= 5) {
-		size_t n = *string++;
+		size_t n = (size_t)*string++;
 		c = ((c & ~m) << 6) | (n & 0x3f);
 	}
 	skip = strl_t(string - start);
@@ -4635,17 +4687,17 @@ size_t _strmod_read_utf8(char *string, strl_t length, strl_t pos, strl_t &skip) 
 strl_t _strmod_write_utf8(char *string, strl_t cap, size_t code, strl_t pos) {
 	if (pos>=cap)
 		return 0;
-	char *write = string + pos;
+	uint8_t *write = (uint8_t*)string + pos;
 	cap -= pos;
 	if (code < 0x80) {
-		*write++ = (char)code;
+		*write++ = (uint8_t)code;
 		return 1;
 	} else if (cap>=2 && code < 0x800) {
-		*write++ = char(0xc0 | (code >> 6));
+		*write++ = uint8_t(0xc0 | (code >> 6));
 		*write++ = 0x80 | (code & 0x3f);
 		return 2;
 	} else if (cap>=3 && code < 0x10000) {
-		*write++ = char(0xe0 | (code >> 12));
+		*write++ = uint8_t(0xe0 | (code >> 12));
 		*write++ = 0x80 | ((code >> 6) & 0x3f);
 		*write++ = 0x80 | (code & 0x3f);
 		return 3;
@@ -4672,7 +4724,7 @@ strl_t _strmod_utf8_tolower(char *string, strl_t length, strl_t cap) {
 
 		c = int_tolower_unicode(c);
 
-		strl_t add = c<0x80 ? 1 : (c<0x800 ? 2 : (c<0x10000 ? 3 : 4));
+		strl_t add = c<size_t(0x80) ? strl_t(1) : (c<size_t(0x800) ? strl_t(2) : (c<size_t(0x10000) ? strl_t(3) : 4));
 
 		if (add > cap)
 			return (strl_t)(write-string);
@@ -4704,7 +4756,7 @@ strl_t _strmod_utf8_toupper(char *string, strl_t length, strl_t cap) {
 
 		c = int_toupper_unicode(c);
 
-		strl_t add = c<0x80 ? 1 : (c<0x800 ? 2 : (c<0x10000 ? 3 : 4));
+		strl_t add = c<0x80 ? strl_t(1) : (c<0x800 ? strl_t(2) : (c<0x10000 ? strl_t(3) : strl_t(4)));
 
 		if (add > cap)
 			return (strl_t)(write-string);

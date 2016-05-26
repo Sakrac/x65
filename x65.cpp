@@ -1255,10 +1255,10 @@ typedef struct Section {
 	void AddTriple(int l);
 	void AddBin(const uint8_t *p, int size);
 	void AddText(strref line, strref text_prefix);
-	void SetByte(size_t offs, int b) { output[offs] = b; }
-	void SetWord(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; }
-	void SetTriple(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; }
-	void SetQuad(size_t offs, int w) { output[offs] = w; output[offs+1] = w>>8; output[offs+2] = w>>16; output[offs+3] = w>>24; }
+	void SetByte(size_t offs, int b) { output[offs] = (uint8_t)b; }
+	void SetWord(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); }
+	void SetTriple(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); }
+	void SetQuad(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); output[offs+3] = uint8_t(w>>24); }
 } Section;
 
 // Symbol list entry (in order of parsing)
@@ -1423,8 +1423,8 @@ public:
 		context.code_segment = code_seg;
 		context.read_source = code_seg;
 		context.next_source = code_seg;
-		context.repeat = rept;
-		context.repeat_total = rept;
+		context.repeat = (int16_t)rept;
+		context.repeat_total = (int16_t)rept;
 		stack.push_back(context);
 		currContext = &stack[stack.size()-1];
 	}
@@ -1601,8 +1601,8 @@ public:
 
 	// Assembler Directives
 	StatusCode ApplyDirective(AssemblerDirective dir, strref line, strref source_file);
-	StatusCode Directive_Rept(strref line, strref source_file);
-	StatusCode Directive_Macro(strref line, strref source_file);
+	StatusCode Directive_Rept(strref line);
+	StatusCode Directive_Macro(strref line);
 	StatusCode Directive_String(strref line);
 	StatusCode Directive_Undef(strref line);
 	StatusCode Directive_Include(strref line);
@@ -1706,7 +1706,7 @@ int sortHashLookup(const void *A, const void *B) {
 	return _A->op_hash > _B->op_hash ? 1 : -1;
 }
 
-int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *opcodes,
+int BuildInstructionTable(OPLookup *pInstr, struct mnem *opcodes,
 						  int count, const char **aliases, bool merlin)
 {
 	// create an instruction table (mnemonic hash lookup)
@@ -1714,7 +1714,7 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 	for (int i = 0; i < count; i++) {
 		OPLookup &op = pInstr[numInstructions++];
 		op.op_hash = strref(opcodes[i].instr).fnv1a_lower();
-		op.index = i;
+		op.index = (uint8_t)i;
 		op.type = OT_MNEMONIC;
 	}
 
@@ -1727,7 +1727,7 @@ int BuildInstructionTable(OPLookup *pInstr, int maxInstructions, struct mnem *op
 				if (orig.same_str_case(opcodes[o].instr)) {
 					OPLookup &op = pInstr[numInstructions++];
 					op.op_hash = alias.fnv1a_lower();
-					op.index = o;
+					op.index = (uint8_t)o;
 					op.type = OT_MNEMONIC;
 					break;
 				}
@@ -1764,7 +1764,7 @@ void Asm::SetCPU(CPUIndex CPU) {
 		list_cpu = cpu;
 	opcode_table = aCPUs[CPU].opcodes;
 	opcode_count = aCPUs[CPU].num_opcodes;
-	num_instructions = BuildInstructionTable(aInstructions, MAX_OPCODES_DIRECTIVES, opcode_table,
+	num_instructions = BuildInstructionTable(aInstructions, opcode_table,
 											 opcode_count, aCPUs[CPU].aliases, Merlin());
 }
 
@@ -1874,7 +1874,7 @@ void Asm::SetSection(strref line)
 	strref name;
 	while (strref arg = line.split_token_any_trim(",:")) {
 		if (arg.get_first() == '$') { ++arg; align = (int)arg.ahextoui(); }
-		else if (arg.is_number()) align = arg.atoi();
+		else if (arg.is_number()) align = (int)arg.atoi();
 		else if (arg.get_first() == '"') name = (arg + 1).before_or_full('"');
 		else if (!name) name = arg;
 		else if (arg.same_str("code")) type = ST_CODE;
@@ -1886,7 +1886,7 @@ void Asm::SetSection(strref line)
 	if (type == ST_UNDEFINED) {
 		if (name.find("code") >= 0) type = ST_CODE;
 		else if (name.find("data") >= 0) type = ST_DATA;
-		else if (name.find("bss" >= 0 || name.same_str("directpage_stack"))) type = ST_BSS;
+		else if (name.find("bss") >= 0 || name.same_str("directpage_stack")) type = ST_BSS;
 		else if (name.find("zp") >= 0 || name.find("zeropage") >= 0 || name.find("direct") >= 0)
 			type = ST_ZEROPAGE;
 		else type = ST_CODE;
@@ -2171,10 +2171,10 @@ StatusCode Asm::LinkZP()
 		if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
 			if (s->address_assigned) {
 				has_assigned = true;
-				if (s->start_address < min_addr)
-					min_addr = s->start_address;
-				else if (s->address > max_addr)
-					max_addr = s->address;
+				if (s->start_address < (int)min_addr)
+					min_addr = (uint8_t)s->start_address;
+				else if ((int)s->address > max_addr)
+					max_addr = (uint8_t)s->address;
 			} else {
 				has_unassigned = true;
 				first_unassigned = first_unassigned >=0 ? first_unassigned : (int)(&*s - &allSections[0]);
@@ -2250,7 +2250,7 @@ void Asm::LinkLabelsToAddress(int section_id, int section_new, int section_addre
 			if (pLabels->mapIndex>=0 && pLabels->mapIndex<(int)map.size()) {
 				struct MapSymbol &msym = map[pLabels->mapIndex];
 				msym.value = pLabels->value;
-				msym.section = section_new;
+				msym.section = (int16_t)section_new;
 			}
 			CheckLateEval(pLabels->label_name);
 		}
@@ -2431,14 +2431,14 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 	for (MapSymbolArray::iterator i = map.begin(); i!=map.end(); ++i) {
 		if (i->section == section_merge) {
 			i->value += addr_start;
-			i->section = section_id;
+			i->section = (int16_t)section_id;
 		}
 	}
 
 	// go through all late evals referencing this section
 	for (std::vector<LateEval>::iterator i = lateEval.begin(); i!=lateEval.end(); ++i) {
 		if (i->section == section_merge) {
-			i->section = section_id;
+			i->section = (int16_t)section_id;
 			if (i->target >= 0)
 				i->target += addr_start;
 			i->address += addr_start;
@@ -2704,7 +2704,7 @@ StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, i
 	conditional_nesting[conditional_depth] = 0;
 	conditional_consumed[conditional_depth] = false;
 	contextStack.push(src_name, src_file, code_seg, rept);
-	contextStack.curr().conditional_ctx = conditional_depth;
+	contextStack.curr().conditional_ctx = (int16_t)conditional_depth;
 	if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
 		return ERROR_TOO_DEEP_SCOPE;
 	else
@@ -2890,7 +2890,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 					bool success = false;
 					strl_t offs = strl_t(tag.get() - macexp.get());
 					if (!offs || !strref::is_valid_label(macexp[offs])) {
-						int t = (tag + 1).atoi();
+						int t = (int)(tag + 1).atoi();
 						strref args = arg;
 						if (t > 0) {
 							for (int skip = 1; skip < t; skip++)
@@ -2991,7 +2991,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 				return error;
 		}
 		struct MemberOffset member;
-		member.offset = value;
+		member.offset = (uint16_t)value;
 		member.name = name;
 		member.name_hash = member.name.fnv1a();
 		member.sub_struct = strref();
@@ -3165,7 +3165,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			++expression;
 			if (expression[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op==EVOP_VAL || prev_op==EVOP_RPR) return EVOP_MUL;
-			value = etx.pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 		case '/': ++expression; return EVOP_DIV;
 		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
 				  ++expression; return EVOP_HIB;
@@ -3175,7 +3175,9 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			if (expression[1]=='0' || expression[1]=='1') {
 				++expression; value = (int)expression.abinarytoui_skip(); return EVOP_VAL; }
 			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
-			++expression; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+			++expression; value = etx.scope_end_pc;
+			section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1);
+			return EVOP_VAL;
 		case '|':
 		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++expression; return EVOP_EOR; }
@@ -3191,7 +3193,8 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
 			else if (c == '!' && !(expression + 1).len_label()) {
 				if (etx.scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
-				++expression; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+				++expression; value = etx.scope_pc;
+				section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 			} else if (expression.match_chars_str("0-9", "!a-zA-Z_")) {
 				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
 				value = expression.atoi_skip(); return EVOP_VAL;
@@ -3208,7 +3211,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 				}
 				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
-				value = pLabel->value; section = pLabel->section; return EVOP_VAL;
+				value = pLabel->value; section = int16_t(pLabel->section); return EVOP_VAL;
 			} else
 				return EVOP_ERR;
 			break;
@@ -3229,7 +3232,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 			++exp;
 			if (exp[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
-			value = etx.pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 		case '/': ++exp; return EVOP_DIV;
 		case '=': if (exp[1] == '=') { exp += 2; return EVOP_EQU; } return EVOP_STP;
 		case '>': if (exp.get_len() >= 2 && exp[1] == '>') { exp += 2; return EVOP_SHR; }
@@ -3243,7 +3246,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		case '%': // % means both binary and scope closure, disambiguate!
 			if (exp[1] == '0' || exp[1] == '1') { ++exp; value = (int)exp.abinarytoui_skip(); return EVOP_VAL; }
 			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
-			++exp; value = etx.scope_end_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+			++exp; value = etx.scope_end_pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 		case '|': ++exp; return EVOP_OR;
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
 				  ++exp;  return EVOP_BAB;
@@ -3256,7 +3259,8 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		default: {	// ! by itself is current scope, !+label char is a local label
 			if (c == '!' && !(exp + 1).len_label()) {
 				if (etx.scope_pc < 0) return EVOP_NRY;
-				++exp; value = etx.scope_pc; section = CurrSection().IsRelativeSection() ? SectionId() : -1; return EVOP_VAL;
+				++exp; value = etx.scope_pc; 
+				section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 			} else if (exp.match_chars_str("0-9", "!a-zA-Z_")) {
 				if (prev_op == EVOP_VAL) return EVOP_STP; // value followed by value doesn't make sense, stop
 				value = exp.atoi_skip(); return EVOP_VAL;
@@ -3274,7 +3278,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 				if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
 				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
-				value = pLabel->value; section = pLabel->section; return pLabel->reference ? EVOP_XRF : EVOP_VAL;
+				value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 			}
 			return EVOP_ERR;
 		}
@@ -3358,7 +3362,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			}
 			if (section >= 0) {
 				for (int s = 0; s<num_sections && index_section<0; s++) {
-					if (section_ids[s] == section) index_section = s;
+					if (section_ids[s] == section) index_section = (int16_t)s;
 				}
 				if (index_section<0) {
 					if (num_sections <= MAX_EVAL_SECTIONS)
@@ -3372,9 +3376,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			if (op == EVOP_VAL) {
 				section_val[numValues] = index_section;	// only value operators can be section specific
 				values[numValues++] = value;
-				ops[numOps++] = op;
+				ops[numOps++] = (char)op;
 			} else if (op == EVOP_LPR) {
-				op_stack[sp++] = op;
+				op_stack[sp++] = (char)op;
 			} else if (op == EVOP_RPR) {
 				while (sp && op_stack[sp-1]!=EVOP_LPR) {
 					sp--;
@@ -3401,10 +3405,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 						EvalOperator p = (EvalOperator)op_stack[sp-1];
 						if (p==EVOP_LPR || op>p)
 							break;
-						ops[numOps++] = p;
+						ops[numOps++] = (char)p;
 						sp--;
 					}
-					op_stack[sp++] = op;
+					op_stack[sp++] = (char)op;
 				}
 			}
 			// check for out of bounds or unexpected input
@@ -3567,7 +3571,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 		if (section_index>=0 && !curr_relative) {
 			lastEvalSection = section_ids[section_index];
 			lastEvalValue = prev_val;
-			lastEvalShift = shift_bits;
+			lastEvalShift = (int8_t)shift_bits;
 			return STATUS_RELATIVE_SECTION;
 		}
 	}
@@ -3585,7 +3589,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 	le.scope = scope_pc;
 	le.scope_depth = scope_depth;
 	le.target = target;
-	le.section = (int)(&CurrSection() - &allSections[0]);
+	le.section = (int16_t)(&CurrSection() - &allSections[0]);
 	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
 	le.label.clear();
@@ -3604,7 +3608,7 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 	le.scope_depth = scope_depth;
 	le.target = -1;
 	le.label = label;
-	le.section = (int)(&CurrSection() - &allSections[0]);
+	le.section = (int16_t)(&CurrSection() - &allSections[0]);
 	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
 	le.expression = expression;
@@ -3820,7 +3824,7 @@ void Asm::LabelAdded(Label *pLabel, bool local)
 			map.reserve(map.size() + 256);
 		MapSymbol sym;
 		sym.name = pLabel->label_name;
-		sym.section = pLabel->section;
+		sym.section = (int16_t)(pLabel->section);
 		sym.value = pLabel->value;
 		sym.local = local;
 		pLabel->mapIndex = pLabel->evaluated ? -1 : (int)map.size();
@@ -3934,8 +3938,8 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 		if (addr1<=addr0 || addr0<0)
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 
-		aRng[ranges++] = addr0;
-		aRng[ranges++] = addr1;
+		aRng[ranges++] = (uint16_t)addr0;
+		aRng[ranges++] = (uint16_t)addr1;
 		num32 += (addr1-addr0+15)>>4;
 
 		if (ranges >(MAX_POOL_RANGES*2) ||
@@ -3948,8 +3952,8 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 
 	LabelPool pool;
 	pool.pool_name = name;
-	pool.numRanges = ranges>>1;
-	pool.scopeDepth = scope_depth;
+	pool.numRanges = (int16_t)(ranges>>1);
+	pool.scopeDepth = (int16_t)scope_depth;
 
 	memset(pool.usedMap, 0, sizeof(uint32_t) * num32);
 	for (int r = 0; r<ranges; r++)
@@ -4406,7 +4410,6 @@ void Asm::ConditionalElse() {
 // Conditional statement evaluation (true/false)
 StatusCode Asm::EvalStatement(strref line, bool &result)
 {
-	int equ = line.find('=');
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	bool invert = line.get_first()=='!';
@@ -4451,7 +4454,7 @@ int LookupOpCodeIndex(uint32_t hash, OPLookup *lookup, int count)
 }
 
 // Encountered a REPT or LUP
-StatusCode Asm::Directive_Rept(strref line, strref source_file)
+StatusCode Asm::Directive_Rept(strref line)
 {
 	SourceContext &ctx = contextStack.curr();
 	strref read_source = ctx.read_source;
@@ -4496,7 +4499,7 @@ StatusCode Asm::Directive_Rept(strref line, strref source_file)
 }
 
 // macro: create an assembler macro
-StatusCode Asm::Directive_Macro(strref line, strref source_file)
+StatusCode Asm::Directive_Macro(strref line)
 {
 	strref read_source = contextStack.curr().read_source.get_skip_ws();
 	if (!Merlin() && read_source.is_substr(line.get()))
@@ -4573,28 +4576,32 @@ StatusCode Asm::Directive_Include(strref line)
 	if (!file)								// MERLIN: No quotes around PUT filenames
 		file = line.split_range(filename_end_char_range);
 	size_t size = 0;
-	char *buffer = nullptr;
-	if ((buffer = LoadText(file, size))) {
+	char *buffer = LoadText(file, size);
+	if (buffer) {
 		loadedData.push_back(buffer);
 		strref src(buffer, strl_t(size));
 		PushContext(file, src, src);
 	} else if (Merlin()) {
 		// MERLIN include file name rules
-		if (file[0]>='!' && file[0]<='&' && (buffer = LoadText(file+1, size))) {
+		if (file[0] >= '!' && file[0] <= '&')
+			buffer = LoadText(file + 1, size);
+		if (buffer) {
 			loadedData.push_back(buffer);		// MERLIN: prepend with !-& to not auto-prepend with T.
 			strref src(buffer, strl_t(size));
 			PushContext(file+1, src, src);
 		} else {
 			strown<512> fileadd(file[0]>='!' && file[0]<='&' ? (file+1) : file);
 			fileadd.append(".s");
-			if ((buffer = LoadText(fileadd.get_strref(), size))) {
+			buffer = LoadText(fileadd.get_strref(), size);
+			if (buffer) {
 				loadedData.push_back(buffer);	// MERLIN: !+filename appends .S to filenames
 				strref src(buffer, strl_t(size));
 				PushContext(file, src, src);
 			} else {
 				fileadd.copy("T.");				// MERLIN: just filename prepends T. to filenames
 				fileadd.append(file[0]>='!' && file[0]<='&' ? (file+1) : file);
-				if ((buffer = LoadText(fileadd.get_strref(), size))) {
+				buffer = LoadText(fileadd.get_strref(), size);
+				if (buffer) {
 					loadedData.push_back(buffer);
 					strref src(buffer, strl_t(size));
 					PushContext(file, src, src);
@@ -4814,7 +4821,7 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 				width == 1 ? LateEval::LET_BYTE : (width == 2 ? LateEval::LET_ABS_REF : (width == 3 ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF)));
 			else if (error == STATUS_RELATIVE_SECTION) {
 				value = 0;
-				CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, width, lastEvalShift);
+				CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, (int8_t)width, (int8_t)lastEvalShift);
 			}
 		}
 		uint8_t bytes[4] = {
@@ -5136,7 +5143,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			break;
 		}
 		case AD_MACRO:
-			error = Directive_Macro(line, source_file);
+			error = Directive_Macro(line);
 			break;
 
 		case AD_INCLUDE:	// assemble another file in place
@@ -5241,7 +5248,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return Directive_ENUM_STRUCT(line, dir);
 			
 		case AD_REPT:
-			return Directive_Rept(line, source_file);
+			return Directive_Rept(line);
 
 		case AD_INCDIR:
 			AddIncludeFolder(line.between('"', '"'));
@@ -5948,8 +5955,8 @@ bool Asm::List(strref filename)
 			if (opcode_table[i].modes & (1 << j)) {
 				uint8_t op = opcode_table[i].aCodes[j];
 				if (addrmode[op]==255) {
-					mnemonic[op] = i;
-					addrmode[op] = j;
+					mnemonic[op] = (uint8_t)i;
+					addrmode[op] = (uint8_t)j;
 				}
 			}
 		}
@@ -6344,7 +6351,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 
 		// include space for external protected labels
 		for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el)
-			hdr.labels += el->labels.count();
+			hdr.labels += (int16_t)el->labels.count();
 
 		char *stringPool = nullptr;
 		uint32_t stringPoolCap = 0;
@@ -6363,7 +6370,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		// discard the removed sections by making a table of skipped indices
 		for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
 			if (si->type != ST_REMOVED)
-				aRemapSects[&*si-&allSections[0]] = sect++;
+				aRemapSects[&*si-&allSections[0]] = (int16_t)sect++;
 		}
 		
 		sect = 0;
@@ -6399,7 +6406,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				}
 			}
 		}
-		hdr.sections = sect;
+		hdr.sections = (int16_t)sect;
 
 		// write out labels
 		if (hdr.labels) {
@@ -6410,7 +6417,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 					l.value = lo.value;
 					l.section = lo.section >=0 ? aRemapSects[lo.section] : -1;
-					l.mapIndex = lo.mapIndex;
+					l.mapIndex = (int16_t)lo.mapIndex;
 					l.flags =
 						(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
 						(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
@@ -6430,7 +6437,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 					l.value = lo.value;
 					l.section = lo.section >= 0 ? aRemapSects[lo.section] : -1;
-					l.mapIndex = lo.mapIndex;
+					l.mapIndex = (int16_t)lo.mapIndex;
 					l.flags =
 						(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
 						(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
@@ -6451,8 +6458,8 @@ StatusCode Asm::WriteObjectFile(strref filename)
 				le.rept = lei->rept;
 				le.target = (int16_t)lei->target;
 				le.address = lei->address;
-				le.scope = lei->scope;
-				le.type = lei->type;
+				le.scope = (int16_t)lei->scope;
+				le.type = (int16_t)lei->type;
 			}
 		}
 
@@ -6612,7 +6619,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				struct ObjFileLabel &l = aLabels[li];
 				strref name = l.name.offs >= 0 ? strref(str_pool + l.name.offs) : strref();
 				Label *lbl = GetLabel(name);
-				int16_t f = l.flags;
+				int16_t f = (int16_t)l.flags;
 				int external = f & ObjFileLabel::OFL_XDEF;
 				if (external == ObjFileLabel::OFL_XDEF) {
 					if (!lbl)
@@ -6847,13 +6854,13 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 				instructions[inst_curr++] = OMFR_SUPER;
 				int len_offs = inst_curr;
 				inst_curr += 4;
-				instructions[inst_curr++] = b;	// SUPER_RELOC2 / SUPER_RELOC3
+				instructions[inst_curr++] = (uint8_t)b;	// SUPER_RELOC2 / SUPER_RELOC3
 				// try all SUPER_RELOC2 (2 bytes self reference, no shift)
 				relocList::iterator r = s.pRelocs->begin();
 				while (r != s.pRelocs->end()) {
 					if (r->shift == 0 && r->bytes == (b+2) && r->target_section == SectionId(s)) {
 						if ((r->section_offset >> 8) != prev_page) {
-							instructions[inst_curr++] = 0x80 | ((r->section_offset >> 8) - prev_page - 1);
+							instructions[inst_curr++] = uint8_t(0x80 | ((r->section_offset >> 8) - prev_page - 1));
 							count_offs = -1;
 						}	// update patch counter for current page or add a new counter
 						if (count_offs < 0) {
@@ -6879,7 +6886,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 				if (r->target_section == SectionId(s)) {
 					// this is a reloc, check if cRELOC is ok or if need RELOC
 					bool cRELOC = r->section_offset < 0x10000 && r->base_value < 0x10000;
-					instructions[instruction_offs++] = cRELOC ? OMFR_cRELOC : OMFR_RELOC;
+					instructions[instruction_offs++] = uint8_t(cRELOC ? OMFR_cRELOC : OMFR_RELOC);
 					instructions[instruction_offs++] = r->bytes;
 					instructions[instruction_offs++] = r->shift;
 					_writeNBytes(instructions + instruction_offs, cRELOC ? 2 : 4, r->section_offset);
@@ -6889,7 +6896,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 				} else {
 					// this is an interseg
 					bool cINTERSEG = r->section_offset < 0x10000 && r->base_value < 0x10000;
-					instructions[instruction_offs++] = cINTERSEG ? OMFR_cINTERSEG : OMFR_INTERSEG;
+					instructions[instruction_offs++] = uint8_t(cINTERSEG ? OMFR_cINTERSEG : OMFR_INTERSEG);
 					instructions[instruction_offs++] = r->bytes;
 					instructions[instruction_offs++] = r->shift;
 					_writeNBytes(instructions + instruction_offs, cINTERSEG ? 2 : 4, r->section_offset);
@@ -6972,9 +6979,8 @@ int main(int argc, char **argv)
 	const char *sym_file = nullptr, *vs_file = nullptr;
 	strref list_file, allinstr_file;
 	for (int a = 1; a<argc; a++) {
-		strref arg(argv[a]);
-		if (arg.get_first()=='-') {
-			++arg;
+		if (argv[a][0] == '-') {
+			strref arg(argv[a]+1);
 			if (arg.get_first()=='i')
 				assembler.AddIncludeFolder(arg+1);
 			else if (arg.same_str("merlin"))
@@ -7018,7 +7024,7 @@ int main(int argc, char **argv)
 				if (arg && arg.get_first() == '$' && arg.get_len()>1)
 					assembler.default_org = (int)(arg + 1).ahextoui();
 				else if (arg.is_number())
-					assembler.default_org = arg.atoi();
+					assembler.default_org = (int)arg.atoi();
 				// force the current section to be org'd
 				assembler.AssignAddressToSection(assembler.SectionId(), assembler.default_org);
 			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
@@ -7053,11 +7059,15 @@ int main(int argc, char **argv)
 			else
 				printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg));
 		} else if (!source_filename)
-			source_filename = arg.get();
+			source_filename = argv[a];
 		else if (!binary_out_name)
-			binary_out_name = arg.get();
+			binary_out_name = argv[a];
 	}
 
+	for (int a = 1; a < argc; a++) {
+		strref arg(argv[a]);
+		printf(STRREF_FMT "\n", STRREF_ARG(arg));
+	}
 	if (gen_allinstr) {
 		assembler.AllOpcodes(allinstr_file);
 	} else if (!source_filename) {
