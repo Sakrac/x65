@@ -75,8 +75,8 @@ protected:
 
 public:
 	strref() { clear(); }
-	strref(const char *str);
-	strref(char *str) : strref((const char*)str) {}
+	strref(const char *str) { set(str); }
+	strref(char *str) { set((const char*)str); }
 	strref(const char *str, strl_t len) : string(str), length(len) {}
 	strref(const char *str, int len) : string(str), length(strl_t(len)) {}
 	strref(char *str, int len) : string((const char*)str), length(strl_t(len)) {}
@@ -84,6 +84,7 @@ public:
 
 	bool valid() const { return string && length; }
 	void clear() { string = nullptr; length = 0; }
+	void set(const char *str);
 	const char* get() const { return string; }
 	const uint8_t* get_u() const { return (const uint8_t*)string; }
 	strl_t get_len() const { return length; }
@@ -1370,7 +1371,7 @@ void strref::writeln()
 }
 
 // construct a strref from const char*
-strref::strref(const char *str)
+void strref::set(const char *str)
 {
 	if (!str || !*str) {
 		string = nullptr;
