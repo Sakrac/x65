@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link href='https://fonts.googleapis.com/css?family=Architects+Daughter' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="stylesheets/stylesheet.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/github-light.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/print.css" media="print">
+
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+
+    <title>X65 by Sakrac</title>
+  </head>
+
+  <body>
+    <header>
+      <div class="inner">
+        <h1>X65</h1>
+        <h2>6502 Macro Assembler in a single c++ file using the struse single file text parsing library. Supports most syntaxes.</h2>
+        <a href="https://github.com/Sakrac/x65" class="button"><small>View project on</small> GitHub</a>
+      </div>
+    </header>
+
+    <div id="content-wrapper">
+      <div class="inner clearfix">
+        <section id="main-content">
+          <h1>
+<a id="x65" class="anchor" href="#x65" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>x65</h1>
+
+<p>6502 Macro Assembler in a single c++ file using the struse single file text parsing library. Supports most syntaxes. x65 was recently named Asm6502 but was renamed because Asm6502 is too generic, x65 has no particular meaning.</p>
+
+<p><img src="bin/x65.png" alt="x65"></p>
+
+<p>In order to minimize the documentation and make this page shorter I've moved the <a href="../../wiki/Previous-first-page">old documentation</a> here.</p>
+
+<p>The <a href="x65.txt">up to date documentation is here</a>.</p>
+
+<p>x65 can assemble 6502, 65C02 and 65816 source and build executables for c64, Apple II or just raw binary.</p>
+
+<p>Noteworthy features:</p>
+
+<ul>
+<li>Code with sections, object files and linking or single file fixed
+address, or mix it up with fixed address sections in object files.</li>
+<li>Assembler listing with cycle counting for code review.</li>
+<li>Export multiple binaries with a single link operation.</li>
+<li>C style scoping within '{' and '}' with local and pool labels
+respecting scopes.</li>
+<li>Conditional assembly with if/ifdef/else etc.</li>
+<li>Recursible macro support</li>
+<li>Assembler directives representing a variety of features.</li>
+<li>Local labels can be defined in a number of ways, such as leading
+period (.label) or leading at-sign (<a href="https://github.com/label" class="user-mention">@label</a>) or terminating
+dollar sign (label$), and leading colon for merlin (:label).</li>
+<li>String Symbols system allows building user expressions and macros
+during assembly.</li>
+<li>Reassignment of symbols and labels by default.</li>
+<li>No indentation required for instructions, meaning that labels can't
+be mnemonics, macros or directives (merlin requires indentation).</li>
+<li>Supporting the syntax of other 6502 assemblers (Merlin syntax
+requires command line argument, -endm adds support for sources
+using macro/endmacro and repeat/endrepeat combos rather
+than scoeps).</li>
+<li>Apple II GS executable output (relocatable executable).</li>
+</ul>
+
+<h2>
+<a id="features" class="anchor" href="#features" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Features</h2>
+
+<ul>
+<li><strong>Code</strong></li>
+<li><strong>Linking</strong></li>
+<li><strong>Comments</strong></li>
+<li><strong>Labels</strong></li>
+<li><strong>String Symbols</strong></li>
+<li><strong>Directives</strong></li>
+<li><strong>Macros</strong></li>
+<li><strong>Expressions</strong></li>
+<li><strong>List File with Cycle Count</strong></li>
+</ul>
+
+<h2>
+<a id="prerequisite" class="anchor" href="#prerequisite" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Prerequisite</h2>
+
+<p>x65.cpp requires struse.h which is a single file text parsing library that can be retrieved from <a href="https://github.com/Sakrac/struse">https://github.com/Sakrac/struse</a>.</p>
+
+<h3>
+<a id="references" class="anchor" href="#references" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>References</h3>
+
+<ul>
+<li><a href="http://www.6502.org/tutorials/6502opcodes.html">6502 opcodes</a></li>
+<li><a href="http://www.llx.com/%7Enparker/a2/opcodes.html">6502 opcode grid</a></li>
+<li><a href="http://codebase64.org/doku.php?id=base:6502_6510_coding">Codebase64 CPU section</a></li>
+<li><a href="http://www.oxyron.de/html/opcodes02.html">6502 illegal opcodes</a></li>
+<li><a href="http://wiki.superfamicom.org/snes/show/65816+Reference#fn:14">65816 opcodes</a></li>
+</ul>
+
+<h3>
+<a id="download-binaries" class="anchor" href="#download-binaries" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Download Binaries</h3>
+
+<ul>
+<li><a href="../..//raw/master/bin/x65_x64.zip">Windows x64 binaries</a></li>
+<li><a href="../..//raw/master/bin/x65_win32.zip">Windows x86 binaries</a></li>
+</ul>
+
+<h3>
+<a id="x65-1" class="anchor" href="#x65-1" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>x65</h3>
+
+<p>x65 is the assembler</p>
+
+<h3>
+<a id="x65macroi" class="anchor" href="#x65macroi" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>x65macro.i</h3>
+
+<p>x65macro.i is a 6502 include file that defines a number of standard macros that can assign values, move values, copy values and loop constructs, see x65.txt for details.</p>
+
+<h3>
+<a id="dump_x65" class="anchor" href="#dump_x65" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>dump_x65</h3>
+
+<p>dump_x65 is a tool to inspect the contents of .x65 object files generated by x65 to track down linking issues</p>
+
+<h3>
+<a id="x65dsasm" class="anchor" href="#x65dsasm" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>x65dsasm</h3>
+
+<p>x65dsasm is a tool to disassemble assembled binary code for review, it will perform a basic analysis and assign labels where appropriate and treats unreferenced bytes as data rather than code. It can also export assemblable code from a binary.</p>
+
+<h3>
+<a id="acknowledgments" class="anchor" href="#acknowledgments" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Acknowledgments</h3>
+
+<p>This project would not be completed without the direct or indirect support of great people, some which I can currently remember:</p>
+
+<ul>
+<li>Marc dePeo, helping me uncover the strange and unique world of Merlin's assembler syntax (and working together with me on True Crime NY gameplay code and more)</li>
+<li>Che Lalic, explaining the murky bits of 65816 (and a Ninja on SNES NBA Hangtime and other projects)</li>
+<li>John Brooks, sharing the Rastan Apple II source code so I could test 65816 and figure out a number of issues with my initial linker, and encouraging the implementation of Apple II GS OS executable file format / OMF export (and helping out with Playstation All-Stars)</li>
+<li>
+<a href="http://www.brutaldeluxe.fr">Brutal Deluxe</a> for releasing the excellent OMF Analyzer tool and the source, which was a significant help generating Apple II GS OS executables.</li>
+<li>The C64 demo scene for sharing a great deal of 6502 programming resources and overall inspiration.</li>
+<li>Jordan Mechner, sharing the Prince of Persia Apple II source code so I could test out a significant part of the assembler and the Merlin syntax mode</li>
+<li>Bill Budge, sharing the Pinball Construction Set Apple II source code, although at the point I tried it, all of it just assembled without any assembler issues at all.</li>
+</ul>
+
+<h3>
+<a id="development-status" class="anchor" href="#development-status" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Development Status</h3>
+
+<p>Looking for help testing various features of the assembler, I have a large number of tests that pass without fail but there are so many ways for assemblers to break.
+Primarily tested with personal archive of sources written for Kick assmebler, DASM, TASM, XASM, etc. and passing most of Apple II Prince of Persia and Pinball Construction set.</p>
+
+<p><strong>TODO</strong></p>
+
+<ul>
+<li>irp (indefinite repeat)</li>
+</ul>
+
+<p><strong>FIXED</strong></p>
+
+<ul>
+<li>Merlin macro parameters are not required on the MAC line, scope braces ('{', '}') can be used in the first column in Merlin.</li>
+<li>First line of a Merlin macro was sometimes ignored, two sequential subtractions were ignored in expressions.</li>
+<li>Pushing source contexts (macro, rept, include etc.) will always increment the scope depth.</li>
+<li>Fixed REPT / LUP to not destroy local symbols in the scope it was used in while also destroying local symbols within the repeating block correctly</li>
+<li>Switched over to inttypes.h from built-in types since the word unsigned was used a little too much in the code</li>
+<li>Removed the disassembler and put it into its own project <a href="http://github.com/sakrac/x65dsasm">x65dsasm</a>
+</li>
+<li>LUP/REPT directives clean up local symbols each iteration to avoid crossing over an iteration with branches to local labels.</li>
+<li>Fixed Merlin MAC directive which is a little different from normal assembler macros</li>
+<li>Labels can start with numbers and values will only be interpreted as decimal numbers if terminated by a character that is not an alphabetic character or underscore</li>
+<li>INCSYM failed with local labels, this is now properly handled. (fixed again..)</li>
+<li>INCBIN and IMPORT BINARY always failed (force 0 bytes length)</li>
+<li>Using more than 16 bytes of Pool labels was flawed as byte 15 and 16 would be the same address.</li>
+<li>Fixed STRUCT directive (failed if contained line was empty).</li>
+<li>Adding x65macro.i</li>
+<li>Vice symbols will generate breakpoints whenever label 'debugbreak' is encountered</li>
+<li>Evaluating '==' was broken</li>
+<li>Macros can have dots in their names</li>
+<li>Handling double negative in expressions (--35 == 35)</li>
+<li>Macros works within conditionals (if/else/endif, etc)</li>
+<li>String symbols broke late evaluation resulting in garbage references, this has been fixed</li>
+<li>Added string symbols</li>
+<li>Resolved the DirectPage_Stack section vs. Zeropage section for Apple II GS/OS executables.</li>
+<li>OMF export for Apple II GS/OS executables</li>
+</ul>
+
+<p><a href="../../wiki/fixes">(older fixes)</a></p>
+
+<p>Revisions:</p>
+
+<ul>
+<li>10 - String Symbols</li>
+<li>9 - Apple II GS OS executable</li>
+<li>8 - Fish food / Linking tested and passed with external project (Apple II gs Rastan)</li>
+<li>7 - 65816 Support</li>
+<li>6 - 65C02 support</li>
+<li>5 - Merlin syntax</li>
+<li>4 - Object files, relative sections and linking</li>
+<li>3 - 6502 full support</li>
+<li>2 - Moved file out of struse samples</li>
+<li>1 - Built a sample of a simple assembler within struse</li>
+</ul>
+        </section>
+
+        <aside id="sidebar">
+          <a href="https://github.com/Sakrac/x65/zipball/master" class="button">
+            <small>Download</small>
+            .zip file
+          </a>
+          <a href="https://github.com/Sakrac/x65/tarball/master" class="button">
+            <small>Download</small>
+            .tar.gz file
+          </a>
+
+          <p class="repo-owner"><a href="https://github.com/Sakrac/x65"></a> is maintained by <a href="https://github.com/Sakrac">Sakrac</a>.</p>
+
+          <p>This page was generated by <a href="https://pages.github.com">GitHub Pages</a> using the Architect theme by <a href="https://twitter.com/jasonlong">Jason Long</a>.</p>
+        </aside>
+      </div>
+    </div>
+
+  
+  </body>
+</html>
