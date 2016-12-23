@@ -101,6 +101,8 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Label Pools were destroyed after each scope so they did not work in include files which defeated their purpose. Label pools are now persistent through scopes.
+* Labels reserved from label pools now distinguish between global and local. Use [.!@$] as a prefix to reserve a local label from a label pool (previously always local)
 * Merlin macro parameters are not required on the MAC line, scope braces ('{', '}') can be used in the first column in Merlin.
 * First line of a Merlin macro was sometimes ignored, two sequential subtractions were ignored in expressions.
 * Pushing source contexts (macro, rept, include etc.) will always increment the scope depth.

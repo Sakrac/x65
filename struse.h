@@ -35,7 +35,7 @@ Add this #define to *one* C++ file before #include "struse.h" to create the impl
 #ifndef __STRUSE_H__
 #define __STRUSE_H__
 
-#include <inttypes.h>
+#include <inttypes.h> // uint8_t etc.
 #include <string.h> // memcpy, memmove
 #include <stdio.h> // printf, vsnprintf
 #include <stdarg.h> // va_list
@@ -90,6 +90,7 @@ public:
 	strl_t get_len() const { return length; }
 	char get_first() const { return (string && length) ? *string : 0; }
 	char get_last() const { return (string && length) ? string[length-1] : 0; }
+	char pop_first() { if (length && string) { char c = *string++; --length; return c; } return 0; }
 
 	strl_t limit_pos(strl_t pos) { return pos<length ? pos : length;  }
 
@@ -104,7 +105,8 @@ public:
 	unsigned int fnv1a(unsigned int seed = 2166136261) const;
 	unsigned int fnv1a_lower(unsigned int seed = 2166136261) const;
 	unsigned int fnv1a_append(unsigned int base_fnv1a_hash) const { return fnv1a(base_fnv1a_hash); }
-	uint64_t fnv1a_64(uint64_t seed = 0xcbf29ce484222325ULL) const;
+	unsigned short fnv1a_16( unsigned int seed = 2166136261 ) const;
+	uint64_t fnv1a_64(uint64_t seed = 14695981039346656037ULL) const;
 
     // whitespace ignore fnv1a (any sequence whitespace is replaced by one space)
     unsigned int fnv1a_ws(unsigned int seed = 2166136261) const;
@@ -125,7 +127,8 @@ public:
 
 	// convert hexadecimal string to unsigned integer
 	size_t ahextoui() const;
-	size_t ahextoui_skip();
+	uint64_t ahextou64() const;
+	uint64_t ahextoui_skip();
 	size_t abinarytoui_skip();
 
 	// output string with newline (printf)
@@ -230,7 +233,7 @@ public:
 	strl_t len_float_number() const;
 
 	// count characters that can be converted to a hexadecimal number
-	strl_t len_hex() const { for (strl_t i = 0; i < length; i++) { if (!is_hex((uint8_t)string[i])) return i; } return length; }
+	strl_t len_hex() const;
 
 	// check if string is a valid floating point number
 	bool is_float_number() const { return valid() && len_float_number() == length; }
@@ -322,10 +325,11 @@ public:
 
 	// return position in this string of the first occurrence of the argument or negative if not found, not case sensitive
 	int find(const strref str) const;
+	int find(const strref str, strl_t pos) const;	// find first instance after pos
 	int find_bookend(const strref str, const strref bookend) const;
 
 	// return position in this string of the first occurrence of the argument or negative if not found, not case sensitive
-	int find(const char *str) const;
+	int find(const char *str, strl_t pos = 0) const;
 	strl_t find_or_full(const char *str) const { int f = find(str); return f < 0 ? length : strl_t(f); }
 
 	// return position in this string of the first occurrence of the argument or negative if not found, case sensitive
@@ -346,9 +350,6 @@ public:
 
 	// return position in this string of the last occurrence of the argument or negative if not found, case sensitive
 	int find_last_case(const strref str) const;
-
-	// find first instance after pos
-	int find(const strref str, strl_t pos) const;
 
 	// find first instance after pos allowing escape codes in search string
 	int find_esc(const strref str, strl_t pos) const;
@@ -374,6 +375,10 @@ public:
     int count_lines(strl_t pos) const { return strref(string, pos<length ? pos : length).count_lines(); }
 	int count_lines(strref substring) const { return is_substr(substring.get()) ?
 		count_lines(strl_t(substring.get()-get())) : -1; }
+
+	strl_t prev_line_pos( strl_t pos );
+	strl_t start_line_pos( strl_t pos );
+	strl_t end_line_pos( strl_t pos );
 
 	// rolling hash find
 	int find_rh(strref str) const { return _find_rh(get(), get_len(), str.get(), str.get_len()); }
@@ -429,6 +434,9 @@ public:
 
 	// move string forward to the first whitespace character
 	void skip_to_whitespace() { skip(len_grayspace()); }
+
+	// if bom detected skip it
+	strref skip_bom();
 
 	// cut white space characters at end of string
 	void clip_trailing_whitespace() { if (valid()) {
@@ -543,6 +551,9 @@ public:
 	strref after_last(char c) const { int o = find_last(c); if (o>=0)
 			return strref(string+o+1, length-o-1); return strref(); }
 
+	strref after_last(char c, char d) const { int o = find_last(c, d); if (o>=0)
+		return strref(string+o+1, length-o-1); return strref(); }
+
 	strref get_alphanumeric() const { strref r(*this); r.skip_whitespace();
 		if (strl_t l = r.len_alphanumeric()) return strref(string, l); return strref(); }
 	
@@ -558,25 +569,26 @@ public:
         if (e>=0) return get_substr(strl_t(s+1), strl_t(e-s-1)); } return strref(); }
 
 	// tokenization
-	strref split(strl_t pos) { pos = limit_pos(pos); strref ret = strref(string, pos); *this += pos; return ret; }
-	strref split(int pos) { split(strl_t(pos)); }
-	strref split_token(char c) { int t = find(c); if (t<0) t = (int)length; strref r = strref(string, strl_t(t)); *this += t+1; return r; }
-	strref split_token_any(const strref chars) { strref r; int t = find_any_char_of(chars);
-		if (t>=0) { r = strref(string, t); *this += t; } return r; }
-	strref split_token_trim(char c) { strref r = split_token(c); skip_whitespace(); r.trim_whitespace(); return r; }
-	strref split_token_any_trim(const strref chars) { int t = find_any_char_of(chars);
-		if (t<0) t = (int)length; strref r = strref(string, t); *this += t+1; r.trim_whitespace(); return r; }
-	strref split_range(const strref range, strl_t pos=0) { int t = find_any_char_or_range(range, pos);
-		if (t<0) t = (int)length; strref r = strref(string, t); *this += t; return r; }
-	strref split_range_trim(const strref range, strl_t pos=0) { int t = find_any_char_or_range(range, pos);
-		if (t<0) t = (int)length; strref r = strref(string, t); *this += t; r.trim_whitespace(); trim_whitespace(); return r; }
-	strref split_label() { skip_whitespace(); strref r(string, len_label()); *this += r.length; skip_whitespace(); return r; }
+	strref split(strl_t pos);
+	strref split(int pos);
+	strref split_token(char c);
+	strref split_token_any(const strref chars);
+	strref split_token_trim(char c);
+	strref split_token_any_trim(const strref chars);
+	strref split_range(const strref range, strl_t pos=0);
+	strref split_range_trim(const strref range, strl_t pos=0);
+	strref split_label();
+	strref split_lang();
+
+	// get a snippet, previous and full current line around a position
+	strref get_snippet( strl_t pos );
 
 	// grab a block of text starting with (, [ or { and end with the corresponding number of ), ] or }
 	strref scoped_block_skip();
 
 	// scoped_block_skip with C style comments
-	strref scoped_block_comment_skip(bool include = false);
+	strl_t scoped_block_comment_len();
+	strref scoped_block_comment_skip(bool include = false) { strref ret = split(scoped_block_comment_len()); if (!include) { ++ret; ret.clip(1); } return ret; }
 
 	// check matching characters that are terminated by any character in term or ends
 	strl_t match_chars_str(const strref match, const strref term = strref());
@@ -614,8 +626,6 @@ strl_t _strmod_copy(char *string, strl_t cap, const char *str);
 strl_t _strmod_copy(char *string, strl_t cap, strref str);
 strl_t _strmod_append(char *string, strl_t length, strl_t cap, const char *str);
 strl_t _strmod_append(char *string, strl_t length, strl_t cap, strref str);
-strl_t _strmod_relativize_path(char *string, strl_t cap, strref base_path, strref target_path);
-strl_t _strown_absolutize_path(char *string, strl_t cap, strref base_path, strref relative_path);
 strl_t _strmod_insert(char *string, strl_t length, strl_t cap, const strref sub, strl_t pos);
 strl_t _strmod_utf8_tolower(char *string, strl_t length, strl_t cap);
 void _strmod_substrcopy(char *string, strl_t length, strl_t cap, strl_t src, strl_t dst, strl_t chars);
@@ -625,6 +635,8 @@ strl_t _strmod_format_insert(char *string, strl_t length, strl_t cap, strl_t pos
 strl_t _strmod_remove(char *string, strl_t length, char a);
 strl_t _strmod_remove(char *string, strl_t length, strl_t start, strl_t len);
 strl_t _strmod_exchange(char *string, strl_t length, strl_t cap, strl_t start, strl_t size, const strref insert);
+strl_t _strmod_cleanup_path(char *file, strl_t len);
+strl_t _strmod_relative_path(char *out, strl_t cap, strref orig, strref target);
 
 // intermediate template class to support writeable string classes. use strown or strovl which inherits from this.
 template <class B> class strmod : public B {
@@ -731,14 +743,14 @@ public:
 	int find_after_last(char a, char b) const { return get_strref().find_after_last(a, b); }
 	int find_after_last(char a1, char a2, char b) const { return get_strref().find_after_last(a1, a2, b); }
 	int find(const strref str) const { return get_strref().find(str); }
-	int find(const char *str) const { return get_strref().find(str); }
+	int find(const strref str, strl_t pos) const { get_strref().find(str, pos); }
+	int find(const char *str, strl_t pos = 0) const { return get_strref().find(str, pos); }
 	int find_case(const strref str) const { return get_strref().find_case(str); }
 	int find_case(const char *str) const { return get_strref().find_case(str); }
 	int find_last(const strref str) const { return get_strref().find_last(str); }
 	int find_last(const char *str) const { return get_strref().find_last(str); }
 	int find_last_case(const strref str) const { return get_strref().find_last_case(str); }
 	int substr_count(const strref p) const { return get_strref().substr_count(p); }
-	int find(const strref str, strl_t pos) const { get_strref().find(str, pos); }
 
 	// rolling hash string search
 	int find_rh(strref str) const { return get_strref().find_rh(str); }
@@ -869,8 +881,8 @@ public:
 	strmod& operator<<(strref str) { return append(str); }
 
 	// append a character repeatedly
-	void append_to(char c, strl_t pos) { if (len() >= pos) set_len_int(pos); else {
-		strl_t ol = len(); set_len(pos); for (strl_t p = ol; p < len(); ++p) charstr()[p] = c; } }
+	strmod& pad_to(char c, strl_t pos) { if (len() >= pos) set_len_int(pos); else {
+		strl_t ol = len(); set_len(pos); for (strl_t p = ol; p < len(); ++p) charstr()[p] = c; } return *this; }
 
 	// prepend this string with a substring
 	void prepend(const strref o) { insert(o, 0); }
@@ -951,6 +963,17 @@ public:
 	void erase(strl_t pos, strl_t length) { if (pos<len()) { if ((pos+length)>len())
 		length = len()-pos; if (length) { for (strl_t i = 0; i<length; i++)
 		charstr()[pos+i] = charstr()[pos+i+length];	} sub_len_int(length); } }
+
+	strmod& cleanup_path() { 
+		set_len(_strmod_cleanup_path(charstr(), get_len()));
+		return *this;
+	}
+
+	// find a relative path between an original folder and a target file path (returns this as a strref)
+	strmod& relative_path(strref orig_folder, strref target_path) { 
+		set_len(_strmod_relative_path(charstr(), cap(), orig_folder, target_path));
+		return *this;
+	}
 };
 
 template <strl_t S> class strown_base {
@@ -1398,6 +1421,14 @@ unsigned int strref::fnv1a(unsigned int seed) const
 	return hash;
 }
 
+// get 16 bit fnv1a hash of a string, this is officially done by xor folding
+unsigned short strref::fnv1a_16(unsigned int seed) const
+{
+	unsigned int hash = fnv1a(seed);
+	return (unsigned short)(hash ^ (hash>>16));
+}
+
+
 uint64_t strref::fnv1a_64(uint64_t seed) const
 {
 	uint64_t hash = seed;
@@ -1405,7 +1436,7 @@ uint64_t strref::fnv1a_64(uint64_t seed) const
 		unsigned const char *scan = (unsigned const char*)string;
 		strl_t left = length;
 		while (left--)
-			hash = (*scan++ ^ hash) * 0x100000001b3ULL;
+			hash = (*scan++ ^ hash) * 1099511628211;
 	}
 	return hash;
 }
@@ -1431,7 +1462,7 @@ unsigned int strref::fnv1a_ws(unsigned int seed) const
         uint8_t c = *scan++;
         if (c<' ')
             c = ' ';
-        hash = (*scan++ ^ hash) * 16777619;
+        hash = (c ^ hash) * 16777619;
         if (c==' ') {
             while (left && *scan<=0x20) {
                 left--;
@@ -1468,17 +1499,19 @@ uint64_t strref::atoui() const
 {
 	if (string) {
 		const unsigned char *s = get_u();
-		const unsigned char *e = s + length;
-		while (s!=e && *s<=0x20) s++;
-		if (s<e) {
-			uint64_t v = 0;
-			while (s!=e) {
-				unsigned char c = *s++;
-				if (c<'0' || c>'9') break;
-				v = c-'0' + v*10;
-			}
-			return v;
+		strl_t left = length;
+
+		while (left && *s<=0x20) { s++; left--; }
+		if (left>=2 && *s=='0' && s[1]=='x' ) { return ahextou64(); }
+
+		uint64_t v = 0;
+		while (left) {
+			unsigned char c = *s++;
+			if (c<'0' || c>'9') break;
+			v = c-'0' + v*10;
+			--left;
 		}
+		return v;
 	}
 	return 0;
 }
@@ -1561,7 +1594,37 @@ size_t strref::ahextoui() const
 }
 
 // convert a hexadecimal string to an unsigned integer
-size_t strref::ahextoui_skip()
+uint64_t strref::ahextou64() const
+{
+	const char *scan = string;
+	strl_t left = length;
+	while (*scan<=0x20 && left) {
+		scan++;
+		left--;
+	}
+	if (!left)
+		return 0;
+	if (left>2 && *scan=='0' && (scan[1]=='x' || scan[1]=='X')) {
+		scan += 2;
+		left -= 2;
+	}
+	uint64_t hex = 0;
+	while (left) {
+		char c = *scan++;
+		left--;
+		if (c>='0' && c<='9')
+			hex = (hex<<4) | (c-'0');
+		else if (c>='a' && c<='f')
+			hex = (hex<<4) | (c-'a'+10);
+		else if (c>='A' && c<='F')
+			hex = (hex<<4) | (c-'A'+10);
+		else
+			break;
+	}
+	return hex;
+}
+// convert a hexadecimal string to an unsigned integer
+uint64_t strref::ahextoui_skip()
 {
 	const char *scan = string;
 	strl_t left = length;
@@ -1575,7 +1638,8 @@ size_t strref::ahextoui_skip()
 		scan += 2;
 		left -= 2;
 	}
-	strl_t hex = 0;
+	if( left > 16 ) { left = 16; }
+	uint64_t hex = 0;
 	while (left) {
 		char c = *scan;
 		if (c>='0' && c<='9')
@@ -1663,6 +1727,17 @@ int strref::count_char(char c) const
 		left--;
 	}
 	return count;
+}
+
+// skip bom header of a utf-8 file if detected
+strref strref::skip_bom()
+{
+	const uint8_t* buf = get_u();
+	if( length >= 3 && buf && buf[ 0 ] == 0xef && buf[ 1 ] == 0xbb && buf[ 2 ] == 0xbf )
+	{
+		return strref( string + 3, length - 3 );
+	}
+	return *this;
 }
 
 // find a character in a string
@@ -2446,9 +2521,9 @@ int strref::find_esc(const strref str, strl_t pos) const
 }
 
 // find a substring within a string case ignored
-int strref::find(const char *str) const
+int strref::find(const char *str, strl_t pos) const
 {
-	if (!str || !valid())
+	if (!str || !valid() || pos>=length)
 		return -1;
 
 	const uint8_t *stru = (const uint8_t*)str;
@@ -2456,10 +2531,10 @@ int strref::find(const char *str) const
 	if (!c)
 		return 0;
 
-	const uint8_t *scan = get_u();
+	const uint8_t *scan = get_u() + pos;
 	const uint8_t *compare = stru;
 
-	strl_t l = length;
+	strl_t l = length - pos;
 	while (l) {
 		if (int_tolower_ascii7(*scan++)==c) {
 			bool equal = true;
@@ -3133,6 +3208,42 @@ int strref::count_lines() const {
         }
     }
     return count;
+}
+
+strl_t strref::prev_line_pos( strl_t pos )
+{
+	if( !pos || !length ) { return pos; }
+
+	const char *start = string;
+	pos = pos < length ? pos : length;
+	--pos;
+	char c = start[pos];
+	if( c==0x0a || c==0x0d ) --pos;
+	if(pos && ((c==0x0a && start[pos]==0x0d) || (c==0x0d && start[pos]==0x0a))) --pos;
+	while( pos && start[pos-1]!=0x0a && start[pos-1]!=0x0d ) --pos;
+	return pos;
+}
+
+strl_t strref::start_line_pos( strl_t pos )
+{
+	if( !pos || !length ) { return pos; }
+
+	const char *start = string;
+	pos = pos < length ? pos : length;
+	--pos;
+	while( pos && start[pos-1]!=0x0a && start[pos-1]!=0x0d ) --pos;
+	return pos;
+}
+
+strl_t strref::end_line_pos( strl_t pos )
+{
+	const char *start = string;
+	if( pos > length ) { return length; }
+	while( pos < length ) {
+		if (start[pos]==0x0a || start[pos] == 0x0d) { return pos; }
+		++pos;
+	}
+	return pos;
 }
 
 
@@ -3956,6 +4067,115 @@ int strref::find_quoted(char d) const
 	return -1;
 }
 
+strref strref::split( strl_t pos ) { 
+	pos = limit_pos( pos );
+	strref ret = strref( string, pos );
+	*this += pos;
+	return ret;
+}
+
+strref strref::split( int pos ) {
+	return split( strl_t( pos ) );
+}
+
+strref strref::split_token( char c ) {
+	int t = find( c );
+	if ( t < 0 ) t = ( int )length;
+	strref r = strref( string, strl_t( t ) );
+	*this += t + 1;
+	return r;
+}
+
+strref strref::split_token_any( const strref chars )
+{
+	strref r; int t = find_any_char_of( chars );
+	if ( t >= 0 ) {
+		r = strref( string, t );
+		*this += t;
+	}
+	return r;
+}
+
+strref strref::split_token_trim( char c ) {
+	strref r = split_token( c );
+	skip_whitespace();
+	r.trim_whitespace();
+	return r;
+}
+
+strref strref::split_token_any_trim( const strref chars )
+{
+	int t = find_any_char_of( chars );
+	if ( t < 0 ) t = ( int )length;
+	strref r = strref( string, t );
+	*this += t + 1;
+	r.trim_whitespace();
+	return r;
+}
+
+strref strref::split_range( const strref range, strl_t pos )
+{
+	int t = find_any_char_or_range( range, pos );
+	if ( t < 0 ) t = ( int )length;
+	strref r = strref( string, t );
+	*this += t;
+	return r;
+}
+strref strref::split_range_trim( const strref range, strl_t pos )
+{
+	int t = find_any_char_or_range( range, pos );
+	if ( t < 0 ) t = ( int )length;
+	strref r = strref( string, t );
+	*this += t;
+	r.trim_whitespace();
+	trim_whitespace();
+	return r;
+}
+
+strref strref::split_label() {
+	skip_whitespace();
+	strref r( string, len_label() );
+	*this += r.length; 
+	skip_whitespace(); 
+	return r;
+}
+
+// split string based on common programming tokens (words, quotes, scopes, numbers)
+strref strref::split_lang()
+{
+	skip_whitespace();
+	char c = get_first();
+	strl_t l = 1;
+	if (c == '"')
+	{
+		int f = find_after('"', 1);
+		l = f >= 0 ? (strl_t)(f+1) : get_len();
+	}
+	else if (c == '{' || c=='(')
+	{
+		strref f2(*this);
+		l = f2.scoped_block_comment_skip(true).get_len();
+	}
+	else if (strref::is_number(c) || c == '-')
+	{
+		if ((c == '0' && string[1] == 'x') || string[1] == 'X')
+			l = 2 + (*this + 2).len_hex();
+		else
+			l = len_float_number();
+	}
+	else
+		l = len_grayspace();
+	strref r = split(l);	// control character
+	return r;
+}
+
+strref strref::get_snippet( strl_t pos )
+{
+	strref snippet(string, end_line_pos(pos));
+	snippet.skip(snippet.prev_line_pos(snippet.start_line_pos(pos)));
+	return snippet;
+}
+
 // grab a block of text starting with (, [ or { and end with the corresponding number of ), ] or }
 strref strref::scoped_block_skip()
 {
@@ -3987,12 +4207,12 @@ strref strref::scoped_block_skip()
 }
 
 // scoped_block_skip with C style comments
-strref strref::scoped_block_comment_skip(bool include)
+strl_t strref::scoped_block_comment_len()
 {
 	char scope = get_first();
-	if (length && (scope == '(' || scope == '[' || scope == '{'))
+	if (length && (scope == '(' || scope == '[' || scope == '{' || scope == '<'))
 	{
-		char close = scope == '(' ? ')' : (scope == '[' ? ']' : '}');
+		char close = scope == '<' ? '>' : (scope == '(' ? ')' : (scope == '[' ? ']' : '}'));
 		const char *scan = string;
 		strl_t depth = 0;
 		strl_t left = length;
@@ -4010,20 +4230,13 @@ strref strref::scoped_block_comment_skip(bool include)
 			else if (c == close)
 				depth--;
 		} while (depth && left);
-		if (!depth) {
-			strl_t block_len = strl_t(scan - string);
-			strref block = strref(string, block_len);
-			if (!include) {
-				block.string++;
-				block.length -= 2;
-			}
-			string += block_len;
-			length -= block_len;
-			return block;
-		}
+		if (!depth)
+			return strl_t(scan-string);
 	}
-	return strref();
+	return 0;
 }
+
+
 
 // return the current line of text and move this string ahead to the next.
 // note: supports all known line feed configurations.
@@ -4151,6 +4364,16 @@ strl_t strref::len_float_number() const
 
 	// return size of floating point number
 	return has_value ? length-left : 0;
+}
+
+// count number of valid hexadecimal characters, leading 0x not valid
+strl_t strref::len_hex() const
+{
+	for (strl_t i = 0; i < length; i++) {
+		if (!is_hex((uint8_t)string[i]))
+			return i;
+	}
+	return length;
 }
 
 // insert a substring into a string
@@ -4774,6 +4997,81 @@ strl_t _strmod_utf8_toupper(char *string, strl_t length, strl_t cap) {
 		cap -= skip;
 	}
 	return (strl_t)(end-string);
+}
+
+strl_t _strmod_cleanup_path(char *file, strl_t len)
+{
+	strl_t pos = 0;
+	char *trg = file;
+	while (len) {
+		len--;
+		char c = *file++;
+		if (c=='/')
+			c='\\';
+		trg[pos] = c;
+		if ((c=='/' || c=='\\') && len>=3 && *file=='.' && file[1]=='.' && (file[2] =='/' || file[2]=='\\') && pos) {
+			// attempt to rewind
+			strl_t rew = pos-1;
+			while (rew) {
+				if (trg[rew-1] == '/' || trg[rew-1]=='\\')
+					break;
+				--rew;
+			}
+			pos = rew;
+			file += 3;
+			len -= 3;
+		} else {
+			++pos;
+		}
+	}
+	return pos;
+}
+
+// determine a 
+strl_t _strmod_relative_path(char *out, strl_t cap, strref orig, strref target)
+{
+	// remove trailing folder separator from source
+	char c = orig.get_last();
+	if (c=='/' || c=='\\')
+		orig.clip(1);
+
+	// skip as many characters as matches at start of path
+	strl_t same_count = orig.prefix_len(target, '/', '\\');
+
+	// make sure that prior character is a folder (sub paths may share a prefix)
+	if (same_count != orig.get_len()) {
+		while( same_count ) {
+			c = orig.get()[same_count-1];
+			if (c == '/' || c=='\\')
+				break;
+			--same_count;
+		}
+	}
+
+	// orig may be a path without ending in a folder separator
+	if (same_count == orig.get_len() && target.get_len() > same_count && (target.get()[same_count] == '/' || target.get()[same_count]=='\\'))
+		++same_count;
+
+	// skip the path of the path that is the same
+	orig += same_count;
+	target += same_count;
+
+	// count the number of folders to step up (number of folder separators)
+	strl_t step_up = orig.count_char('/') + orig.count_char('\\');
+	strl_t len = 0;
+	while (step_up-- && cap) {
+		strl_t add = _strmod_copy(out, cap, "../");
+		out += add;
+		len += add;
+		cap -= add;
+	}
+	c = target.get_first();
+	if (c=='/' || c=='\\')
+		++target;
+
+	if (cap)
+		len += _strmod_copy(out, cap, target);
+	return len;
 }
 
 #endif // STRUSE_IMPLEMENTATION

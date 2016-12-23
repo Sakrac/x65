@@ -1590,7 +1590,6 @@ public:
 	LabelPool* GetLabelPool(strref pool_name);
 	StatusCode AddLabelPool(strref name, strref args);
 	StatusCode AssignPoolLabel(LabelPool &pool, strref args);
-	void FlushLabelPools(int scope_exit);
 
 	// Late expression evaluation
 	void AddLateEval(int target, int pc, int scope_pc, strref expression,
@@ -2070,16 +2069,16 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 								int start_block = FixedExport[f]->address;
 								int end_block = FixedExport[f + 1]->start_address;
 								if ((end_block - start_block) >= (i->address - i->start_address)) {
-									int addr = start_block;
+									int addr_block = start_block;
 									int sec = id;
 									while (sec >= 0) {
 										Section &s = allSections[sec];
-										addr += s.align_address <= 1 ? 0 :
-											(s.align_address - (addr % s.align_address)) % s.align_address;
-										addr += s.address - s.start_address;
+										addr_block += s.align_address <= 1 ? 0 :
+											(s.align_address - (addr_block % s.align_address)) % s.align_address;
+										addr_block += s.address - s.start_address;
 										sec = s.next_group;
 									}
-									if (addr <= end_block) {
+									if (addr_block <= end_block) {
 										insert_after = f;
 										break;
 									}
@@ -2681,7 +2680,6 @@ StatusCode Asm::ExitScope()
 	StatusCode error = FlushLocalLabels(scope_depth);
 	if (error >= FIRST_ERROR)
 		return error;
-	FlushLabelPools(scope_depth);
 	--scope_depth;
 	if (scope_depth<0)
 		return ERROR_UNBALANCED_SCOPE_CLOSURE;
@@ -2886,17 +2884,17 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			if (tag) {
 				strref match("]*{0-9}");
 				strl_t pos = 0;
-				while (strref tag = macexp.find_wildcard(match, pos)) {
+				while (strref tag_mac = macexp.find_wildcard(match, pos)) {
 					bool success = false;
-					strl_t offs = strl_t(tag.get() - macexp.get());
+					strl_t offs = strl_t(tag_mac.get() - macexp.get());
 					if (!offs || !strref::is_valid_label(macexp[offs])) {
-						int t = (int)(tag + 1).atoi();
+						int t = (int)(tag_mac + 1).atoi();
 						strref args = arg;
 						if (t > 0) {
 							for (int skip = 1; skip < t; skip++)
 								args.split_token_trim(';');
 							strref a = args.split_token_trim(';');
-							macexp.exchange(offs, tag.get_len(), a);
+							macexp.exchange(offs, tag_mac.get_len(), a);
 							pos += a.get_len();
 							success = true;
 						}
@@ -2981,7 +2979,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 	while (strref line = declaration.line()) {
 		line = line.before_or_full(',');
 		line.trim_whitespace();
-		strref name = line.split_token_trim('=');
+		strref member_name = line.split_token_trim('=');
 		line = line.before_or_full(';').before_or_full(c_comment).get_trimmed_ws();
 		if (line) {
 			StatusCode error = EvalExpression(line, etx, value);
@@ -2992,7 +2990,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		}
 		struct MemberOffset member;
 		member.offset = (uint16_t)value;
-		member.name = name;
+		member.name = member_name;
 		member.name_hash = member.name.fnv1a();
 		member.sub_struct = strref();
 		structMembers.push_back(member);
@@ -3898,18 +3896,6 @@ LabelPool* Asm::GetLabelPool(strref pool_name)
 	return nullptr;
 }
 
-// When going out of scope, label pools are deleted.
-void Asm::FlushLabelPools(int scope_exit)
-{
-	uint32_t i = 0;
-	while (i<labelPools.count()) {
-		if (labelPools.getValue(i).scopeDepth >= scope_exit)
-			labelPools.remove(i);
-		else
-			++i;
-	}
-}
-
 // Add a label pool
 StatusCode Asm::AddLabelPool(strref name, strref args)
 {
@@ -3970,16 +3956,19 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 {
 	strref type = label;
-	label = type.split_token('.');
 	int bytes = 1;
-	switch (strref::tolower(type.get_first())) {
-		case 'l': bytes = 4; break;
-		case 't': bytes = 3; break;
-		case 'd':
-		case 'w': bytes = 2; break;
+	int sz = label.find_at( '.', 1 );
+	if (sz > 0) {
+		label = type.split( sz );
+		++type;
+		switch (strref::tolower(type.get_first())) {
+			case 'l': bytes = 4; break;
+			case 't': bytes = 3; break;
+			case 'd':
+			case 'w': bytes = 2; break;
+		}
 	}
-	if (GetLabel(label))
-		return ERROR_POOL_LABEL_ALREADY_DEFINED;
+	if (GetLabel(label)) { return ERROR_POOL_LABEL_ALREADY_DEFINED; }
 	uint32_t addr;
 	StatusCode error = pool.Reserve(bytes, addr);
 	if (error != STATUS_OK)
@@ -3997,7 +3986,9 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->external = false;
 	pLabel->reference = false;
 
-	MarkLabelLocal(label, true);
+	if (label[ 0 ] == '.' || label[ 0 ] == '@' || label[ 0 ] == '!' || label[ 0 ] == ':' || label.get_last() == '$') {
+		MarkLabelLocal( label, true );
+	}
 	LabelAdded(pLabel, !!pool.scopeDepth);
 	return error;
 }
@@ -5998,7 +5989,7 @@ bool Asm::List(strref filename)
 							if (line_fix[pos] == '\t')
 								line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
 						}
-						out.append_to(' ', aCPUs[cpu].timing ? 40 : 33);
+						out.pad_to(' ', aCPUs[cpu].timing ? 40 : 33);
 						out.append(line_fix.get_strref());
 						fprintf(f, STRREF_FMT "\n", STRREF_ARG(out));
 						out.clear();
@@ -6018,10 +6009,10 @@ bool Asm::List(strref filename)
 			}
 			if (lst.startClock() && cycles_depth<MAX_DEPTH_CYCLE_COUNTER) {
 				cycles_depth++;	cycles[cycles_depth].clr();
-				out.append_to(' ', 6); out.sprintf_append("c>%d", cycles_depth);
+				out.pad_to(' ', 6); out.sprintf_append("c>%d", cycles_depth);
 			}
 			if (lst.stopClock()) {
-				out.append_to(' ', 6);
+				out.pad_to(' ', 6);
 				if (cycles[cycles_depth].complex())
 					out.sprintf_append("c<%d = %d + m%d + i%d + d%d", cycles_depth,
 						cycles[cycles_depth].base, cycles[cycles_depth].a16,
@@ -6035,7 +6026,7 @@ bool Asm::List(strref filename)
 				}
 			}
 			if (lst.size && lst.wasMnemonic()) {
-				out.append_to(' ', 18);
+				out.pad_to(' ', 18);
 				uint8_t *buf = si->output + lst.address;
 				uint8_t op = mnemonic[*buf];
 				uint8_t am = addrmode[*buf];
@@ -6065,7 +6056,7 @@ bool Asm::List(strref filename)
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
 					if (aCPUs[cpu].timing) {
 						cycles[cycles_depth].add(aCPUs[cpu].timing[*buf]);
-						out.append_to(' ', 33);
+						out.pad_to(' ', 33);
 						if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf])==1)
 							out.sprintf_append("%d+", cycleCnt::get_base(aCPUs[cpu].timing[*buf]));
 						else if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf]))
@@ -6076,7 +6067,7 @@ bool Asm::List(strref filename)
 				}
 			}
 
-			out.append_to(' ', aCPUs[cpu].timing ? 40 : 33);
+			out.pad_to(' ', aCPUs[cpu].timing ? 40 : 33);
 			strref line = lst.code.get_skipped(lst.line_offs).get_line();
 			line.clip_trailing_whitespace();
 			strown<128> line_fix(line);
@@ -7138,19 +7129,19 @@ int main(int argc, char **argv)
 							file.append(aAppendNames[e]);
 							file.append('.');
 							file.append(ext);
-							int size;
+							int size_export;
 							int addr;
-							if (uint8_t *buf = assembler.BuildExport(aAppendNames[e], size, addr)) {
+							if (uint8_t *buf = assembler.BuildExport(aAppendNames[e], size_export, addr)) {
 								if (FILE *f = fopen(file.c_str(), "wb")) {
 									if (load_header) {
 										uint8_t load_addr[2] = { (uint8_t)addr, (uint8_t)(addr >> 8) };
 										fwrite(load_addr, 2, 1, f);
 									}
 									if (size_header) {
-										uint8_t byte_size[2] = { (uint8_t)size, (uint8_t)(size >> 8) };
+										uint8_t byte_size[2] = { (uint8_t)size_export, (uint8_t)(size_export >> 8) };
 										fwrite(byte_size, 2, 1, f);
 									}
-									fwrite(buf, size, 1, f);
+									fwrite(buf, size_export, 1, f);
 									fclose(f);
 								}
 								free(buf);
@@ -7169,8 +7160,8 @@ int main(int argc, char **argv)
 								   (int)i, STRREF_ARG(s.name), s.dummySection ? "yes" : "no",
 								   s.IsRelativeSection() ? "yes" : "no", s.IsMergedSection() ? "yes" : "no", s.start_address, s.address);
 							if (s.pRelocs) {
-								for (relocList::iterator i = s.pRelocs->begin(); i != s.pRelocs->end(); ++i)
-									printf("\tReloc value $%x at offs $%x section %d\n", i->base_value, i->section_offset, i->target_section);
+								for (relocList::iterator rel = s.pRelocs->begin(); rel != s.pRelocs->end(); ++rel)
+									printf("\tReloc value $%x at offs $%x section %d\n", rel->base_value, rel->section_offset, rel->target_section);
 							}
 						}
 					}
