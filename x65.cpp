@@ -55,8 +55,8 @@
 #define MAX_EVAL_OPER 64
 
 // Max capacity of each label pool
-#define MAX_POOL_RANGES 4
-#define MAX_POOL_BYTES 128
+#define MAX_POOL_RANGES 1
+#define MAX_POOL_BYTES 255
 
 // Max number of exported binary files from a single source
 #define MAX_EXPORT_FILES 64
@@ -878,6 +878,7 @@ static const strref import_c64("c64");
 static const strref import_text("text");
 static const strref import_object("object");
 static const strref import_symbols("symbols");
+static const strref pool_subpool("pool");
 static const char* aAddrModeFmt[] = {
 	"%s ($%02x,x)",			// 00
 	"%s $%02x",				// 01
@@ -1344,13 +1345,16 @@ typedef struct sLocalLabelRecord {
 	bool scope_reserve;		// not released for global label, only scope	
 } LocalLabelRecord;
 
+
+
+
 // Label pools allows C like stack frame label allocation
 typedef struct sLabelPool {
 	strref pool_name;
 	int16_t numRanges;		// normally 1 range, support multiple for ease of use
 	int16_t scopeDepth;		// Required for scope closure cleanup
 	uint16_t ranges[MAX_POOL_RANGES*2];		// 2 shorts per range
-	uint32_t usedMap[(MAX_POOL_BYTES+15)>>4];	// 2 bits per byte to store byte count of label
+	uint8_t allocated[MAX_POOL_BYTES][2];	// 1 byte offset, 1 byte length, in-order array
 	StatusCode Reserve(int numBytes, uint32_t &addr);
 	StatusCode Release(uint32_t addr);
 } LabelPool;
@@ -3940,32 +3944,65 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	pool.pool_name = name;
 	pool.numRanges = (int16_t)(ranges>>1);
 	pool.scopeDepth = (int16_t)scope_depth;
+	memset( pool.allocated, 0, sizeof( pool.allocated ) );
 
-	memset(pool.usedMap, 0, sizeof(uint32_t) * num32);
 	for (int r = 0; r<ranges; r++)
 		pool.ranges[r] = aRng[r];
 
 	labelPools.insert(ins, pool_hash);
 	LabelPool &poolValue = labelPools.getValue(ins);
-
 	poolValue = pool;
 
 	return STATUS_OK;
 }
 
+
 StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 {
+	// declaring a pool within another pool?
+	if (pool_subpool.is_prefix_word(label)) {
+		label += pool_subpool.get_len();
+		label.skip_whitespace();
+		strref size = label;
+		label = size.split_label();
+		if (strref::is_number(size.get_first())) {
+			uint32_t bytes = (uint32_t)size.atoi();
+			if (!bytes) { return ERROR_POOL_RANGE_EXPRESSION_EVAL; }
+			if (!GetLabelPool(label)) {
+				uint32_t addr;
+				StatusCode error = pool.Reserve(bytes, addr);
+				if( error == STATUS_OK ) {
+					uint32_t pool_hash = label.fnv1a();
+					uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
+					labelPools.insert(ins, pool_hash);
+					LabelPool &subPool = labelPools.getValue(ins);
+					subPool.pool_name = label;
+					subPool.numRanges = 1;
+					subPool.scopeDepth = (int16_t)scope_depth;
+					memset( subPool.allocated, 0, sizeof( subPool.allocated ) );
+					subPool.ranges[ 0 ] = (uint16_t)addr;
+					subPool.ranges[ 1 ] = uint16_t(addr+bytes);
+				}
+				return error;
+			} else { return ERROR_LABEL_POOL_REDECLARATION; }
+		}
+		return ERROR_POOL_RANGE_EXPRESSION_EVAL;
+	}
 	strref type = label;
 	int bytes = 1;
 	int sz = label.find_at( '.', 1 );
 	if (sz > 0) {
 		label = type.split( sz );
 		++type;
-		switch (strref::tolower(type.get_first())) {
-			case 'l': bytes = 4; break;
-			case 't': bytes = 3; break;
-			case 'd':
-			case 'w': bytes = 2; break;
+		if (strref::is_number(type.get_first())) {
+			bytes = (int)type.atoi();
+		} else {
+			switch (strref::tolower(type.get_first())) {
+				case 'l': bytes = 4; break;
+				case 't': bytes = 3; break;
+				case 'd':
+				case 'w': bytes = 2; break;
+			}
 		}
 	}
 	if (GetLabel(label)) { return ERROR_POOL_LABEL_ALREADY_DEFINED; }
@@ -3973,9 +4010,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	StatusCode error = pool.Reserve(bytes, addr);
 	if (error != STATUS_OK)
 		return error;
-
 	Label *pLabel = AddLabel(label.fnv1a());
-
 	pLabel->label_name = label;
 	pLabel->pool_name = pool.pool_name;
 	pLabel->evaluated = true;
@@ -3996,67 +4031,59 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 // Request a label from a pool
 StatusCode LabelPool::Reserve(int numBytes, uint32_t &ret_addr)
 {
-	uint32_t *map = usedMap;
-	uint16_t *pRanges = ranges;
-	for (int r = 0; r<numRanges; r++) {
-		int sequence = 0;
-		uint32_t a0 = *pRanges++, a1 = *pRanges++;
-		uint32_t addr = a1-1, *range_map = map;
-		while (addr>=a0 && sequence<numBytes) {
-			uint32_t chk = *map++, m = 3;
-			while (m && addr >= a0) {
-				if ((m & chk)==0) {
-					sequence++;
-					if (sequence == numBytes)
-						break;
-				} else
-					sequence = 0;
-				--addr;
-				m <<= 2;
-			}
+	uint8_t num8 = ( uint8_t )numBytes;
+	uint32_t bestSlot = 0;
+	uint32_t bestSize = allocated[0][1] ? allocated[0][0] : (uint32_t)(ranges[1]-ranges[0]);
+	uint8_t bestEnd = (uint8_t)bestSize;
+	uint8_t offs = 0;
+	uint32_t slot = 0;
+	uint32_t last = 0;
+	for(;;)
+	{
+		if( allocated[ slot ][ 1 ] == 0 ) { last = slot; break; }
+		uint8_t end = allocated[ slot ][ 0 ];
+		uint8_t size = end - offs;
+		if( size >= num8 )
+		{
+			if( size < bestSize ) { bestSlot = slot; bestEnd = end; }
 		}
-		if (sequence == numBytes) {
-			uint32_t index = (a1-addr-numBytes);
-			uint32_t *addr_map = range_map + (index>>4);
-			uint32_t m = numBytes << (index << 1);
-			for (int b = 0; b<numBytes; b++) {
-				*addr_map |= m;
-				uint32_t _m = m << 2;
-				if (!_m) { m >>= 30; addr_map++; } else { m = _m; }
-			}
-			ret_addr = addr;
-			return STATUS_OK;
-		}
+		offs = allocated[ slot ][ 0 ] + allocated[ slot ][ 1 ];
+		++slot;
+		if( slot == MAX_POOL_BYTES ) { last = slot;  break; }
 	}
-	return ERROR_OUT_OF_LABELS_IN_POOL;
+	if( last == MAX_POOL_BYTES || bestSize < num8 ) { return ERROR_OUT_OF_LABELS_IN_POOL; }
+
+	for( uint32_t m = last; m > bestSlot; --m )
+	{
+		allocated[ m ][ 0 ] = allocated[ m - 1 ][ 0 ];
+		allocated[ m ][ 1 ] = allocated[ m - 1 ][ 1 ];
+	}
+	allocated[ bestSlot ][0] = bestEnd - num8;
+	allocated[ bestSlot ][ 1 ] = num8;
+	ret_addr = ranges[ 0 ] + allocated[ bestSlot ][ 0 ];
+	return STATUS_OK;
 }
 
 // Release a label from a pool (at scope closure)
 StatusCode LabelPool::Release(uint32_t addr) {
-	uint32_t *map = usedMap;
-	uint16_t *pRanges = ranges;
-	for (int r = 0; r<numRanges; r++) {
-		uint16_t a0 = *pRanges++, a1 = *pRanges++;
-		if (addr>=a0 && addr<a1) {
-			uint32_t index = (a1-addr-1);
-			map += index>>4;
-			index &= 0xf;
-			uint32_t u = *map, m = 3 << (index << 1);
-			uint32_t b = u & m, bytes = b >> (index << 1);
-			if (bytes) {
-				for (uint32_t f = 0; f<bytes; f++) {
-					u &= ~m;
-					uint32_t _m = m>>2;
-					if (!_m) { m <<= 30; *map-- = u; } else { m = _m; }
-				}
-				*map = u;
-				return STATUS_OK;
-			} else
-				return ERROR_INTERNAL_LABEL_POOL_ERROR;
-		} else
-			map += (a1-a0+15)>>4;
+	uint32_t offs = addr - ranges[ 0 ];
+	if( offs > uint32_t(ranges[ 1 ]-ranges[0]) ) { return ERROR_INTERNAL_LABEL_POOL_ERROR; }
+	uint32_t slot = 0;
+	for(;;)
+	{
+		if( allocated[ slot ][ 1 ] == 0 ) { break; }
+		if( allocated[ slot ][ 0 ] == offs ) {
+			for(;;) {
+				allocated[ slot ][ 1 ] = 0;
+				if( slot == 0x100 || !allocated[ slot + 1 ][ 1 ] ) { break; }
+				allocated[ slot ][ 0 ] = allocated[ slot + 1 ][ 0 ];
+				allocated[ slot ][ 1 ] = allocated[ slot + 1 ][ 1 ];
+				++slot;
+			}
+			return STATUS_OK;
+		}
 	}
-	return STATUS_OK;
+	return ERROR_INTERNAL_LABEL_POOL_ERROR;
 }
 
 // Check if a label is marked as an xdef
