@@ -55,7 +55,6 @@
 #define MAX_EVAL_OPER 64
 
 // Max capacity of each label pool
-#define MAX_POOL_RANGES 1
 #define MAX_POOL_BYTES 255
 
 // Max number of exported binary files from a single source
@@ -226,6 +225,7 @@ enum AssemblerDirective {
 	AD_EXPORT,		// EXPORT: export this section or disable export
 	AD_LOAD,		// LOAD: If applicable, instruct to load at this address
 	AD_SECTION,		// SECTION: Enable code that will be assigned a start address during a link step
+	AD_MERGE,		// MERGE: Merge named sections in order listed
 	AD_LINK,		// LINK: Put sections with this name at this address (must be ORG / fixed address section)
 	AD_XDEF,		// XDEF: Externally declare a symbol
 	AD_XREF,		// XREF: Reference an external symbol
@@ -927,6 +927,7 @@ DirectiveName aDirectiveNames[] {
 	{ "SECTION", AD_SECTION },
 	{ "SEG", AD_SECTION },		// DASM version of SECTION
 	{ "SEGMENT", AD_SECTION },	// CA65 version of SECTION
+	{ "MERGE", AD_MERGE },
 	{ "LINK", AD_LINK },
 	{ "XDEF", AD_XDEF },
 	{ "XREF", AD_XREF },
@@ -1169,6 +1170,27 @@ enum SectionType : int8_t {	// enum order indicates fixed address linking priori
 	ST_REMOVED				// removed, don't export to object file
 };
 
+// String data
+typedef struct sStringSymbols {
+public:
+	strref string_name;		// name of the string
+	strref string_const;	// string contents if source reference
+	strovl string_value;	// string contents if modified, initialized to null string
+
+	StatusCode Append(strref append);
+	StatusCode ParseLine(strref line);
+
+	strref get() { return string_value.valid() ? string_value.get_strref() : string_const; }
+	void clear() {
+		if (string_value.cap()) {
+			free(string_value.charstr());
+			string_value.invalidate();
+			string_value.clear();
+		}
+		string_const.clear();
+	}
+} StringSymbol;
+
 // start of data section support
 // Default is a relative section
 // Whenever org or dum with address is encountered => new section
@@ -1256,6 +1278,7 @@ typedef struct Section {
 	void AddTriple(int l);
 	void AddBin(const uint8_t *p, int size);
 	void AddText(strref line, strref text_prefix);
+	void AddIndexText(StringSymbol * strSym, strref text);
 	void SetByte(size_t offs, int b) { output[offs] = (uint8_t)b; }
 	void SetWord(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); }
 	void SetTriple(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); }
@@ -1286,23 +1309,6 @@ public:
 	bool reference;			// this label is accessed from external and can't be used for evaluation locally
 } Label;
 
-
-// String data
-typedef struct sStringSymbols {
-public:
-	strref string_name;		// name of the string
-	strref string_const;	// string contents if source reference
-	strovl string_value;	// string contents if modified, initialized to null string
-
-	StatusCode Append(strref append);
-	StatusCode ParseLine(strref line);
-
-	strref get() { return string_value.valid() ? string_value.get_strref() : string_const; }
-	void clear() { if (string_value.cap()) { free(string_value.charstr());
-					string_value.invalidate(); string_value.clear(); }
-					string_const.clear();
-	}
-} StringSymbol;
 
 // If an expression can't be evaluated immediately, this is required
 // to reconstruct the result when it can be.
@@ -1352,11 +1358,12 @@ typedef struct sLocalLabelRecord {
 typedef struct sLabelPool {
 	strref pool_name;
 	int16_t numRanges;		// normally 1 range, support multiple for ease of use
-	int16_t scopeDepth;		// Required for scope closure cleanup
-	uint16_t ranges[MAX_POOL_RANGES*2];		// 2 shorts per range
-	uint8_t allocated[MAX_POOL_BYTES][2];	// 1 byte offset, 1 byte length, in-order array
-	StatusCode Reserve(int numBytes, uint32_t &addr);
-	StatusCode Release(uint32_t addr);
+	int16_t depth;			// Required for scope closure cleanup
+	uint16_t start;
+	uint16_t end;
+	uint16_t scopeUsed[MAX_SCOPE_DEPTH][2]; // last address assigned + scope depth
+	StatusCode Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope);
+	void ExitScope(uint16_t scope);
 } LabelPool;
 
 // One member of a label struct
@@ -1481,6 +1488,7 @@ public:
 	// Scope info
 	int scope_address[MAX_SCOPE_DEPTH];
 	int scope_depth;
+	int brace_depth;			// scope depth defined only by braces, not files
 
 	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
@@ -1613,6 +1621,7 @@ public:
 	StatusCode Directive_Import(strref line);
 	StatusCode Directive_ORG(strref line);
 	StatusCode Directive_LOAD(strref line);
+	StatusCode Directive_MERGE(strref line);
 	StatusCode Directive_LNK(strref line);
 	StatusCode Directive_XDEF(strref line);
 	StatusCode Directive_XREF(strref label);
@@ -1692,6 +1701,7 @@ void Asm::Cleanup() {
 	syntax = SYNTAX_SANE;
 	default_org = 0x1000;
 	scope_depth = 0;
+	brace_depth = 0;
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
@@ -1833,8 +1843,7 @@ char* Asm::LoadBinary(strref filename, size_t &size) {
 }
 
 // Create a new section with a fixed address
-void Asm::SetSection(strref name, int address)
-{
+void Asm::SetSection(strref name, int address) {
 	if (name) {
 		for (std::vector<Section>::iterator i = allSections.begin(); i!=allSections.end(); ++i) {
 			if (i->name && name.same_str(i->name)) {
@@ -1843,26 +1852,20 @@ void Asm::SetSection(strref name, int address)
 			}
 		}
 	}
-	if (allSections.size()==allSections.capacity())
-		allSections.reserve(allSections.size() + 16);
+	if (allSections.size()==allSections.capacity()) { allSections.reserve(allSections.size()+16); }
 	Section newSection(name, address);
-	if (address < 0x200)	// don't compile over zero page and stack frame (may be bad assumption)
-		newSection.SetDummySection(true);
+	// don't compile over zero page and stack frame (may be bad assumption)
+	if (address<0x200) { newSection.SetDummySection(true); }
 	allSections.push_back(newSection);
 	current_section = &allSections[allSections.size()-1];
 }
 
-void Asm::SetSection(strref line)
-{
-	if (allSections.size() && CurrSection().unused())
-		allSections.erase(allSections.begin() + SectionId());
-	if (allSections.size() == allSections.capacity())
-		allSections.reserve(allSections.size() + 16);
+void Asm::SetSection(strref line) {
+	if (allSections.size()&&CurrSection().unused()) { allSections.erase(allSections.begin()+SectionId()); }
+	if (allSections.size()==allSections.capacity()) { allSections.reserve(allSections.size()+16); }
 
 	SectionType type = ST_UNDEFINED;
-
-	// SEG.U etc.
-	if (line.get_first() == '.') {
+	if (line.get_first() == '.') { 	// SEG.U etc.
 		++line;
 		switch (strref::tolower(line.get_first())) {
 			case 'u': type = ST_BSS; break;
@@ -1872,29 +1875,26 @@ void Asm::SetSection(strref line)
 		}
 	}
 	line.trim_whitespace();
-
 	int align = 1;
 	strref name;
 	while (strref arg = line.split_token_any_trim(",:")) {
 		if (arg.get_first() == '$') { ++arg; align = (int)arg.ahextoui(); }
-		else if (arg.is_number()) align = (int)arg.atoi();
-		else if (arg.get_first() == '"') name = (arg + 1).before_or_full('"');
-		else if (!name) name = arg;
-		else if (arg.same_str("code")) type = ST_CODE;
-		else if (arg.same_str("data")) type = ST_DATA;
-		else if (arg.same_str("bss")) type = ST_BSS;
-		else if (arg.same_str("zp") || arg.same_str("dp") ||
-			arg.same_str("zeropage") || arg.same_str("direct")) type = ST_ZEROPAGE;
+		else if (arg.is_number()) { align = (int)arg.atoi(); }
+		else if (arg.get_first()=='"') { name = (arg+1).before_or_full('"'); }
+		else if (!name) { name = arg; }
+		else if (arg.same_str("code")) { type = ST_CODE; }
+		else if (arg.same_str("data")) { type = ST_DATA; }
+		else if (arg.same_str("bss")) { type = ST_BSS; }
+		else if (arg.same_str("zp")||arg.same_str("dp")||
+				 arg.same_str("zeropage")||arg.same_str("direct")) { type = ST_ZEROPAGE; }
 	}
 	if (type == ST_UNDEFINED) {
-		if (name.find("code") >= 0) type = ST_CODE;
-		else if (name.find("data") >= 0) type = ST_DATA;
+		if (name.find("code")>=0) { type = ST_CODE; }
+		else if (name.find("data")>=0) { type = ST_DATA; }
 		else if (name.find("bss") >= 0 || name.same_str("directpage_stack")) type = ST_BSS;
-		else if (name.find("zp") >= 0 || name.find("zeropage") >= 0 || name.find("direct") >= 0)
-			type = ST_ZEROPAGE;
-		else type = ST_CODE;
+		else if (name.find("zp")>=0||name.find("zeropage")>=0||name.find("direct")>=0) { type = ST_ZEROPAGE; }
+		else { type = ST_CODE; }
 	}
-
 	Section newSection(name);
 	newSection.align_address = align;
 	newSection.type = type;
@@ -1904,8 +1904,7 @@ void Asm::SetSection(strref line)
 
 // Fixed address dummy section
 void Asm::DummySection(int address) {
-	if (allSections.size()==allSections.capacity())
-		allSections.reserve(allSections.size() + 16);
+	if (allSections.size()==allSections.capacity()) { allSections.reserve(allSections.size()+16); }
 	Section newSection(strref(), address);
 	newSection.SetDummySection(true);
 	allSections.push_back(newSection);
@@ -1919,17 +1918,14 @@ void Asm::DummySection() {
 
 void Asm::EndSection() {
 	int section = SectionId();
-	if (section)
-		current_section = &allSections[section-1];
+	if (section) { current_section = &allSections[section-1]; }
 }
 
 // Iterate through the current group of sections and assign addresses if this section is fixed
 // This is to handle the special linking of Merlin where sections are brought together pre-export
-void Asm::AssignAddressToGroup()
-{
+void Asm::AssignAddressToGroup() {
 	Section &curr = CurrSection();
-	if (!curr.address_assigned)
-		return;
+	if (!curr.address_assigned) { return; }
 
 	// Put in all the sections cared about into either the fixed sections or the relative sections
 	std::vector<Section*> FixedExport;
@@ -1946,8 +1942,7 @@ void Asm::AssignAddressToGroup()
 					break;
 				}
 			}
-			if (!inserted)
-				FixedExport.push_back(&s);
+			if (!inserted) { FixedExport.push_back(&s); }
 		} else if (!s.address_assigned && s.type != ST_ZEROPAGE) {
 			RelativeExport.push_back(&s);
 			s.export_append = curr.export_append;
@@ -1983,8 +1978,7 @@ void Asm::AssignAddressToGroup()
 				AssignAddressToSection(SectionId(*pSec), address);
 				FixedExport.insert((FixedExport.begin() + insert_after + 1), pSec);
 				i = RelativeExport.erase(i);
-			} else
-				++i;
+			} else { ++i; }
 		}
 	}
 }
@@ -1995,16 +1989,35 @@ void Asm::AssignAddressToGroup()
 //	- alloc & 0 memory
 //	- any matching relative sections gets linked in after
 //	- go through all section that matches export_append in order and copy over memory
-uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
-{
+uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 	int start_address = 0x7fffffff;
 	int end_address = 0;
-
 	bool has_relative_section = false;
 	bool has_fixed_section = false;
 	int first_link_section = -1;
-
 	std::vector<Section*> FixedExport;
+
+	// automatically merge sections with the same name and type if one is relative and other is fixed
+	for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
+		const Section &section = allSections[section_id];
+		if (!section.IsMergedSection()&&!section.IsRelativeSection()) {
+			for (size_t section_merge_id = 0; section_merge_id!=allSections.size(); ++section_merge_id) {
+				const Section &section_merge = allSections[section_merge_id];
+				if(!section_merge.IsMergedSection()&&section_merge.IsRelativeSection() &&
+				   section_merge.type == section.type && section.name.same_str_case(section_merge.name)) {
+					MergeSections((int)section_id, (int)section_merge_id);
+				}
+			}
+		}
+	}
+
+	// link any relocs to sections that are fixed
+	for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
+		const Section &section = allSections[section_id];
+		if(!section.IsMergedSection()&&!section.IsRelativeSection()) {
+			LinkRelocs((int)section_id, -1, section.start_address);
+		}
+	}
 
 	// find address range
 	while (!has_relative_section && !has_fixed_section) {
@@ -2020,7 +2033,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 							(!i->include_from && allSections[first_link_section].include_from)))))
 							first_link_section = SectionId(*i);
 						has_relative_section = true;
-					} else if (i->start_address >= 0x100 && i->size() > 0) {
+					} else if (i->start_address >= 0x100 && ( i->size() > 0 || i->addr_size() > 0 ) ) {
 						has_fixed_section = true;
 						bool inserted = false;
 						for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
@@ -2049,8 +2062,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 				// there is not a fixed section so go through and assign addresses to all sections
 				// starting with the first reasonable section
 				start_address = default_org;
-				if (first_link_section < 0)
-					return nullptr;
+				if (first_link_section<0) { return nullptr; }
 				while (first_link_section >= 0) {
 					FixedExport.push_back(&allSections[first_link_section]);
 					AssignAddressToSection(first_link_section, start_address);
@@ -2067,7 +2079,6 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 						int id = (int)(&*i - &allSections[0]);
 						if (i->IsRelativeSection() && i->first_group < 0) {
 							// try to fit this section in between existing sections if possible
-
 							int insert_after = (int)FixedExport.size()-1;
 							for (int f = 0; f < insert_after; f++) {
 								int start_block = FixedExport[f]->address;
@@ -2092,10 +2103,11 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 							start_address = FixedExport[insert_after]->address;
 							while (sec >= 0) {
 								insert_after++;
-								if (insert_after<(int)FixedExport.size())
-									FixedExport.insert(FixedExport.begin() + insert_after, &allSections[sec]);
-								else
+								if (insert_after<(int)FixedExport.size()) {
+									FixedExport.insert(FixedExport.begin()+insert_after, &allSections[sec]);
+								} else {
 									FixedExport.push_back(&allSections[sec]);
+								}
 								AssignAddressToSection(sec, start_address);
 								start_address = allSections[sec].address;
 								sec = allSections[sec].next_group;
@@ -2110,19 +2122,18 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 	// get memory for output buffer
 	start_address = FixedExport[0]->start_address;
 	int last_data_export = (int)(FixedExport.size() - 1);
-	while (last_data_export>0 && FixedExport[last_data_export]->type == ST_BSS)
-		last_data_export--;
+	while (last_data_export>0&&FixedExport[last_data_export]->type==ST_BSS) { last_data_export--; }
 	end_address = FixedExport[last_data_export]->address;
 	uint8_t *output = (uint8_t*)calloc(1, end_address - start_address);
 
 	// copy over in order
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
-			if (i->merged_offset == -1 && i->start_address >= 0x200 && i->size() > 0)
-				memcpy(output + i->start_address - start_address, i->output, i->size());
+			if (i->merged_offset==-1&&i->start_address>=0x200&&i->size()>0) {
+				memcpy(output+i->start_address-start_address, i->output, i->size());
+			}
 		}
 	}
-
 	printf("Linker export + \"" STRREF_FMT "\" summary:\n", STRREF_ARG(append));
 	for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
 		if ((*f)->include_from) {
@@ -2141,8 +2152,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr)
 }
 
 // Collect all the export names
-int Asm::GetExportNames(strref *aNames, int maxNames)
-{
+int Asm::GetExportNames(strref *aNames, int maxNames) {
 	int count = 0;
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if (!i->IsMergedSection()) {
@@ -2154,49 +2164,42 @@ int Asm::GetExportNames(strref *aNames, int maxNames)
 					break;
 				}
 			}
-			if (!found && count < maxNames)
-				aNames[count++] = i->export_append;
+			if (!found && count<maxNames) { aNames[count++] = i->export_append; }
 		}
 	}
 	return count;
 }
 
 // Collect all unassigned ZP sections and link them
-StatusCode Asm::LinkZP()
-{
+StatusCode Asm::LinkZP() {
 	uint8_t min_addr = 0xff, max_addr = 0x00;
 	int num_addr = 0;
 	bool has_assigned = false, has_unassigned = false;
 	int first_unassigned = -1;
 
 	// determine if any zeropage section has been asseigned
-	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
-		if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
+	for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
+		if (s->type==ST_ZEROPAGE&&!s->IsMergedSection()) {
 			if (s->address_assigned) {
 				has_assigned = true;
-				if (s->start_address < (int)min_addr)
+				if (s->start_address<(int)min_addr) {
 					min_addr = (uint8_t)s->start_address;
-				else if ((int)s->address > max_addr)
+				} else if ((int)s->address>max_addr) {
 					max_addr = (uint8_t)s->address;
+				}
 			} else {
 				has_unassigned = true;
-				first_unassigned = first_unassigned >=0 ? first_unassigned : (int)(&*s - &allSections[0]);
+				first_unassigned = first_unassigned>=0 ? first_unassigned : (int)(&*s-&allSections[0]);
 			}
-			num_addr += s->address - s->start_address;
+			num_addr += s->address-s->start_address;
 		}
 	}
-
-	if (num_addr > 0x100)
-		return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
-
+	if (num_addr>0x100) { return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE; }
 	// no unassigned zp section, nothing to fix
-	if (!has_unassigned)
-		return STATUS_OK;
+	if (!has_unassigned) { return STATUS_OK; }
 
 	StatusCode status = STATUS_OK;
-
-	// no section assigned => fit together at end
-	if (!has_assigned) {
+	if (!has_assigned) {	// no section assigned => fit together at end
 		int address = 0x100 - num_addr;
 		for (std::vector<Section>::iterator s = allSections.begin(); status==STATUS_OK && s != allSections.end(); ++s) {
 			if (s->type == ST_ZEROPAGE && !s->IsMergedSection()) {
@@ -2227,23 +2230,19 @@ StatusCode Asm::LinkZP()
 									}
 								}
 							}
-							if (found)
-								AssignAddressToSection((int)(&*s - &allSections[0]), start);
+							if (found) { AssignAddressToSection((int)(&*s-&allSections[0]), start); }
 						}
 					}
 				}
-				if (!found)
-					return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
+				if (!found) { return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE; }
 			}
 		}
 	}
 	return status;
 }
 
-
 // Apply labels assigned to addresses in a relative section a fixed address or as part of another section
-void Asm::LinkLabelsToAddress(int section_id, int section_new, int section_address)
-{
+void Asm::LinkLabelsToAddress(int section_id, int section_new, int section_address) {
 	Label *pLabels = labels.getValues();
 	int numLabels = labels.count();
 	for (int l = 0; l < numLabels; l++) {
@@ -2263,8 +2262,7 @@ void Asm::LinkLabelsToAddress(int section_id, int section_new, int section_addre
 
 // go through relocs in all sections to see if any targets this section
 // relocate section to address!
-StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
-{
+StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address) {
 	for (std::vector<Section>::iterator j = allSections.begin(); j != allSections.end(); ++j) {
 		Section &s2 = *j;
 		if (s2.pRelocs) {
@@ -2306,17 +2304,14 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 }
 
 // Append one section to the end of another
-StatusCode Asm::AssignAddressToSection(int section_id, int address)
-{
-	if (section_id < 0 || section_id >= (int)allSections.size())
-		return ERROR_NOT_A_SECTION;
+StatusCode Asm::AssignAddressToSection(int section_id, int address) {
+	if (section_id<0||section_id>=(int)allSections.size()) { return ERROR_NOT_A_SECTION; }
 	Section &s = allSections[section_id];
 	if (s.address_assigned)
 		return ERROR_CANT_REASSIGN_FIXED_SECTION;
 
 	// fix up the alignment of the address
-	int align_size = s.align_address <= 1 ? 0 :
-		(s.align_address - (address % s.align_address)) % s.align_address;
+	int align_size = s.align_address<=1 ? 0 : (s.align_address - (address%s.align_address))%s.align_address;
 	address += align_size;
 
 	s.start_address = address;
@@ -2330,9 +2325,7 @@ StatusCode Asm::AssignAddressToSection(int section_id, int address)
 // Relative sections will just be appeneded to a grouping list
 // Fixed address sections will be merged together
 StatusCode Asm::LinkSections(strref name) {
-	if (CurrSection().IsDummySection())
-		return ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION;
-
+	if (CurrSection().IsDummySection()) { return ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION; }
 	int last_section_group = CurrSection().next_group;
 	while (last_section_group > -1 && allSections[last_section_group].next_group > -1)
 		last_section_group = allSections[last_section_group].next_group;
@@ -2340,8 +2333,7 @@ StatusCode Asm::LinkSections(strref name) {
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if ((!name || i->name.same_str_case(name)) && i->IsRelativeSection() && !i->IsMergedSection()) {
 			// it is ok to link other sections with the same name to this section
-			if (&*i == &CurrSection())
-				continue;
+			if (&*i==&CurrSection()) { continue; }
 			// Zero page sections can only be linked with zero page sections
 			if (i->type != ST_ZEROPAGE || CurrSection().type == ST_ZEROPAGE) {
 				i->export_append = CurrSection().export_append;
@@ -2354,53 +2346,49 @@ StatusCode Asm::LinkSections(strref name) {
 						last_section_group = curr;
 					}
 				}
-			} else
-				return ERROR_CANT_LINK_ZP_AND_NON_ZP;
+			} else { return ERROR_CANT_LINK_ZP_AND_NON_ZP; }
 		}
 	}
 	return STATUS_OK;
 }
 
 StatusCode Asm::MergeSections(int section_id, int section_merge) {
-	if (section_id == section_merge || section_id<0 || section_merge<0)
-		return STATUS_OK;
+	if (section_id==section_merge||section_id<0||section_merge<0) { return STATUS_OK; }
 
 	Section &s = allSections[section_id];
 	Section &m = allSections[section_merge];
 
 	// merging section needs to be relative to be appended
-	if (!m.IsRelativeSection())
-		return ERROR_CANT_APPEND_SECTION_TO_TARGET;
+	if (!m.IsRelativeSection()) { return ERROR_CANT_APPEND_SECTION_TO_TARGET; }
 
 	// if merging section is aligned and target section is not aligned to that or multiple of then can't merge
-	if (m.align_address>1 && (!s.IsRelativeSection() || (s.align_address%m.align_address)!=0))
+	if (m.align_address>1&&(!s.IsRelativeSection()||(s.align_address%m.align_address)!=0)) {
 		return ERROR_CANT_APPEND_SECTION_TO_TARGET;
+	}
 
 	// append the binary to the target..
 	int addr_start = s.address;
 	int align = m.align_address <= 1 ? 0 : (m.align_address - (addr_start % m.align_address)) % m.align_address;
 	if (m.size()) {
 		if (s.CheckOutputCapacity(m.size() + align) == STATUS_OK) {
-			for (int a = 0; a < align; a++)
-				s.AddByte(0);
+			for (int a = 0; a<align; a++) { s.AddByte(0); }
 			s.AddBin(m.output, m.size());
 		}
 	} else if (m.addr_size() && s.type != ST_BSS && s.type != ST_ZEROPAGE && !s.dummySection) {
 		if (s.CheckOutputCapacity(m.address - m.start_address) == STATUS_OK) {
-			for (int a = (m.start_address-align); a < m.address; a++)
-				s.AddByte(0);
+			for (int a = (m.start_address-align); a<m.address; a++) { s.AddByte(0); }
 		}
-	} else if (m.addr_size())
-		s.AddAddress(align + m.addr_size());
-	addr_start += align;
+	} else if (m.addr_size()) { s.AddAddress(align+m.addr_size()); }
+
+	addr_start += align - s.start_address;
 
 	// move the relocs from the merge section to the keep section
 	if (m.pRelocs) {
-		if (!s.pRelocs)
-			s.pRelocs = new relocList;
-		if (s.pRelocs->capacity() < (s.pRelocs->size() + m.pRelocs->size()))
-			s.pRelocs->reserve(s.pRelocs->size() + m.pRelocs->size());
-		for (relocList::iterator r = m.pRelocs->begin(); r != m.pRelocs->end(); ++r) {
+		if (!s.pRelocs) { s.pRelocs = new relocList; }
+		if (s.pRelocs->capacity()<(s.pRelocs->size()+m.pRelocs->size())) {
+			s.pRelocs->reserve(s.pRelocs->size()+m.pRelocs->size());
+		}
+		for (relocList::iterator r = m.pRelocs->begin(); r!=m.pRelocs->end(); ++r) {
 			struct Reloc rel = *r;
 			rel.section_offset += addr_start;
 			s.pRelocs->push_back(rel);
@@ -2420,6 +2408,7 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 			}
 		}
 	}
+	if(!s.IsRelativeSection()) { LinkLabelsToAddress(section_merge, -1, m.start_address); }
 
 	// go through all labels referencing merging section
 	for (uint32_t i = 0; i<labels.count(); i++) {
@@ -2442,20 +2431,18 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 	for (std::vector<LateEval>::iterator i = lateEval.begin(); i!=lateEval.end(); ++i) {
 		if (i->section == section_merge) {
 			i->section = (int16_t)section_id;
-			if (i->target >= 0)
-				i->target += addr_start;
+			if (i->target>=0) { i->target += addr_start; }
 			i->address += addr_start;
-			if (i->scope >= 0)
-				i->scope += addr_start;
+			if (i->scope>=0) { i->scope += addr_start; }
 		}
 	}
 
 	// go through listing
 	if (m.pListing) {
-		if (!s.pListing)
-			s.pListing = new Listing;
-		if (s.pListing->capacity() < (m.pListing->size() + s.pListing->size()))
-			s.pListing->reserve((m.pListing->size() + s.pListing->size()));
+		if (!s.pListing) { s.pListing = new Listing; }
+		if (s.pListing->capacity()<(m.pListing->size()+s.pListing->size())) {
+			s.pListing->reserve((m.pListing->size()+s.pListing->size()));
+		}
 		for (Listing::iterator i = m.pListing->begin(); i!=m.pListing->end(); ++i) {
 			ListLine l = *i;
 			l.address += addr_start;
@@ -2464,17 +2451,12 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 		delete m.pListing;
 		m.pListing = nullptr;
 	}
-
-	printf("merged section %d into section %d at $%x offset\n", section_merge, section_id, addr_start);
-
 	m.type = ST_REMOVED;
-
 	return STATUS_OK;
 }
 
 // Go through sections and merge same name sections together
-StatusCode Asm::MergeSectionsByName(int first_section)
-{
+StatusCode Asm::MergeSectionsByName(int first_section) {
 	int first_code_seg = -1;
 	StatusCode status = STATUS_OK;
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
@@ -2487,15 +2469,11 @@ StatusCode Asm::MergeSectionsByName(int first_section)
 				if (n->name.same_str_case(i->name) && n->type == i->type) {
 					int sk = (int)(&*i - &allSections[0]);
 					int sm = (int)(&*n - &allSections[0]);
-
 					if (sm == first_section || (n->align_address > i->align_address)) {
-						if (n->align_address<i->align_address)
-							n->align_address = i->align_address;
+						if (n->align_address<i->align_address) { n->align_address = i->align_address; }
 						status = MergeSections(sm, sk);
-					} else
-						status = MergeSections(sk, sm);
-					if (status != STATUS_OK)
-						return status;
+					} else { status = MergeSections(sk, sm); }
+					if (status!=STATUS_OK) { return status; }
 				}
 				++n;
 			}
@@ -2516,8 +2494,9 @@ StatusCode Asm::MergeAllSections(int first_section)
 				for (int j = i + 1; j<(int)allSections.size() && status == STATUS_OK; ++j) {
 					if (allSections[j].type == t) {
 						if (j == first_section || (t != ST_CODE && allSections[i].align_address<allSections[j].align_address)) {
-							if (allSections[i].align_address > allSections[j].align_address)
+							if (allSections[i].align_address>allSections[j].align_address) {
 								allSections[i].align_address = allSections[j].align_address;
+							}
 							status = MergeSections(j, i);
 						} else
 							status = MergeSections(i, j);
@@ -2542,12 +2521,12 @@ StatusCode Asm::MergeAllSections(int first_section)
 				merge_order[m - 1] = merge_order[m];
 		}
 	}
-	if (merge_order[0] == -1)
-		return ERROR_NOT_A_SECTION;
+	if (merge_order[0]==-1) { return ERROR_NOT_A_SECTION; }
 	for (int o = 1; o < MERGE_ORDER_CNT; o++) {
 		if (merge_order[o] != -1 && status == STATUS_OK) {
-			if (allSections[merge_order[0]].align_address < allSections[merge_order[o]].align_address)
+			if (allSections[merge_order[0]].align_address<allSections[merge_order[o]].align_address) {
 				allSections[merge_order[0]].align_address = allSections[merge_order[o]].align_address;
+			}
 			status = MergeSections(merge_order[0], merge_order[o]);
 		}
 	}
@@ -2557,23 +2536,19 @@ StatusCode Asm::MergeAllSections(int first_section)
 // Section based output capacity
 // Make sure there is room to assemble in
 StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
-	if (dummySection || type == ST_ZEROPAGE || type == ST_BSS)
-		return STATUS_OK;
+	if (dummySection||type==ST_ZEROPAGE||type==ST_BSS) { return STATUS_OK; }
 	size_t currSize = curr - output;
 	if ((addSize + currSize) >= output_capacity) {
 		size_t newSize = currSize * 2;
-		if (newSize < 64*1024)
-			newSize = 64*1024;
-		if ((addSize+currSize) > newSize)
-			newSize += newSize;
+		if (newSize<64*1024) { newSize = 64*1024; }
+		if ((addSize+currSize)>newSize) { newSize += newSize; }
 		if (uint8_t *new_output = (uint8_t*)malloc(newSize)) {
 			memcpy(new_output, output, size());
 			curr = new_output + (curr - output);
 			free(output);
 			output = new_output;
 			output_capacity = newSize;
-		} else
-			return ERROR_OUT_OF_MEMORY;
+		} else { return ERROR_OUT_OF_MEMORY; }
 	}
 	return STATUS_OK;
 }
@@ -2581,8 +2556,7 @@ StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 // Add one byte to a section
 void Section::AddByte(int b) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
-		if (CheckOutputCapacity(1) == STATUS_OK)
-			*curr++ = (uint8_t)b;
+		if (CheckOutputCapacity(1)==STATUS_OK) { *curr++ = (uint8_t)b; }
 	}
 	address++;
 }
@@ -2647,13 +2621,23 @@ void Section::AddText(strref line, strref text_prefix) {
 	}
 }
 
+void Section::AddIndexText(StringSymbol *strSym, strref text) {
+	if (CheckOutputCapacity((uint32_t)text.get_len())==STATUS_OK) {
+		const strref lookup = strSym->get();
+		while (text) {
+			char c = text.pop_first();
+			AddByte(lookup.find(c));
+		}
+	}
+}
+
 // Add a relocation marker to a section
 void Section::AddReloc(int base, int offset, int section, int8_t bytes, int8_t shift)
 {
-	if (!pRelocs)
-		pRelocs = new relocList;
-	if (pRelocs->size() == pRelocs->capacity())
-		pRelocs->reserve(pRelocs->size() + 32);
+	if (!pRelocs) { pRelocs = new relocList; }
+	if (pRelocs->size()==pRelocs->capacity()) {
+		pRelocs->reserve(pRelocs->size()+32);
+	}
 	pRelocs->push_back(Reloc(base, offset, section, bytes, shift));
 }
 
@@ -2662,18 +2646,14 @@ StatusCode Asm::CheckOutputCapacity(uint32_t addSize) {
 	return CurrSection().CheckOutputCapacity(addSize);
 }
 
-
 //
 //
 // SCOPE MANAGEMENT
 //
 //
 
-
-StatusCode Asm::EnterScope()
-{
-	if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
-		return ERROR_TOO_DEEP_SCOPE;
+StatusCode Asm::EnterScope() {
+	if (scope_depth>=(MAX_SCOPE_DEPTH-1)) { return ERROR_TOO_DEEP_SCOPE; }
 	scope_address[++scope_depth] = CurrSection().GetPC();
 	return STATUS_OK;
 }
@@ -2682,14 +2662,11 @@ StatusCode Asm::ExitScope()
 {
 	CheckLateEval(strref(), CurrSection().GetPC());
 	StatusCode error = FlushLocalLabels(scope_depth);
-	if (error >= FIRST_ERROR)
-		return error;
+	if (error>=FIRST_ERROR) { return error; }
 	--scope_depth;
-	if (scope_depth<0)
-		return ERROR_UNBALANCED_SCOPE_CLOSURE;
+	if (scope_depth<0) { return ERROR_UNBALANCED_SCOPE_CLOSURE; }
 	return STATUS_OK;
 }
-
 
 //
 //
@@ -2697,47 +2674,41 @@ StatusCode Asm::ExitScope()
 //
 //
 
-
 StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, int rept)
 {
-	if (conditional_depth>=(MAX_CONDITIONAL_DEPTH-1))
-		return ERROR_CONDITION_TOO_NESTED;
+	if (conditional_depth>=(MAX_CONDITIONAL_DEPTH-1)) { return ERROR_CONDITION_TOO_NESTED; }
 	conditional_depth++;
 	conditional_nesting[conditional_depth] = 0;
 	conditional_consumed[conditional_depth] = false;
 	contextStack.push(src_name, src_file, code_seg, rept);
 	contextStack.curr().conditional_ctx = (int16_t)conditional_depth;
-	if (scope_depth >= (MAX_SCOPE_DEPTH - 1))
+	if (scope_depth>=(MAX_SCOPE_DEPTH-1)) {
 		return ERROR_TOO_DEEP_SCOPE;
-	else
+	} else {
 		scope_address[++scope_depth] = CurrSection().GetPC();
+	}
 	return STATUS_OK;
 }
 
-StatusCode Asm::PopContext()
-{
+StatusCode Asm::PopContext() {
 	if (scope_depth) {
 		StatusCode ret = ExitScope();
-		if (ret != STATUS_OK)
-			return ret;
+		if (ret!=STATUS_OK) { return ret; }
 	}
-	if (!ConditionalAsm() || ConditionalConsumed() ||
-		conditional_depth!=contextStack.curr().conditional_ctx)
+	if (!ConditionalAsm()||ConditionalConsumed()||
+		conditional_depth!=contextStack.curr().conditional_ctx) {
 		return ERROR_UNTERMINATED_CONDITION;
-
+	}
 	conditional_depth = contextStack.curr().conditional_ctx-1;
 	contextStack.pop();
 	return STATUS_OK;
 }
-
 
 //
 //
 // MACROS
 //
 //
-
-
 
 // add a custom macro
 StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, strref &left)
@@ -2763,20 +2734,21 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 			name = last_label;
 			last_label.clear();
 			macro.skip_whitespace();
-			if (macro.get_first()==';' || macro.has_prefix(c_comment))
+			if (macro.get_first()==';'||macro.has_prefix(c_comment)) {
 				macro.line();
-			else
+			} else {
 				params_first_line = true;
-		} else
-			return ERROR_BAD_MACRO_FORMAT;
+			}
+		} else { return ERROR_BAD_MACRO_FORMAT; }
 	} else {
 		name = macro.split_range(label_end_char_range);
 		macro.skip_whitespace();
 		strref left_line = macro.get_line();
 		left_line.skip_whitespace();
 		left_line = left_line.before_or_full(';').before_or_full(c_comment);
-		if (left_line && left_line[0] != '(' && left_line[0] != '{')
+		if (left_line && left_line[0]!='(' && left_line[0]!='{') {
 			params_first_line = true;
+		}
 	}
 	uint32_t hash = name.fnv1a();
 	uint32_t ins = FindLabelIndex(hash, macros.getKeys(), macros.count());
@@ -2799,8 +2771,7 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 			next_line = next_line.before_or_full(';');
 			next_line = next_line.before_or_full(c_comment);
 			int term = next_line.find("<<<");
-			if (term < 0)
-				term = next_line.find("EOM");
+			if (term<0) { term = next_line.find("EOM"); }
 			if (term >= 0) {
 				strl_t macro_len = strl_t(next_line.get() + term - source.get());
 				source = source.get_substr(0, macro_len);
@@ -2815,10 +2786,8 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		const strref endm("endm");
 		for (;;) {
 			f = macro.find(endm, f+1);
-			if (f<0)
-				return ERROR_BAD_MACRO_FORMAT;
-			if (f == 0 || strref::is_ws(macro[f - 1]))
-				break;
+			if (f<0) { return ERROR_BAD_MACRO_FORMAT; }
+			if (f==0||strref::is_ws(macro[f-1])) { break; }
 		}
 		pMacro->macro = macro.get_substr(0, f);
 		macro += f;
@@ -2843,19 +2812,17 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 }
 
 // Compile in a macro
-StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
-{
+StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 	strref macro_src = m.macro, params;
 	if (m.params_first_line) {
-		if (end_macro_directive || Merlin())
+		if (end_macro_directive||Merlin()) {
 			params = macro_src.line();
-		else {
+		} else {
 			params = macro_src.before('{');
 			macro_src += params.get_len();
 		}
 	}
-	else
-		params = (macro_src[0] == '(' ? macro_src.scoped_block_skip() : strref());
+	else { params = (macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref()); }
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
 	if (Merlin()) {
@@ -2903,14 +2870,12 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 							success = true;
 						}
 					}
-					if (!success)
-						return ERROR_MACRO_ARGUMENT;
+					if (!success) { return ERROR_MACRO_ARGUMENT; }
 				}
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			return STATUS_OK;
-		} else
-			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
+		} else { return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION; }
 	} else if (params) {
 		if (arg_list[0]=='(')
 			arg_list = arg_list.scoped_block_skip();
@@ -2937,14 +2902,11 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			return STATUS_OK;
-		} else
-			return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
+		} else { return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION; }
 	}
 	PushContext(m.source_name, m.source_file, macro_src);
 	return STATUS_OK;
 }
-
-
 
 //
 //
@@ -2952,11 +2914,8 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list)
 //
 //
 
-
-
 // Enums are Structs in disguise
-StatusCode Asm::BuildEnum(strref name, strref declaration)
-{
+StatusCode Asm::BuildEnum(strref name, strref declaration) {
 	uint32_t hash = name.fnv1a();
 	uint32_t ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
 	LabelStruct *pEnum = nullptr;
@@ -2967,8 +2926,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		}
 		++ins;
 	}
-	if (pEnum)
-		return ERROR_STRUCT_ALREADY_DEFINED;
+	if (pEnum) { return ERROR_STRUCT_ALREADY_DEFINED; }
 	labelStructs.insert(ins, hash);
 	pEnum = labelStructs.getValues() + ins;
 	pEnum->name = name;
@@ -2979,7 +2937,6 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
-
 	while (strref line = declaration.line()) {
 		line = line.before_or_full(',');
 		line.trim_whitespace();
@@ -2987,10 +2944,9 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 		line = line.before_or_full(';').before_or_full(c_comment).get_trimmed_ws();
 		if (line) {
 			StatusCode error = EvalExpression(line, etx, value);
-			if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
+			if (error==STATUS_NOT_READY||error==STATUS_XREF_DEPENDENT) {
 				return ERROR_ENUM_CANT_BE_ASSEMBLED;
-			else if (error != STATUS_OK)
-				return error;
+			} else if (error!=STATUS_OK) { return error; }
 		}
 		struct MemberOffset member;
 		member.offset = (uint16_t)value;
@@ -3004,8 +2960,7 @@ StatusCode Asm::BuildEnum(strref name, strref declaration)
 	return STATUS_OK;
 }
 
-StatusCode Asm::BuildStruct(strref name, strref declaration)
-{
+StatusCode Asm::BuildStruct(strref name, strref declaration) {
 	uint32_t hash = name.fnv1a();
 	uint32_t ins = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
 	LabelStruct *pStruct = nullptr;
@@ -3016,8 +2971,7 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		}
 		++ins;
 	}
-	if (pStruct)
-		return ERROR_STRUCT_ALREADY_DEFINED;
+	if (pStruct) { return ERROR_STRUCT_ALREADY_DEFINED; }
 	labelStructs.insert(ins, hash);
 	pStruct = labelStructs.getValues() + ins;
 	pStruct->name = name;
@@ -3031,17 +2985,16 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 	while (strref line = declaration.line()) {
 		line.trim_whitespace();
 		strref type = line.split_label();
-		if (!type)
-			continue;
+		if (!type) { continue; }
 		line.skip_whitespace();
 		uint32_t type_hash = type.fnv1a();
 		uint16_t type_size = 0;
 		LabelStruct *pSubStruct = nullptr;
-		if (type_hash==byte_hash && struct_byte.same_str_case(type))
+		if (type_hash==byte_hash && struct_byte.same_str_case(type)) {
 			type_size = 1;
-		else if (type_hash==word_hash && struct_word.same_str_case(type))
+		} else if (type_hash==word_hash && struct_word.same_str_case(type)) {
 			type_size = 2;
-		else {
+		} else {
 			uint32_t index = FindLabelIndex(type_hash, labelStructs.getKeys(), labelStructs.count());
 			while (index < labelStructs.count() && labelStructs.getKey(index)==type_hash) {
 				if (type.same_str_case(labelStructs.getValue(index).name)) {
@@ -3058,8 +3011,9 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		}
 
 		// add the new member, don't grow vectors one at a time.
-		if (structMembers.size() == structMembers.capacity())
-			structMembers.reserve(structMembers.size() + 64);
+		if (structMembers.size()==structMembers.capacity()) {
+			structMembers.reserve(structMembers.size()+64);
+		}
 		struct MemberOffset member;
 		member.offset = size;
 		member.name = line.get_label();
@@ -3070,9 +3024,7 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		size += type_size;
 		member_count++;
 	}
-
-	// add a trailing member of 0 bytes to access the size of the structure
-	{
+	{	// add a trailing member of 0 bytes to access the size of the structure
 		struct MemberOffset bytes_member;
 		bytes_member.offset = size;
 		bytes_member.name = "bytes";
@@ -3081,16 +3033,13 @@ StatusCode Asm::BuildStruct(strref name, strref declaration)
 		structMembers.push_back(bytes_member);
 		member_count++;
 	}
-
 	pStruct->numMembers = member_count;
 	pStruct->size = size;
-
 	return STATUS_OK;
 }
 
 // Evaluate a struct offset as if it was a label
-StatusCode Asm::EvalStruct(strref name, int &value)
-{
+StatusCode Asm::EvalStruct(strref name, int &value) {
 	LabelStruct *pStruct = nullptr;
 	uint16_t offset = 0;
 	while (strref struct_seg = name.split_token('.')) {
@@ -3108,8 +3057,7 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 				}
 				++member;
 			}
-			if (!found)
-				return ERROR_REFERENCED_STRUCT_NOT_FOUND;
+			if (!found) { return ERROR_REFERENCED_STRUCT_NOT_FOUND; }
 		}
 		if (sub_struct) {
 			uint32_t hash = sub_struct.fnv1a();
@@ -3121,15 +3069,12 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 				}
 				++index;
 			}
-		} else if (name)
-			return STATUS_NOT_STRUCT;
+		} else if (name) { return STATUS_NOT_STRUCT; }
 	}
-	if (pStruct == nullptr)
-		return STATUS_NOT_STRUCT;
+	if (pStruct==nullptr) { return STATUS_NOT_STRUCT; }
 	value = offset;
 	return STATUS_OK;
 }
-
 
 //
 //
@@ -3137,15 +3082,11 @@ StatusCode Asm::EvalStruct(strref name, int &value)
 //
 //
 
-
-
-int Asm::ReptCnt() const
-{
+int Asm::ReptCnt() const {
 	return contextStack.curr().repeat_total - contextStack.curr().repeat;
 }
 
-void Asm::SetEvalCtxDefaults(struct EvalContext &etx)
-{
+void Asm::SetEvalCtxDefaults(struct EvalContext &etx) {
 	etx.pc = CurrSection().GetPC();				// current address at point of eval
 	etx.scope_pc = scope_address[scope_depth];	// current scope open at point of eval
 	etx.scope_end_pc = -1;						// late scope closure after eval
@@ -3156,8 +3097,7 @@ void Asm::SetEvalCtxDefaults(struct EvalContext &etx)
 }
 
 // Get a single token from a merlin expression
-EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value)
-{
+EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value) {
 	char c = expression.get_first();
 	switch (c) {
 		case '$': ++expression; value = (int)expression.ahextoui_skip(); return EVOP_VAL;
@@ -3165,61 +3105,58 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 		case '+': ++expression;	return EVOP_ADD;
 		case '*': // asterisk means both multiply and current PC, disambiguate!
 			++expression;
-			if (expression[0] == '*') return EVOP_STP; // double asterisks indicates comment
-			else if (prev_op==EVOP_VAL || prev_op==EVOP_RPR) return EVOP_MUL;
+			if (expression[0]=='*') return EVOP_STP; // double asterisks indicates comment
+			else if (prev_op==EVOP_VAL||prev_op==EVOP_RPR) return EVOP_MUL;
 			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
 		case '/': ++expression; return EVOP_DIV;
-		case '>': if (expression.get_len() >= 2 && expression[1] == '>') { expression += 2; return EVOP_SHR; }
+		case '>': if (expression.get_len()>=2&&expression[1]=='>') { expression += 2; return EVOP_SHR; }
 				  ++expression; return EVOP_HIB;
-		case '<': if (expression.get_len() >= 2 && expression[1] == '<') { expression += 2; return EVOP_SHL; }
+		case '<': if (expression.get_len()>=2&&expression[1]=='<') { expression += 2; return EVOP_SHL; }
 				  ++expression; return EVOP_LOB;
 		case '%': // % means both binary and scope closure, disambiguate!
-			if (expression[1]=='0' || expression[1]=='1') {
-				++expression; value = (int)expression.abinarytoui_skip(); return EVOP_VAL; }
-			if (etx.scope_end_pc<0 || scope_depth != etx.scope_depth) return EVOP_NRY;
+			if (expression[1]=='0'||expression[1]=='1') {
+				++expression; value = (int)expression.abinarytoui_skip(); return EVOP_VAL;
+			}
+			if (etx.scope_end_pc<0||scope_depth!=etx.scope_depth) return EVOP_NRY;
 			++expression; value = etx.scope_end_pc;
 			section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1);
 			return EVOP_VAL;
 		case '|':
 		case '.': ++expression; return EVOP_OR;	// MERLIN: . is or, | is not used
-		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++expression; return EVOP_EOR; }
+		case '^': if (prev_op==EVOP_VAL||prev_op==EVOP_RPR) { ++expression; return EVOP_EOR; }
 				  ++expression;  return EVOP_BAB;
 		case '&': ++expression; return EVOP_AND;
 		case '(': if (prev_op!=EVOP_VAL) { ++expression; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++expression; return EVOP_RPR;
-		case '"': if (expression[2] == '"') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
-		case '\'': if (expression[2] == '\'') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
+		case '"': if (expression[2]=='"') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
+		case '\'': if (expression[2]=='\'') { value = expression[1];  expression += 3; return EVOP_VAL; } return EVOP_STP;
 		case ',':
-		case '?':
-		default: {	// MERLIN: ! is eor
-			if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
-			else if (c == '!' && !(expression + 1).len_label()) {
-				if (etx.scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
-				++expression; value = etx.scope_pc;
-				section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
-			} else if (expression.match_chars_str("0-9", "!a-zA-Z_")) {
-				if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
-				value = expression.atoi_skip(); return EVOP_VAL;
-			} else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
-				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
-				char e0 = expression[0];
-				int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
-				strref label = expression.split_range_trim(label_end_char_range_merlin, start_pos);
-				Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
-				if (!pLabel) {
-					StatusCode ret = EvalStruct(label, value);
-					if (ret == STATUS_OK) return EVOP_VAL;
-					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
-				}
-				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
-				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
-				value = pLabel->value; section = int16_t(pLabel->section); return EVOP_VAL;
-			} else
-				return EVOP_ERR;
-			break;
-		}
+		case '?': return EVOP_STP;
 	}
-	return EVOP_NONE; // shouldn't get here normally
+	if (c == '!' && (prev_op == EVOP_VAL || prev_op == EVOP_RPR)) { ++expression; return EVOP_EOR; }
+	else if (c == '!' && !(expression + 1).len_label()) {
+		if (etx.scope_pc < 0) return EVOP_NRY;	// ! by itself is current scope, !+label char is a local label
+		++expression; value = etx.scope_pc;
+		section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
+	} else if (expression.match_chars_str("0-9", "!a-zA-Z_")) {
+		if (prev_op == EVOP_VAL) return EVOP_STP;	// value followed by value doesn't make sense, stop
+		value = expression.atoi_skip(); return EVOP_VAL;
+	} else if (c == '!' || c == ']' || c==':' || strref::is_valid_label(c)) {
+		if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
+		char e0 = expression[0];
+		int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
+		strref label = expression.split_range_trim(label_end_char_range_merlin, start_pos);
+		Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
+		if (!pLabel) {
+			StatusCode ret = EvalStruct(label, value);
+			if (ret==STATUS_OK) { return EVOP_VAL; }
+			if (ret!=STATUS_NOT_STRUCT) { return EVOP_ERR; }	// partial struct
+		}
+		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
+		if (!pLabel||!pLabel->evaluated) { return EVOP_NRY; }	// this label could not be found (yet)
+		value = pLabel->value; section = int16_t(pLabel->section); return EVOP_VAL;
+	}
+	return EVOP_ERR;
 }
 
 // Get a single token from most non-apple II assemblers
@@ -3258,34 +3195,32 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		case ',':
 		case '?':
 		case '\'': return EVOP_STP;
-		default: {	// ! by itself is current scope, !+label char is a local label
-			if (c == '!' && !(exp + 1).len_label()) {
-				if (etx.scope_pc < 0) return EVOP_NRY;
-				++exp; value = etx.scope_pc; 
-				section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
-			} else if (exp.match_chars_str("0-9", "!a-zA-Z_")) {
-				if (prev_op == EVOP_VAL) return EVOP_STP; // value followed by value doesn't make sense, stop
-				value = exp.atoi_skip(); return EVOP_VAL;
-			} else if (c == '!' || c == ':' || c=='.' || c=='@' || strref::is_valid_label(c)) {
-				if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
-				char e0 = exp[0];
-				int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
-				strref label = exp.split_range_trim(label_end_char_range, start_pos);
-				Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
-				if (!pLabel) {
-					StatusCode ret = EvalStruct(label, value);
-					if (ret == STATUS_OK) return EVOP_VAL;
-					if (ret != STATUS_NOT_STRUCT) return EVOP_ERR;	// partial struct
-				}
-				if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
-				if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
-				if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
-				value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
-			}
-			return EVOP_ERR;
-		}
 	}
-	return EVOP_NONE; // shouldn't get here normally
+	// ! by itself is current scope, !+label char is a local label
+	if (c == '!' && !(exp + 1).len_label()) {
+		if (etx.scope_pc < 0) return EVOP_NRY;
+		++exp; value = etx.scope_pc; 
+		section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
+	} else if (exp.match_chars_str("0-9", "!a-zA-Z_")) {
+		if (prev_op == EVOP_VAL) return EVOP_STP; // value followed by value doesn't make sense, stop
+		value = exp.atoi_skip(); return EVOP_VAL;
+	} else if (c == '!' || c == ':' || c=='.' || c=='@' || strref::is_valid_label(c)) {
+		if (prev_op == EVOP_VAL) return EVOP_STP; // a value followed by a value does not make sense, probably start of a comment (ORCA/LISA?)
+		char e0 = exp[0];
+		int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
+		strref label = exp.split_range_trim(label_end_char_range, start_pos);
+		Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
+		if (!pLabel) {
+			StatusCode ret = EvalStruct(label, value);
+			if (ret==STATUS_OK) { return EVOP_VAL; }
+			if (ret!=STATUS_NOT_STRUCT) { return EVOP_ERR; }	// partial struct
+		}
+		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
+		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
+		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
+		value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
+	}
+	return EVOP_ERR;
 }
 
 //
@@ -3304,8 +3239,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 #define MAX_EVAL_SECTIONS 4
 
 // determine if a scalar can be a shift
-static int mul_as_shift(int scalar)
-{
+static int mul_as_shift(int scalar) {
 	int shift = 0;
 	while (scalar > 1 && (scalar & 1) == 0) {
 		shift++;
@@ -3320,7 +3254,6 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 {
 	int numValues = 0;
 	int numOps = 0;
-
 	strref expression_stack[MAX_EXPR_STACK];
 	int exp_sp = 0;
 
@@ -3344,17 +3277,15 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			if (!expression && exp_sp) {
 				expression = expression_stack[--exp_sp];
 				op = EVOP_RPR;
-			} else if (Merlin())
+			} else if (Merlin()) {
 				op = RPNToken_Merlin(expression, etx, prev_op, section, value);
-			else
+			} else {
 				op = RPNToken(expression, etx, prev_op, section, value, subexp);
-			if (op == EVOP_ERR)
-				return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION;
-			else if (op == EVOP_NRY)
-				return STATUS_NOT_READY;
+			}
+			if (op==EVOP_ERR) { return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
+			else if (op==EVOP_NRY) { return STATUS_NOT_READY; }
 			else if (op == EVOP_EXP) {
-				if (exp_sp >= MAX_EXPR_STACK)
-					return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
+				if (exp_sp>=MAX_EXPR_STACK) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 				expression_stack[exp_sp++] = expression;
 				expression = subexp;
 				op = EVOP_LPR;
@@ -3364,13 +3295,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			}
 			if (section >= 0) {
 				for (int s = 0; s<num_sections && index_section<0; s++) {
-					if (section_ids[s] == section) index_section = (int16_t)s;
+					if (section_ids[s]==section) { index_section = (int16_t)s; }
 				}
 				if (index_section<0) {
-					if (num_sections <= MAX_EVAL_SECTIONS)
+					if (num_sections<=MAX_EVAL_SECTIONS) {
 						section_ids[index_section = num_sections++] = section;
-					else
-						return STATUS_NOT_READY;
+					} else { return STATUS_NOT_READY; }
 				}
 			}
 
@@ -3387,26 +3317,22 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ops[numOps++] = op_stack[sp];
 				}
 				// check that there actually was a left parenthesis
-				if (!sp || op_stack[sp-1]!=EVOP_LPR)
-					return ERROR_UNBALANCED_RIGHT_PARENTHESIS;
+				if (!sp||op_stack[sp-1]!=EVOP_LPR) { return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
 				sp--; // skip open paren
 			} else if (op == EVOP_STP) {
 				break;
 			} else {
 				bool skip = false;
 				if ((prev_op >= EVOP_EQU && prev_op <= EVOP_GTE) || (prev_op==EVOP_HIB || prev_op==EVOP_LOB)) {
-					if (op==EVOP_SUB)
-						op = EVOP_NEG;
-					else if (op == EVOP_ADD)
-						skip = true;
+					if (op==EVOP_SUB) { op = EVOP_NEG; }
+					else if (op==EVOP_ADD) { skip = true; }
 				}
-				if (op == EVOP_SUB && sp && prev_op == EVOP_SUB)
+				if (op==EVOP_SUB && sp && prev_op==EVOP_SUB) {
 					sp--;
-				else {
+				}  else {
 					while (sp && !skip) {
 						EvalOperator p = (EvalOperator)op_stack[sp-1];
-						if (p==EVOP_LPR || op>p)
-							break;
+						if (p==EVOP_LPR||op>p) { break; }
 						ops[numOps++] = (char)p;
 						sp--;
 					}
@@ -3414,11 +3340,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				}
 			}
 			// check for out of bounds or unexpected input
-			if (numValues==MAX_EVAL_VALUES)
-				return ERROR_TOO_MANY_VALUES_IN_EXPRESSION;
-			else if (numOps==MAX_EVAL_OPER || sp==MAX_EVAL_OPER)
+			if (numValues==MAX_EVAL_VALUES) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+			else if (numOps==MAX_EVAL_OPER||sp==MAX_EVAL_OPER) {
 				return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
-
+			}
 			prev_op = op;
 			expression.skip_whitespace();
 		}
@@ -3429,8 +3354,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 	}
 
 	// Check if dependent on XREF'd symbol
-	if (xrefd)
-		return STATUS_XREF_DEPENDENT;
+	if (xrefd) { return STATUS_XREF_DEPENDENT; }
 
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
@@ -3445,12 +3369,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			EvalOperator op = (EvalOperator)ops[o];
 			shift_bits = 0;
 			prev_val = ri ? values[ri-1] : prev_val;
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2)
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2) {
 				break; // ignore suffix operations that are lacking values
+			}
 			switch (op) {
 				case EVOP_VAL:	// value
-					for (int i = 0; i<num_sections; i++)
-						section_counts[i][ri] = i==section_val[ri] ? 1 : 0;
+					for (int i = 0; i<num_sections; i++) { section_counts[i][ri] = i==section_val[ri] ? 1 : 0; }
 					values[ri++] = values[valIdx++]; break;
 				case EVOP_EQU:	// ==
 					ri--;
@@ -3474,68 +3398,71 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					break;
 				case EVOP_ADD:	// +
 					ri--;
-					for (int i = 0; i<num_sections; i++)
-						section_counts[i][ri-1] += section_counts[i][ri];
+					for (int i = 0; i<num_sections; i++) { section_counts[i][ri-1] += section_counts[i][ri]; }
 					values[ri-1] += values[ri]; break;
 				case EVOP_SUB:	// -
-					if (ri==1)
+					if (ri==1) {
 						values[ri-1] = -values[ri-1];
-					else if (ri>1) {
+					}  else if (ri>1) {
 						ri--;
-						for (int i = 0; i<num_sections; i++)
-							section_counts[i][ri-1] -= section_counts[i][ri];
+						for (int i = 0; i<num_sections; i++) { section_counts[i][ri-1] -= section_counts[i][ri]; }
 						values[ri-1] -= values[ri];
 					} break;
 				case EVOP_NEG:
-					if (ri>=1)
-						values[ri-1] = -values[ri-1];
+					if (ri>=1) { values[ri-1] = -values[ri-1]; }
 					break;
 				case EVOP_MUL:	// *
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					shift_bits = mul_as_shift(values[ri]);
 					prev_val = values[ri - 1];
 					values[ri-1] *= values[ri]; break;
 				case EVOP_DIV:	// /
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					shift_bits = -mul_as_shift(values[ri]);
 					prev_val = values[ri - 1];
 					values[ri - 1] /= values[ri]; break;
 				case EVOP_AND:	// &
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					values[ri-1] &= values[ri]; break;
 				case EVOP_OR:	// |
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					values[ri-1] |= values[ri]; break;
 				case EVOP_EOR:	// ^
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					values[ri-1] ^= values[ri]; break;
 				case EVOP_SHL:	// <<
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					shift_bits = values[ri];
 					prev_val = values[ri - 1];
 					values[ri - 1] <<= values[ri]; break;
 				case EVOP_SHR:	// >>
 					ri--;
-					for (int i = 0; i<num_sections; i++)
+					for (int i = 0; i<num_sections; i++) {
 						section_counts[i][ri-1] |= section_counts[i][ri];
+					}
 					shift_bits = -values[ri];
 					prev_val = values[ri - 1];
 					values[ri - 1] >>= values[ri]; break;
 				case EVOP_LOB:	// low byte
-					if (ri)
-						values[ri-1] &= 0xff;
+					if (ri) { values[ri-1] &= 0xff; }
 					break;
 				case EVOP_HIB:
 					if (ri) {
@@ -3552,20 +3479,18 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					return ERROR_EXPRESSION_OPERATION;
 					break;
 			}
-			if (shift_bits==0 && ri)
-				prev_val = values[ri-1];
+			if (shift_bits==0&&ri) { prev_val = values[ri-1]; }
 		}
 		int section_index = -1;
 		bool curr_relative = false;
 		// If relative to any section unless specifically interested in a relative value then return not ready
 		for (int i = 0; i<num_sections; i++) {
 			if (section_counts[i][0]) {
-				if (section_counts[i][0]!=1 || section_index>=0)
+				if (section_counts[i][0]!=1||section_index>=0) {
 					return STATUS_NOT_READY;
-				else if (etx.relative_section==section_ids[i])
+				} else if (etx.relative_section==section_ids[i]) {
 					curr_relative = true;
-				else if (etx.relative_section>=0)
-					return STATUS_NOT_READY;
+				} else if (etx.relative_section>=0) { return STATUS_NOT_READY; }
 				section_index = i;
 			}
 		}
@@ -3577,15 +3502,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			return STATUS_RELATIVE_SECTION;
 		}
 	}
-
 	return STATUS_OK;
 }
 
-
 // if an expression could not be evaluated, add it along with
 // the action to perform if it can be evaluated later.
-void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strref source_file, LateEval::Type type)
-{
+void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strref source_file, LateEval::Type type) {
 	LateEval le;
 	le.address = pc;
 	le.scope = scope_pc;
@@ -3602,8 +3524,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 	lateEval.push_back(le);
 }
 
-void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEval::Type type)
-{
+void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEval::Type type) {
 	LateEval le;
 	le.address = pc;
 	le.scope = scope_pc;
@@ -3622,13 +3543,11 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 
 // When a label is defined or a scope ends check if there are
 // any related late label evaluators that can now be evaluated.
-StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_missing_reference_errors)
-{
+StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_missing_reference_errors) {
 	bool evaluated_label = true;
 	strref new_labels[MAX_LABELS_EVAL_ALL];
 	int num_new_labels = 0;
-	if (added_label)
-		new_labels[num_new_labels++] = added_label;
+	if (added_label) { new_labels[num_new_labels++] = added_label; }
 
 	bool all = !added_label;
 	while (evaluated_label) {
@@ -3645,10 +3564,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 				while (gt_pos>=0 && !check) {
 					gt_pos = i->expression.find_at('%', gt_pos);
 					if (gt_pos>=0) {
-						if (i->expression[gt_pos+1]=='%')
-							gt_pos++;
-						else
-							check = true;
+						if (i->expression[gt_pos+1]=='%') { gt_pos++; }
+						else { check = true; }
 						gt_pos++;
 					}
 				}
@@ -3673,57 +3590,61 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 					switch (i->type) {
 						case LateEval::LET_BYTE:
 							if (ret==STATUS_RELATIVE_SECTION) {
-								if (i->section<0)
+								if (i->section<0) {
 									resolved = false;
-								else {
+								} else {
 									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift);
 									value = 0;
 								}
 							}
-							if (trg >= allSections[sec].size())
+							if (trg>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetByte(trg, value);
 							break;
 
 						case LateEval::LET_ABS_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
-								if (i->section<0)
+								if (i->section<0) {
 									resolved = false;
-								else {
+								} else {
 									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 2, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+1) >= allSections[sec].size())
+							if ((trg+1)>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetWord(trg, value);
 							break;
 
 						case LateEval::LET_ABS_L_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
-								if (i->section<0)
+								if (i->section<0) {
 									resolved = false;
-								else {
+								} else {
 									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 3, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+2) >= allSections[sec].size())
+							if ((trg+2)>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetTriple(trg, value);
 							break;
 
 						case LateEval::LET_ABS_4_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
-								if (i->section<0)
+								if (i->section<0) {
 									resolved = false;
-								else {
+								} else {
 									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 4, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+3) >= allSections[sec].size())
+							if ((trg+3)>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetQuad(trg, value);
 							break;
 
@@ -3732,27 +3653,29 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 							if (value<-128 || value>127) {
 								i = lateEval.erase(i);
 								return ERROR_BRANCH_OUT_OF_RANGE;
-							} if (trg >= allSections[sec].size())
+							} if (trg>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetByte(trg, value);
 							break;
 
 						case LateEval::LET_BRANCH_16:
 							value -= i->address+2;
-							if (trg >= allSections[sec].size())
+							if (trg>=allSections[sec].size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
 							allSections[sec].SetWord(trg, value);
 							break;
 
 						case LateEval::LET_LABEL: {
 							Label *label = GetLabel(i->label, i->file_ref);
-							if (!label)
-								return ERROR_LABEL_MISPLACED_INTERNAL;
+							if (!label) { return ERROR_LABEL_MISPLACED_INTERNAL; }
 							label->value = value;
 							label->evaluated = true;
 							label->section = ret==STATUS_RELATIVE_SECTION ? i->section : -1;
-							if (num_new_labels<MAX_LABELS_EVAL_ALL)
+							if (num_new_labels<MAX_LABELS_EVAL_ALL) {
 								new_labels[num_new_labels++] = label->label_name;
+							}
 							evaluated_label = true;
 							char f = i->label[0], l = i->label.get_last();
 							LabelAdded(label, f=='.' || f=='!' || f=='@' || f==':' || l=='$');
@@ -3761,8 +3684,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 						default:
 							break;
 					}
-					if (resolved)
-						i = lateEval.erase(i);
+					if (resolved) { i = lateEval.erase(i); }
 				} else {
 					if (print_missing_reference_errors && ret!=STATUS_XREF_DEPENDENT) {
 						PrintError(i->expression, ret);
@@ -3770,8 +3692,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 					}
 					++i;
 				}
-			} else
-				++i;
+			} else { ++i; }
 		}
 		all = false;
 		added_label.clear();
@@ -3779,39 +3700,35 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 	return STATUS_OK;
 }
 
-
-
 //
 //
 // LABELS
 //
 //
 
-
-
 // Get a label record if it exists
-Label *Asm::GetLabel(strref label)
-{
+Label *Asm::GetLabel(strref label) {
 	uint32_t label_hash = label.fnv1a();
 	uint32_t index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && label_hash == labels.getKey(index)) {
-		if (label.same_str(labels.getValue(index).label_name))
-			return labels.getValues() + index;
+		if (label.same_str(labels.getValue(index).label_name)) {
+			return labels.getValues()+index;
+		}
 		index++;
 	}
 	return nullptr;
 }
 
 // Get a protected label record from a file if it exists
-Label *Asm::GetLabel(strref label, int file_ref)
-{
+Label *Asm::GetLabel(strref label, int file_ref) {
 	if (file_ref>=0 && file_ref<(int)externals.size()) {
 		ExtLabels &labs = externals[file_ref];
 		uint32_t label_hash = label.fnv1a();
 		uint32_t index = FindLabelIndex(label_hash, labs.labels.getKeys(), labs.labels.count());
 		while (index < labs.labels.count() && label_hash == labs.labels.getKey(index)) {
-			if (label.same_str(labs.labels.getValue(index).label_name))
-				return labs.labels.getValues() + index;
+			if (label.same_str(labs.labels.getValue(index).label_name)) {
+				return labs.labels.getValues()+index;
+			}
 			index++;
 		}
 	}
@@ -3819,11 +3736,11 @@ Label *Asm::GetLabel(strref label, int file_ref)
 }
 
 // If exporting labels, append this label to the list
-void Asm::LabelAdded(Label *pLabel, bool local)
-{
+void Asm::LabelAdded(Label *pLabel, bool local) {
 	if (pLabel && pLabel->evaluated) {
-		if (map.size() == map.capacity())
-			map.reserve(map.size() + 256);
+		if (map.size()==map.capacity()) {
+			map.reserve(map.size()+256);
+		}
 		MapSymbol sym;
 		sym.name = pLabel->label_name;
 		sym.section = (int16_t)(pLabel->section);
@@ -3842,8 +3759,7 @@ Label* Asm::AddLabel(uint32_t hash) {
 }
 
 // mark a label as a local label
-void Asm::MarkLabelLocal(strref label, bool scope_reserve)
-{
+void Asm::MarkLabelLocal(strref label, bool scope_reserve) {
 	LocalLabelRecord rec;
 	rec.label = label;
 	rec.scope_depth = scope_depth;
@@ -3852,29 +3768,20 @@ void Asm::MarkLabelLocal(strref label, bool scope_reserve)
 }
 
 // find all local labels or up to given scope level and remove them
-StatusCode Asm::FlushLocalLabels(int scope_exit)
-{
+StatusCode Asm::FlushLocalLabels(int scope_exit) {
 	StatusCode status = STATUS_OK;
 	// iterate from end of local label records and early out if the label scope is lower than the current.
 	std::vector<LocalLabelRecord>::iterator i = localLabels.end();
 	while (i!=localLabels.begin()) {
 		--i;
-		if (i->scope_depth < scope_depth)
-			break;
+		if (i->scope_depth<scope_depth) { break; }
 		strref label = i->label;
 		StatusCode this_status = CheckLateEval(label);
-		if (this_status>FIRST_ERROR)
-			status = this_status;
+		if (this_status>FIRST_ERROR) { status = this_status; }
 		if (!i->scope_reserve || i->scope_depth<=scope_exit) {
 			uint32_t index = FindLabelIndex(label.fnv1a(), labels.getKeys(), labels.count());
 			while (index<labels.count()) {
 				if (label.same_str_case(labels.getValue(index).label_name)) {
-					if (i->scope_reserve) {
-						if (LabelPool *pool = GetLabelPool(labels.getValue(index).pool_name)) {
-							pool->Release(labels.getValue(index).value);
-							break;
-						}
-					}
 					labels.remove(index);
 					break;
 				}
@@ -3887,8 +3794,7 @@ StatusCode Asm::FlushLocalLabels(int scope_exit)
 }
 
 // Get a label pool by name
-LabelPool* Asm::GetLabelPool(strref pool_name)
-{
+LabelPool* Asm::GetLabelPool(strref pool_name) {
 	uint32_t pool_hash = pool_name.fnv1a();
 	uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
 	while (ins < labelPools.count() && pool_hash == labelPools.getKey(ins)) {
@@ -3901,17 +3807,16 @@ LabelPool* Asm::GetLabelPool(strref pool_name)
 }
 
 // Add a label pool
-StatusCode Asm::AddLabelPool(strref name, strref args)
-{
+StatusCode Asm::AddLabelPool(strref name, strref args) {
 	uint32_t pool_hash = name.fnv1a();
 	uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
 	uint32_t index = ins;
 	while (index < labelPools.count() && pool_hash == labelPools.getKey(index)) {
-		if (name.same_str(labelPools.getValue(index).pool_name))
+		if (name.same_str(labelPools.getValue(index).pool_name)) {
 			return ERROR_LABEL_POOL_REDECLARATION;
+		}
 		index++;
 	}
-
 	// check that there is at least one valid address
 	int ranges = 0;
 	int num32 = 0;
@@ -3921,67 +3826,64 @@ StatusCode Asm::AddLabelPool(strref name, strref args)
 	while (strref arg = args.split_token_trim(',')) {
 		strref start = arg[0]=='(' ? arg.scoped_block_skip() : arg.split_token_trim('-');
 		int addr0 = 0, addr1 = 0;
-		if (STATUS_OK != EvalExpression(start, etx, addr0))
+		if (STATUS_OK!=EvalExpression(start, etx, addr0)) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
-		if (STATUS_OK != EvalExpression(arg, etx, addr1))
+		}
+		if (STATUS_OK!=EvalExpression(arg, etx, addr1)) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
-		if (addr1<=addr0 || addr0<0)
+		}
+		if (addr1<=addr0||addr0<0) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
-
+		}
 		aRng[ranges++] = (uint16_t)addr0;
 		aRng[ranges++] = (uint16_t)addr1;
 		num32 += (addr1-addr0+15)>>4;
-
-		if (ranges >(MAX_POOL_RANGES*2) ||
-			num32 > ((MAX_POOL_BYTES+15)>>4))
+		if (ranges>2||num32>((MAX_POOL_BYTES+15)>>4)) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
+		}
 	}
 
-	if (!ranges)
-		return ERROR_POOL_RANGE_EXPRESSION_EVAL;
+	if (!ranges) { return ERROR_POOL_RANGE_EXPRESSION_EVAL; }
 
 	LabelPool pool;
 	pool.pool_name = name;
 	pool.numRanges = (int16_t)(ranges>>1);
-	pool.scopeDepth = (int16_t)scope_depth;
-	memset( pool.allocated, 0, sizeof( pool.allocated ) );
-
-	for (int r = 0; r<ranges; r++)
-		pool.ranges[r] = aRng[r];
+	pool.depth = 0;
+	pool.start = aRng[0];
+	pool.end = aRng[1];
 
 	labelPools.insert(ins, pool_hash);
 	LabelPool &poolValue = labelPools.getValue(ins);
 	poolValue = pool;
-
 	return STATUS_OK;
 }
 
 
-StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
-{
-	// declaring a pool within another pool?
-	if (pool_subpool.is_prefix_word(label)) {
+StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
+	if (pool_subpool.is_prefix_word(label)) {		// declaring a pool within another pool?
 		label += pool_subpool.get_len();
 		label.skip_whitespace();
 		strref size = label;
 		label = size.split_label();
 		if (strref::is_number(size.get_first())) {
-			uint32_t bytes = (uint32_t)size.atoi();
+			uint16_t bytes = (uint16_t)size.atoi();
 			if (!bytes) { return ERROR_POOL_RANGE_EXPRESSION_EVAL; }
 			if (!GetLabelPool(label)) {
-				uint32_t addr;
-				StatusCode error = pool.Reserve(bytes, addr);
+				uint16_t addr;
+				StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
 				if( error == STATUS_OK ) {
+					// permanently remove this chunk from the parent pool
+					pool.end = addr;
+					pool.depth = 0;
 					uint32_t pool_hash = label.fnv1a();
 					uint32_t ins = FindLabelIndex(pool_hash, labelPools.getKeys(), labelPools.count());
 					labelPools.insert(ins, pool_hash);
 					LabelPool &subPool = labelPools.getValue(ins);
 					subPool.pool_name = label;
 					subPool.numRanges = 1;
-					subPool.scopeDepth = (int16_t)scope_depth;
-					memset( subPool.allocated, 0, sizeof( subPool.allocated ) );
-					subPool.ranges[ 0 ] = (uint16_t)addr;
-					subPool.ranges[ 1 ] = uint16_t(addr+bytes);
+					subPool.depth = 0;
+					subPool.start = addr;
+					subPool.end = addr+bytes;
 				}
 				return error;
 			} else { return ERROR_LABEL_POOL_REDECLARATION; }
@@ -3989,13 +3891,13 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 		return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 	}
 	strref type = label;
-	int bytes = 1;
+	uint16_t bytes = 1;
 	int sz = label.find_at( '.', 1 );
 	if (sz > 0) {
 		label = type.split( sz );
 		++type;
 		if (strref::is_number(type.get_first())) {
-			bytes = (int)type.atoi();
+			bytes = (uint16_t)type.atoi();
 		} else {
 			switch (strref::tolower(type.get_first())) {
 				case 'l': bytes = 4; break;
@@ -4006,10 +3908,9 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 		}
 	}
 	if (GetLabel(label)) { return ERROR_POOL_LABEL_ALREADY_DEFINED; }
-	uint32_t addr;
-	StatusCode error = pool.Reserve(bytes, addr);
-	if (error != STATUS_OK)
-		return error;
+	uint16_t addr;
+	StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
+	if (error!=STATUS_OK) { return error; }
 	Label *pLabel = AddLabel(label.fnv1a());
 	pLabel->label_name = label;
 	pLabel->pool_name = pool.pool_name;
@@ -4020,102 +3921,63 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label)
 	pLabel->constant = true;
 	pLabel->external = false;
 	pLabel->reference = false;
+	bool local = false;
 
 	if (label[ 0 ] == '.' || label[ 0 ] == '@' || label[ 0 ] == '!' || label[ 0 ] == ':' || label.get_last() == '$') {
+		local = true;
 		MarkLabelLocal( label, true );
 	}
-	LabelAdded(pLabel, !!pool.scopeDepth);
+	LabelAdded(pLabel, local);
 	return error;
 }
 
 // Request a label from a pool
-StatusCode LabelPool::Reserve(int numBytes, uint32_t &ret_addr)
-{
-	uint8_t num8 = ( uint8_t )numBytes;
-	uint32_t bestSlot = 0;
-	uint32_t bestSize = allocated[0][1] ? allocated[0][0] : (uint32_t)(ranges[1]-ranges[0]);
-	uint8_t bestEnd = (uint8_t)bestSize;
-	uint8_t offs = 0;
-	uint32_t slot = 0;
-	uint32_t last = 0;
-	for(;;)
-	{
-		if( allocated[ slot ][ 1 ] == 0 ) { last = slot; break; }
-		uint8_t end = allocated[ slot ][ 0 ];
-		uint8_t size = end - offs;
-		if( size >= num8 )
-		{
-			if( size < bestSize ) { bestSlot = slot; bestEnd = end; }
-		}
-		offs = allocated[ slot ][ 0 ] + allocated[ slot ][ 1 ];
-		++slot;
-		if( slot == MAX_POOL_BYTES ) { last = slot;  break; }
+StatusCode LabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope) {
+	if (numBytes>(end-start)||depth==MAX_SCOPE_DEPTH) { return ERROR_OUT_OF_LABELS_IN_POOL; }
+	if (!depth||scope!=scopeUsed[depth-1][1]) {
+		scopeUsed[depth][0] = end;
+		scopeUsed[depth][1] = scope;
+		++depth;
 	}
-	if( last == MAX_POOL_BYTES || bestSize < num8 ) { return ERROR_OUT_OF_LABELS_IN_POOL; }
-
-	for( uint32_t m = last; m > bestSlot; --m )
-	{
-		allocated[ m ][ 0 ] = allocated[ m - 1 ][ 0 ];
-		allocated[ m ][ 1 ] = allocated[ m - 1 ][ 1 ];
-	}
-	allocated[ bestSlot ][0] = bestEnd - num8;
-	allocated[ bestSlot ][ 1 ] = num8;
-	ret_addr = ranges[ 0 ] + allocated[ bestSlot ][ 0 ];
+	end -= numBytes;
+	ret_addr = end;
 	return STATUS_OK;
 }
 
 // Release a label from a pool (at scope closure)
-StatusCode LabelPool::Release(uint32_t addr) {
-	uint32_t offs = addr - ranges[ 0 ];
-	if( offs > uint32_t(ranges[ 1 ]-ranges[0]) ) { return ERROR_INTERNAL_LABEL_POOL_ERROR; }
-	uint32_t slot = 0;
-	for(;;)
-	{
-		if( allocated[ slot ][ 1 ] == 0 ) { break; }
-		if( allocated[ slot ][ 0 ] == offs ) {
-			for(;;) {
-				allocated[ slot ][ 1 ] = 0;
-				if( slot == 0x100 || !allocated[ slot + 1 ][ 1 ] ) { break; }
-				allocated[ slot ][ 0 ] = allocated[ slot + 1 ][ 0 ];
-				allocated[ slot ][ 1 ] = allocated[ slot + 1 ][ 1 ];
-				++slot;
-			}
-			return STATUS_OK;
-		}
+void LabelPool::ExitScope(uint16_t scope) {
+	if (depth && scopeUsed[depth-1][1]==scope) {
+		end = scopeUsed[--depth][0];
 	}
-	return ERROR_INTERNAL_LABEL_POOL_ERROR;
 }
 
 // Check if a label is marked as an xdef
-bool Asm::MatchXDEF(strref label)
-{
+bool Asm::MatchXDEF(strref label) {
 	uint32_t hash = label.fnv1a();
 	uint32_t pos = FindLabelIndex(hash, xdefs.getKeys(), xdefs.count());
 	while (pos < xdefs.count() && xdefs.getKey(pos) == hash) {
-		if (label.same_str_case(xdefs.getValue(pos)))
-			return true;
+		if (label.same_str_case(xdefs.getValue(pos))) { return true; }
 		++pos;
 	}
 	return false;
 }
 
 // assignment of label (<label> = <expression>)
-StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
-{
+StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant) {
 	line.trim_whitespace();
 	int val = 0;
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	StatusCode status = EvalExpression(line, etx, val);
-	if (status != STATUS_NOT_READY && status != STATUS_OK && status != STATUS_RELATIVE_SECTION)
+	if (status!=STATUS_NOT_READY && status!=STATUS_OK && status!=STATUS_RELATIVE_SECTION) {
 		return status;
-
+	}
 	Label *pLabel = GetLabel(label);
 	if (pLabel) {
-		if (pLabel->constant && pLabel->evaluated && val != pLabel->value)
-			return (status == STATUS_NOT_READY) ? STATUS_OK : ERROR_MODIFYING_CONST_LABEL;
-	} else
-		pLabel = AddLabel(label.fnv1a());
+		if (pLabel->constant && pLabel->evaluated && val!=pLabel->value) {
+			return (status==STATUS_NOT_READY) ? STATUS_OK : ERROR_MODIFYING_CONST_LABEL;
+		}
+	} else { pLabel = AddLabel(label.fnv1a()); }
 
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
@@ -4129,11 +3991,10 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant)
 	pLabel->reference = false;
 
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
-	if (!pLabel->evaluated)
+	if (!pLabel->evaluated) {
 		AddLateEval(label, CurrSection().GetPC(), scope_address[scope_depth], line, LateEval::LET_LABEL);
-	else {
-		if (local)
-			MarkLabelLocal(label);
+	}  else {
+		if (local) { MarkLabelLocal(label); }
 		LabelAdded(pLabel, local);
 		return CheckLateEval(label);
 	}
@@ -4146,12 +4007,11 @@ StatusCode Asm::AddressLabel(strref label)
 	StatusCode status = STATUS_OK;
 	Label *pLabel = GetLabel(label);
 	bool constLabel = false;
-	if (!pLabel)
+	if (!pLabel) {
 		pLabel = AddLabel(label.fnv1a());
-	else if (pLabel->constant && pLabel->value != CurrSection().GetPC())
+	} else if (pLabel->constant && pLabel->value!=CurrSection().GetPC()) {
 		return ERROR_MODIFYING_CONST_LABEL;
-	else
-		constLabel = pLabel->constant;
+	} else { constLabel = pLabel->constant; }
 
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
@@ -4165,20 +4025,19 @@ StatusCode Asm::AddressLabel(strref label)
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	LabelAdded(pLabel, local);
-	if (local)
-		MarkLabelLocal(label);
+	if (local) { MarkLabelLocal(label); }
 	status = CheckLateEval(label);
 	if (!local && label[0]!=']') { // MERLIN: Variable label does not invalidate local labels
 		StatusCode this_status = FlushLocalLabels();
-		if (status<FIRST_ERROR && this_status>=FIRST_ERROR)
+		if (status<FIRST_ERROR && this_status>=FIRST_ERROR) {
 			status = this_status;
+		}
 	}
 	return status;
 }
 
 // include symbols listed from a .sym file or all if no listing
-StatusCode Asm::IncludeSymbols(strref line)
-{
+StatusCode Asm::IncludeSymbols(strref line) {
 	strref symlist = line.before('"').get_trimmed_ws();
 	line = line.between('"', '"');
 	size_t size;
@@ -4329,20 +4188,16 @@ StatusCode Asm::StringAction(StringSymbol *pStr, strref line)
 		line.skip_whitespace();
 		pStr->clear();
 		return ParseStringOp(pStr, line);
-	} else {
-		strref str = pStr->string_value.valid() ?
-			pStr->string_value.get_strref() : pStr->string_const;
-		if (!str)
-			return STATUS_OK;
-		char *macro = (char*)malloc(str.get_len());
-		strovl mac(macro, str.get_len());
-		mac.copy(str);
-		mac.replace("\\n", "\n");
-		loadedData.push_back(macro);
-		PushContext(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
-		return STATUS_OK;
-
 	}
+	strref str = pStr->string_value.valid() ?
+		pStr->string_value.get_strref() : pStr->string_const;
+	if (!str) { return STATUS_OK; }
+	char *macro = (char*)malloc(str.get_len());
+	strovl mac(macro, str.get_len());
+	mac.copy(str);
+	mac.replace("\\n", "\n");
+	loadedData.push_back(macro);
+	PushContext(contextStack.curr().source_name, mac.get_strref(), mac.get_strref());
 	return STATUS_OK;
 }
 
@@ -4351,8 +4206,6 @@ StatusCode Asm::StringAction(StringSymbol *pStr, strref line)
 // CONDITIONAL ASSEMBLY
 //
 //
-
-
 
 // Encountered #if or #ifdef, return true if assembly is enabled
 bool Asm::NewConditional() {
@@ -4671,8 +4524,7 @@ StatusCode Asm::Directive_Import(strref line)
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
 				EvalExpression(param.split_token_trim(','), etx, skip);
-				if (param)
-					EvalExpression(param, etx, len);
+				if (param) { EvalExpression(param, etx, len); }
 			}
 		}
 	}
@@ -4739,8 +4591,9 @@ StatusCode Asm::Directive_ORG(strref line)
 			ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 
 	// Section immediately followed by ORG reassigns that section to be fixed
-	if (CurrSection().size()==0 && !CurrSection().IsDummySection() && !CurrSection().address_assigned) {
-		if (CurrSection().type == ST_ZEROPAGE && addr >= 0x100)
+	Section &currSection = CurrSection();
+	if (currSection.size()==0 && !currSection.IsDummySection() && !currSection.address_assigned) {
+		if (currSection.type == ST_ZEROPAGE && addr >= 0x100)
 			return ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
 		AssignAddressToSection(SectionId(), addr);
 	} else
@@ -4763,6 +4616,39 @@ StatusCode Asm::Directive_LOAD(strref line)
 			ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY : error;
 
 	CurrSection().SetLoadAddress(addr);
+	return STATUS_OK;
+}
+
+StatusCode Asm::Directive_MERGE(strref line)
+{
+	int first_section = -1;
+	strref section_name = line.split_label();
+
+	// get the first section that matches the first name and has an assigned address
+	for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
+		const Section &section = allSections[section_id];
+		if (!section.IsMergedSection()&&section.name.same_str(section_name)) {
+			if (first_section<0||!allSections[first_section].IsRelativeSection()) {
+				first_section = (int)section_id;
+			}
+		}
+	}
+	if (first_section<0) { return ERROR_NOT_A_SECTION; }
+
+	// merge all sections as defined by the line
+	while (section_name) {
+		for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
+			const Section &section = allSections[section_id];
+			if (section_id!=first_section&&!section.IsMergedSection()&&section.IsRelativeSection()) {
+				if (section.name.same_str(section_name)) {
+					StatusCode result = MergeSections(first_section, (int)section_id);
+					if (result!=STATUS_OK) { return result; }
+				}
+			}
+		}
+		if (line[0]==',') { ++line; }
+		section_name = line.split_label();
+	}
 	return STATUS_OK;
 }
 
@@ -5041,6 +4927,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			SetSection(line);
 			break;
 
+		case AD_MERGE:
+			return Directive_MERGE(line);
+
 		case AD_LINK:
 			return LinkSections(line.get_trimmed_ws());
 
@@ -5144,6 +5033,16 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			
 		case AD_TEXT: {		// text: add text within quotes
 			strref text_prefix;
+			if (line[0]=='[') {
+				strref str = line.scoped_block_skip().get_trimmed_ws();
+				if (StringSymbol *StringSym = GetString(str)) {
+					line.skip_whitespace();
+					if (line[0] == '"')
+						line = line.between('"', '"');
+					CurrSection().AddIndexText(StringSym, line);
+					break;
+				}
+			}
 			while (line[0] != '"') {
 				strref word = line.get_word_ws();
 				if (word.same_str("petscii") || word.same_str("petscii_shifted")) {
@@ -5396,8 +5295,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t validModes, Ad
 						if ((flipXY && relY) || (!flipXY && relX))
 							addrMode = force_24 ? AMB_ABS_L_X : (force_zp ? AMB_ZP_X : AMB_ABS_X);
 						else if ((flipXY && relX) || (!flipXY && relY)) {
-							if (force_zp)
-								return ERROR_INSTRUCTION_NOT_ZP;
+							if (force_zp) { return ERROR_INSTRUCTION_NOT_ZP; }
 							addrMode = AMB_ABS_Y;
 						}
 					}
@@ -5409,8 +5307,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t validModes, Ad
 }
 
 // Push an opcode to the output buffer in the current section
-StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
-{
+StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 	StatusCode error = STATUS_OK;
 	strref expression;
 
@@ -5492,29 +5389,29 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 
 	// Check if an explicit 24 bit address
 	if (expression[0] == '$' && (expression + 1).len_hex()>4) {
-		if (addrMode == AMB_ABS && (validModes & AMM_ABS_L))
+		if (addrMode==AMB_ABS&&(validModes & AMM_ABS_L)) {
 			addrMode = AMB_ABS_L;
-		else if (addrMode == AMB_ABS_X && (validModes & AMM_ABS_L_X))
+		} else if (addrMode==AMB_ABS_X&&(validModes & AMM_ABS_L_X)) {
 			addrMode = AMB_ABS_L_X;
+		}
 	}
 
 	if (!(validModes & (1 << addrMode))) {
-		if (addrMode==AMB_ZP_REL_X && (validModes & AMM_REL_X))
+		if (addrMode==AMB_ZP_REL_X&&(validModes & AMM_REL_X)) {
 			addrMode = AMB_REL_X;
-		else if (addrMode==AMB_REL && (validModes & AMM_ZP_REL))
+		} else if (addrMode==AMB_REL&&(validModes & AMM_ZP_REL)) {
 			addrMode = AMB_ZP_REL;
-		else if (addrMode==AMB_ABS && (validModes & AMM_ABS_L))
+		} else if (addrMode==AMB_ABS&&(validModes & AMM_ABS_L)) {
 			addrMode = AMB_ABS_L;
-		else if (addrMode==AMB_ABS_X && (validModes & AMM_ABS_L_X))
+		} else if (addrMode==AMB_ABS_X&&(validModes & AMM_ABS_L_X)) {
 			addrMode = AMB_ABS_L_X;
-		else if (addrMode==AMB_REL_L && (validModes & AMM_ZP_REL_L))
+		} else if (addrMode==AMB_REL_L&&(validModes & AMM_ZP_REL_L)) {
 			addrMode = AMB_ZP_REL_L;
-		else if (Merlin() && addrMode==AMB_IMM && validModes==AMM_ABS)
+		} else if (Merlin()&&addrMode==AMB_IMM && validModes==AMM_ABS) {
 			addrMode = AMB_ABS;	// Merlin seems to allow this
-		else if (Merlin() && addrMode==AMB_ABS && validModes==AMM_ZP_REL)
+		} else if (Merlin()&&addrMode==AMB_ABS && validModes==AMM_ZP_REL) {
 			addrMode = AMB_ZP_REL;	// Merlin seems to allow this
-		else
-			return ERROR_INVALID_ADDRESSING_MODE;
+		} else { return ERROR_INVALID_ADDRESSING_MODE; }
 	}
 
 	// Add the instruction and argument to the code
@@ -5675,14 +5572,12 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file)
 }
 
 // Build a line of code
-void Asm::PrintError(strref line, StatusCode error)
-{
+void Asm::PrintError(strref line, StatusCode error) {
 	strown<512> errorText;
 	if (contextStack.has_work()) {
 		errorText.sprintf("Error " STRREF_FMT "(%d): ", STRREF_ARG(contextStack.curr().source_name),
 						  contextStack.curr().source_file.count_lines(line)+1);
-	} else
-		errorText.append("Error: ");
+	} else { errorText.append("Error: "); }
 	errorText.append(aStatusStrings[error]);
 	errorText.append(" \"");
 	errorText.append(line.get_trimmed_ws());
@@ -5693,13 +5588,11 @@ void Asm::PrintError(strref line, StatusCode error)
 }
 
 // Build a line of code
-StatusCode Asm::BuildLine(strref line)
-{
+StatusCode Asm::BuildLine(strref line) {
 	StatusCode error = STATUS_OK;
 
 	// MERLIN: First char of line is * means comment
-	if (Merlin() && line[0]=='*')
-		return STATUS_OK;
+	if (Merlin()&&line[0]=='*') { return STATUS_OK; }
 
 	// remember for listing
 	int start_section = SectionId();
@@ -5711,29 +5604,26 @@ StatusCode Asm::BuildLine(strref line)
 		strref line_start = line;
 		char char0 = line[0];				// first char including white space
 		line.skip_whitespace();				// skip to first character
-
 		line = line.before_or_full(';');	// clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
-		if (line[0]==':' && !Merlin())	// Kick Assembler macro prefix (incompatible with merlin)
-			++line;
+		if (line[0]==':'&&!Merlin()) { ++line; }	// Kick Assembler macro prefix (incompatible with merlin)
 		strref line_nocom = line;
 		strref operation = line.split_range(Merlin() ? label_end_char_range_merlin : label_end_char_range);
 		char char1 = operation[0];			// first char of first word
 		char charE = operation.get_last();	// end char of first word
-
 		line.trim_whitespace();
 		bool force_label = charE==':' || charE=='$';
-		if (!force_label && Merlin() && (line || operation)) // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
-			force_label = (!strref::is_ws(char0) && char0!='{' && char0!='}') || char1==']' || charE=='?';
-		else if (!Merlin() && line[0]==':')
-			force_label = true;
+		if (!force_label && Merlin()&&(line||operation)) { // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
+			force_label = (!strref::is_ws(char0)&&char0!='{' && char0!='}')||char1==']'||charE=='?';
+		} else if (!Merlin()&&line[0]==':') { force_label = true; }
 		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
 				// scope open / close
 				switch (line[0]) {
 					case '{':
 						error = EnterScope();
+						brace_depth++;
 						list_flags |= ListLine::CYCLES_START;
 						if (error == STATUS_OK) {
 							++line;
@@ -5743,6 +5633,10 @@ StatusCode Asm::BuildLine(strref line)
 					case '}':
 						// check for late eval of anything with an end scope
 						error = ExitScope();
+						for (LabelPool *pool = labelPools.getValues(), *end = pool+labelPools.count(); pool!=end; pool++) {
+							pool->ExitScope((uint16_t)brace_depth);
+						}
+						brace_depth--;
 						list_flags |= ListLine::CYCLES_STOP;
 						if (error == STATUS_OK) {
 							++line;
@@ -5757,13 +5651,11 @@ StatusCode Asm::BuildLine(strref line)
 						++line;	// bad character?
 						break;
 				}
-			} else
-				line.clear();
+			} else { line.clear(); }
 		} else {
 			// ignore leading period for instructions and directives - not for labels
 			strref label = operation;
-			if ((!Merlin() && operation[0]==':') || operation[0]=='.')
-				++operation;
+			if ((!Merlin()&&operation[0]==':')||operation[0]=='.') { ++operation; }
 			operation = operation.before_or_full('.');
 
 			int op_idx = LookupOpCodeIndex(operation.fnv1a_lower(), aInstructions, num_instructions);
@@ -5826,15 +5718,13 @@ StatusCode Asm::BuildLine(strref line)
 							line.clear();
 						} else if (Merlin() && strref::is_ws(line_start[0])) {
 							error = ERROR_UNDEFINED_CODE;
-						} else if (label[0]=='$')
+						} else if (label[0]=='$') {
 							line.clear();
-						else {
-							if (label.get_last()==':')
-								label.clip(1);
+						} else {
+							if (label.get_last()==':') { label.clip(1); }
 							error = AddressLabel(label);
 							line = line_start + int(label.get() + label.get_len() -line_start.get());
-							if (line[0]==':' || line[0]=='?')
-								++line;	// there may be codes after the label
+							if (line[0]==':'||line[0]=='?') { ++line; } // there may be codes after the label
 							list_flags |= ListLine::KEYWORD;
 						}
 					}
@@ -5853,27 +5743,28 @@ StatusCode Asm::BuildLine(strref line)
 				return ERROR_UNTERMINATED_CONDITION;
 			}
 		}
-
-		if (line.same_str_case(line_start))
+		if (line.same_str_case(line_start)) {
 			error = ERROR_UNABLE_TO_PROCESS;
-		else if (CurrSection().type == ST_ZEROPAGE && CurrSection().address > 0x100)
+		} else if (CurrSection().type==ST_ZEROPAGE && CurrSection().address>0x100) {
 			error = ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE;
-
-		if (error > STATUS_XREF_DEPENDENT)
+		}
+		if (error>STATUS_XREF_DEPENDENT) {
 			PrintError(line_start, error);
+		}
 
 		// dealt with error, continue with next instruction unless too broken
-		if (error < ERROR_STOP_PROCESSING_ON_HIGHER)
+		if (error<ERROR_STOP_PROCESSING_ON_HIGHER) {
 			error = STATUS_OK;
+		}
 	}
 	// update listing
 	if (error == STATUS_OK && list_assembly) {
 		if (SectionId() == start_section) {
 			Section &curr = CurrSection();
-			if (!curr.pListing)
-				curr.pListing = new Listing;
-			if (curr.pListing && curr.pListing->size() == curr.pListing->capacity())
-				curr.pListing->reserve(curr.pListing->size() + 256);
+			if (!curr.pListing) { curr.pListing = new Listing; }
+			if (curr.pListing && curr.pListing->size()==curr.pListing->capacity()) {
+				curr.pListing->reserve(curr.pListing->size()+256);
+			}
 			if (((list_flags&(ListLine::KEYWORD|ListLine::CYCLES_START|ListLine::CYCLES_STOP)) ||
 					(curr.address != start_address && curr.size())) && !curr.IsDummySection()) {
 				struct ListLine lst;
@@ -5891,19 +5782,15 @@ StatusCode Asm::BuildLine(strref line)
 }
 
 // Build a segment of code (file or macro)
-StatusCode Asm::BuildSegment()
-{
+StatusCode Asm::BuildSegment() {
 	StatusCode error = STATUS_OK;
 	while (contextStack.curr().read_source) {
 		contextStack.curr().next_source = contextStack.curr().read_source;
 		error = BuildLine(contextStack.curr().next_source.line());
-		if (error > ERROR_STOP_PROCESSING_ON_HIGHER)
-			break;
+		if (error>ERROR_STOP_PROCESSING_ON_HIGHER) { break; }
 		contextStack.curr().read_source = contextStack.curr().next_source;
 	}
-	if (error == STATUS_OK) {
-		error = CheckLateEval(strref(), CurrSection().GetPC());
-	}
+	if (error == STATUS_OK) { error = CheckLateEval(strref(), CurrSection().GetPC()); }
 	return error;
 }
 
@@ -5928,40 +5815,33 @@ struct cycleCnt {
 			}
 		}
 	}
-	int plus_acc() {
-		return plus + a16 + x16 + dp;
-	}
+	int plus_acc() { return plus + a16 + x16 + dp; }
 	void combine(const struct cycleCnt &o) {
 		base += o.base; plus += o.plus; a16 += o.a16; x16 += o.x16; dp += o.dp;
 	}
 	bool complex() const { return a16 != 0 || x16 != 0 || dp != 0; }
-	static int get_base(uint8_t c) {
-		return (c & 0xf) >> 1;
-	}
+	static int get_base(uint8_t c) { return (c & 0xf) >> 1;	}
 	static int sum_plus(uint8_t c) {
-		if (c == 0xff)
-			return 0;
+		if (c==0xff) { return 0; }
 		int i = c >> 4;
-		if (i)
-			return i <= 8 ? (timing_65816_plus[i][0] + timing_65816_plus[i][1] + timing_65816_plus[i][2]) : 0;
+		if (i) {
+			return i<=8 ? (timing_65816_plus[i][0]+timing_65816_plus[i][1]+timing_65816_plus[i][2]) : 0;
+		}
 		return c & 1;
 	}
 };
 
-bool Asm::List(strref filename)
-{
+bool Asm::List(strref filename) {
 	FILE *f = stdout;
 	bool opened = false;
 	if (filename) {
 		f = fopen(strown<512>(filename).c_str(), "w");
-		if (!f)
-			return false;
+		if (!f) { return false; }
 		opened = true;
 	}
 
 	// ensure that the greatest instruction set referenced is used for listing
-	if (list_cpu != cpu)
-		SetCPU(list_cpu);
+	if (list_cpu!=cpu) { SetCPU(list_cpu); }
 
 	// Build a disassembly lookup table
 	uint8_t mnemonic[256];
@@ -5987,8 +5867,7 @@ bool Asm::List(strref filename)
 	strref prev_src;
 	int prev_offs = 0;
 	for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
-		if (si->type == ST_REMOVED)
-			continue;
+		if (si->type==ST_REMOVED) { continue; }
 		if (si->address_assigned)
 			fprintf(f, "Section " STRREF_FMT " (%d, %s): $%04x-$%04x\n", STRREF_ARG(si->name),
 					(int)(&*si - &allSections[0]), si->type>=0 && si->type<num_section_type_str ?
@@ -6013,8 +5892,9 @@ bool Asm::List(strref filename)
 						space_line.clip_trailing_whitespace();
 						strown<128> line_fix(space_line);
 						for (strl_t pos = 0; pos < line_fix.len(); ++pos) {
-							if (line_fix[pos] == '\t')
-								line_fix.exchange(pos, 1, pos & 1 ? strref(" ") : strref("  "));
+							if (line_fix[pos]=='\t') {
+								line_fix.exchange(pos, 1, pos&1 ? strref(" ") : strref("  "));
+							}
 						}
 						out.pad_to(' ', aCPUs[cpu].timing ? 40 : 33);
 						out.append(line_fix.get_strref());
@@ -6026,13 +5906,13 @@ bool Asm::List(strref filename)
 				}
 			}
 
-			if (lst.size)
-				out.sprintf_append("$%04x ", lst.address + si->start_address);
+			if (lst.size) { out.sprintf_append("$%04x ", lst.address+si->start_address); }
 
 			int s = lst.wasMnemonic() ? (lst.size < 4 ? lst.size : 4) : (lst.size < 8 ? lst.size : 8);
 			if (si->output && si->output_capacity >= size_t(lst.address + s)) {
-				for (int b = 0; b < s; ++b)
-					out.sprintf_append("%02x ", si->output[lst.address + b]);
+				for (int b = 0; b<s; ++b) {
+					out.sprintf_append("%02x ", si->output[lst.address+b]);
+				}
 			}
 			if (lst.startClock() && cycles_depth<MAX_DEPTH_CYCLE_COUNTER) {
 				cycles_depth++;	cycles[cycles_depth].clr();
@@ -6040,13 +5920,14 @@ bool Asm::List(strref filename)
 			}
 			if (lst.stopClock()) {
 				out.pad_to(' ', 6);
-				if (cycles[cycles_depth].complex())
+				if (cycles[cycles_depth].complex()) {
 					out.sprintf_append("c<%d = %d + m%d + i%d + d%d", cycles_depth,
-						cycles[cycles_depth].base, cycles[cycles_depth].a16,
-						cycles[cycles_depth].x16, cycles[cycles_depth].dp);
-				else
+									   cycles[cycles_depth].base, cycles[cycles_depth].a16,
+									   cycles[cycles_depth].x16, cycles[cycles_depth].dp);
+				} else {
 					out.sprintf_append("c<%d = %d + %d", cycles_depth,
-						cycles[cycles_depth].base, cycles[cycles_depth].plus_acc());
+									   cycles[cycles_depth].base, cycles[cycles_depth].plus_acc());
+				}
 				if (cycles_depth) {
 					cycles_depth--;
 					cycles[cycles_depth].combine(cycles[cycles_depth + 1]);
@@ -6063,33 +5944,35 @@ bool Asm::List(strref filename)
 						if (am == AMB_ZP_X)	fmt = "%s $%02x,y";
 						else if (am == AMB_ABS_X) fmt = "%s $%04x,y";
 					}
-					if (opcode_table[op].modes & AMM_ZP_ABS)
-						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], (char)buf[2] + lst.address + si->start_address + 3);
-					else if (opcode_table[op].modes & AMM_BRANCH)
-						out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1] + lst.address + si->start_address + 2);
-					else if (opcode_table[op].modes & AMM_BRANCH_L)
-						out.sprintf_append(fmt, opcode_table[op].instr, (int16_t)(buf[1] | (buf[2] << 8)) + lst.address + si->start_address + 3);
-					else if (am == AMB_NON || am == AMB_ACC)
+					if (opcode_table[op].modes & AMM_ZP_ABS) {
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], (char)buf[2]+lst.address+si->start_address+3);
+					} else if (opcode_table[op].modes & AMM_BRANCH) {
+						out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1]+lst.address+si->start_address+2);
+					} else if (opcode_table[op].modes & AMM_BRANCH_L) {
+						out.sprintf_append(fmt, opcode_table[op].instr, (int16_t)(buf[1]|(buf[2]<<8))+lst.address+si->start_address+3);
+					} else if (am==AMB_NON||am==AMB_ACC) {
 						out.sprintf_append(fmt, opcode_table[op].instr);
-					else if (am == AMB_ABS || am == AMB_ABS_X || am == AMB_ABS_Y || am == AMB_REL || am == AMB_REL_X || am == AMB_REL_L)
-						out.sprintf_append(fmt, opcode_table[op].instr, buf[1] | (buf[2] << 8));
-					else if (am == AMB_ABS_L || am == AMB_ABS_L_X)
-						out.sprintf_append(fmt, opcode_table[op].instr, buf[1] | (buf[2] << 8) | (buf[3] << 16));
-					else if (am == AMB_BLK_MOV)
+					} else if (am==AMB_ABS||am==AMB_ABS_X||am==AMB_ABS_Y||am==AMB_REL||am==AMB_REL_X||am==AMB_REL_L) {
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8));
+					} else if (am==AMB_ABS_L||am==AMB_ABS_L_X) {
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8)|(buf[3]<<16));
+					} else if (am==AMB_BLK_MOV) {
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], buf[2]);
-					else if (am == AMB_IMM && lst.size==3)
-						out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1] | (buf[2]<<8));
-					else
+					} else if (am==AMB_IMM && lst.size==3) {
+						out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1]|(buf[2]<<8));
+					} else {
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
+					}
 					if (aCPUs[cpu].timing) {
 						cycles[cycles_depth].add(aCPUs[cpu].timing[*buf]);
 						out.pad_to(' ', 33);
-						if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf])==1)
+						if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf])==1) {
 							out.sprintf_append("%d+", cycleCnt::get_base(aCPUs[cpu].timing[*buf]));
-						else if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf]))
+						} else if (cycleCnt::sum_plus(aCPUs[cpu].timing[*buf])) {
 							out.sprintf_append("%d+%d", cycleCnt::get_base(aCPUs[cpu].timing[*buf]), cycleCnt::sum_plus(aCPUs[cpu].timing[*buf]));
-						else
+						} else {
 							out.sprintf_append("%d", cycleCnt::get_base(aCPUs[cpu].timing[*buf]));
+						}
 					}
 				}
 			}
@@ -6108,91 +5991,83 @@ bool Asm::List(strref filename)
 			prev_offs = lst.line_offs;
 		}
 	}
-	if (opened)
-		fclose(f);
+	if (opened) { fclose(f); }
 	return true;
 }
 
 // Create a listing of all valid instructions and addressing modes
-bool Asm::AllOpcodes(strref filename)
-{
+bool Asm::AllOpcodes(strref filename) {
 	FILE *f = stdout;
 	bool opened = false;
 	if (filename) {
 		f = fopen(strown<512>(filename).c_str(), "w");
-		if (!f)
-			return false;
+		if (!f) { return false; }
 		opened = true;
 	}
 	for (int i = 0; i < opcode_count; i++) {
 		uint32_t modes = opcode_table[i].modes;
 		for (int a = 0; a < AMB_COUNT; a++) {
-			if (modes & (1 << a)) {
+			if (modes & (1<<a)) {
 				const char *fmt = aAddrModeFmt[a];
 				fputs("\t", f);
-				if (opcode_table[i].modes & AMM_BRANCH)
+				if (opcode_table[i].modes & AMM_BRANCH) {
 					fprintf(f, "%s *+%d", opcode_table[i].instr, 5);
-				else if (a==AMB_ZP_ABS)
+				} else if (a==AMB_ZP_ABS) {
 					fprintf(f, "%s $%02x,*+%d", opcode_table[i].instr, 0x23, 13);
-				else {
+				} else {
 					if (opcode_table[i].modes & AMM_FLIPXY) {
 						if (a == AMB_ZP_X)	fmt = "%s $%02x,y";
 						else if (a == AMB_ABS_X) fmt = "%s $%04x,y";
 					}
 					if (a == AMB_ABS_L || a == AMB_ABS_L_X) {
-						if ((modes & ~(AMM_ABS_L|AMM_ABS_L_X)))
+						if ((modes & ~(AMM_ABS_L|AMM_ABS_L_X))) {
 							fprintf(f, a==AMB_ABS_L ? "%s.l $%06x" : "%s.l $%06x,x", opcode_table[i].instr, 0x222120);
-						else
+						} else {
 							fprintf(f, fmt, opcode_table[i].instr, 0x222120);
-					} else if (a == AMB_ABS || a == AMB_ABS_X || a == AMB_ABS_Y || a == AMB_REL || a == AMB_REL_X || a == AMB_REL_L)
+						}
+					} else if (a==AMB_ABS||a==AMB_ABS_X||a==AMB_ABS_Y||a==AMB_REL||a==AMB_REL_X||a==AMB_REL_L) {
 						fprintf(f, fmt, opcode_table[i].instr, 0x2120);
-					else if (a == AMB_IMM && (modes&(AMM_IMM_DBL_A|AMM_IMM_DBL_XY))) {
+					} else if (a==AMB_IMM&&(modes&(AMM_IMM_DBL_A|AMM_IMM_DBL_XY))) {
 						fprintf(f, "%s.b #$%02x\n", opcode_table[i].instr, 0x21);
 						fprintf(f, "\t%s.w #$%04x", opcode_table[i].instr, 0x2322);
-					} else
+					} else {
 						fprintf(f, fmt, opcode_table[i].instr, 0x21, 0x20, 0x1f);
 					}
+				}
 				fputs("\n", f);
 			}
 		}
 	}
-	if (opened)
-		fclose(f);
+	if (opened) { fclose(f); }
 	return true;
 }
 
 // create an instruction table (mnemonic hash lookup + directives)
-void Asm::Assemble(strref source, strref filename, bool obj_target)
-{
+void Asm::Assemble(strref source, strref filename, bool obj_target) {
 	SetCPU(cpu);
-
 	StatusCode error = STATUS_OK;
 	PushContext(filename, source, source);
-
 	scope_address[scope_depth] = CurrSection().GetPC();
 	while (contextStack.has_work() && error == STATUS_OK) {
 		error = BuildSegment();
-		if (contextStack.curr().complete())
+		if (contextStack.curr().complete()) {
 			error = PopContext();
-		else {
+		} else {
 			error = FlushLocalLabels(scope_depth);
-			if (error >= FIRST_ERROR)
-				break;
+			if (error>=FIRST_ERROR) { break; }
 			contextStack.curr().restart();
 			error = STATUS_OK;
 		}
 	}
-	if (error == STATUS_OK) {
-		if (!obj_target)
-			LinkZP();
+	if (error==STATUS_OK) {
+		if (!obj_target) { LinkZP(); }
 		error = CheckLateEval();
-		if (error > STATUS_XREF_DEPENDENT) {
+		if (error>STATUS_XREF_DEPENDENT) {
 			strown<512> errorText;
 			errorText.copy("Error: ");
 			errorText.append(aStatusStrings[error]);
 			fwrite(errorText.get(), errorText.get_len(), 1, stderr);
-		} else
-			CheckLateEval(strref(), -1, true);	// output any missing xref's
+		} else { CheckLateEval(strref(), -1, true); } // output any missing xref's
 
 		if (!obj_target) {
 			for (std::vector<LateEval>::iterator i = lateEval.begin(); i!=lateEval.end(); ++i) {
@@ -6209,12 +6084,11 @@ void Asm::Assemble(strref source, strref filename, bool obj_target)
 				fwrite(errorText.get(), errorText.get_len(), 1, stderr);
 			}
 		}
-	} else
+	} else {
 		PrintError(&contextStack.curr() ?
-			contextStack.curr().read_source.get_line() : strref(), error);
+				   contextStack.curr().read_source.get_line() : strref(), error);
+	}
 }
-
-
 
 //
 //
@@ -6297,16 +6171,14 @@ struct ObjFileMapSymbol {
 };
 
 // Simple string pool, converts strref strings to zero terminated strings and returns the offset to the string in the pool.
-static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char **strPool, uint32_t &strPoolSize, uint32_t &strPoolCap)
-{
-	if (!str.get() || !str.get_len())
-		return -1;	// empty string
+static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char **strPool, uint32_t &strPoolSize, uint32_t &strPoolCap) {
+	if (!str.get()||!str.get_len()) { return -1; }	// empty string
 
 	uint32_t hash = str.fnv1a();
 	uint32_t index = FindLabelIndex(hash, pLookup->getKeys(), pLookup->count());
-	if (index<pLookup->count() && str.same_str_case(*strPool + pLookup->getValue(index)))
+	if (index<pLookup->count()&&str.same_str_case(*strPool+pLookup->getValue(index))) {
 		return pLookup->getValue(index);
-
+	}
 	int strOffs = strPoolSize;
 	if ((strOffs + str.get_len() + 1) > strPoolCap) {
 		strPoolCap = strOffs + (uint32_t)str.get_len() + 4096;
@@ -6317,8 +6189,7 @@ static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char
 				free(*strPool);
 			}
 			*strPool = strPoolGrow;
-		} else
-			return -1;
+		} else { return -1; }
 	}
 
 	if (*strPool) {
@@ -6332,8 +6203,7 @@ static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char
 	return strOffs;
 }
 
-StatusCode Asm::WriteObjectFile(strref filename)
-{
+StatusCode Asm::WriteObjectFile(strref filename) {
 	if (allSections.size()==0)
 		return ERROR_NOT_A_SECTION;
 	if (FILE *f = fopen(strown<512>(filename).c_str(), "wb")) {
@@ -6345,8 +6215,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		
 		for (std::vector<Section>::iterator s = allSections.begin(); s!=allSections.end(); ++s) {
 			if (s->type != ST_REMOVED) {
-				if (s->pRelocs)
-					hdr.relocs += int16_t(s->pRelocs->size());
+				if (s->pRelocs) { hdr.relocs += int16_t(s->pRelocs->size()); }
 				hdr.bindata += s->size();
 			}
 		}
@@ -6357,8 +6226,7 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		// labels don't include XREF labels
 		hdr.labels = 0;
 		for (uint32_t l = 0; l<labels.count(); l++) {
-			if (!labels.getValue(l).reference)
-				hdr.labels++;
+			if (!labels.getValue(l).reference) { hdr.labels++; }
 		}
 
 		int16_t *aRemapSects = hdr.sections ? (int16_t*)malloc(sizeof(int16_t) * hdr.sections) : nullptr;
@@ -6368,9 +6236,9 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		}
 
 		// include space for external protected labels
-		for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el)
+		for (std::vector<ExtLabels>::iterator el = externals.begin(); el!=externals.end(); ++el) {
 			hdr.labels += (int16_t)el->labels.count();
-
+		}
 		char *stringPool = nullptr;
 		uint32_t stringPoolCap = 0;
 		pairArray<uint32_t, int> stringArray;
@@ -6501,29 +6369,20 @@ StatusCode Asm::WriteObjectFile(strref filename)
 		fwrite(aMapSyms, sizeof(aMapSyms[0]), map_sym, f);
 		fwrite(stringPool, hdr.stringdata, 1, f);
 		for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
-			if (!si->IsDummySection() && !si->IsMergedSection() && si->size()!=0 && si->type != ST_REMOVED)
+			if (!si->IsDummySection()&&!si->IsMergedSection()&&si->size()!=0&&si->type!=ST_REMOVED) {
 				fwrite(si->output, si->size(), 1, f);
+			}
 		}
-
 		// done with I/O
 		fclose(f);
-
-		if (aRemapSects)
-			free(aRemapSects);
-		if (stringPool)
-			free(stringPool);
-		if (aMapSyms)
-			free(aMapSyms);
-		if (aLateEvals)
-			free(aLateEvals);
-		if (aLabels)
-			free(aLabels);
-		if (aRelocs)
-			free(aRelocs);
-		if (aSects)
-			free(aSects);
+		if (aRemapSects) { free(aRemapSects); }
+		if (stringPool) { free(stringPool); }
+		if (aMapSyms) { free(aMapSyms); }
+		if (aLateEvals) { free(aLateEvals); }
+		if (aLabels) { free(aLabels); }
+		if (aRelocs) { free(aRelocs); }
+		if (aSects) { free(aSects); }
 		stringArray.clear();
-
 	}
 	return STATUS_OK;
 }
@@ -6556,13 +6415,11 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 			loadedData.push_back(str_pool);
 
 			int prevSection = SectionId();
-
 			int16_t *aSctRmp = (int16_t*)malloc(hdr.sections * sizeof(int16_t));
 			int last_linked_section = link_to_section;
-			while (last_linked_section>=0 && allSections[last_linked_section].next_group >= 0)
+			while (last_linked_section>=0&&allSections[last_linked_section].next_group>=0) {
 				last_linked_section = allSections[last_linked_section].next_group;
-
-			// for now just append to existing assembler data
+			}
 
 			// sections
 			for (int si = 0; si < hdr.sections; si++) {
@@ -6578,10 +6435,11 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 						CurrSection().AddBin(nullptr, aSect[si].end_address - aSect[si].start_address);
 					}
 				} else {
-					if (f&(1 << ObjFileSection::OFS_FIXED))
-						SetSection(aSect[si].name.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref(), aSect[si].start_address);
-					else
-						SetSection(aSect[si].name.offs >= 0 ? strref(str_pool + aSect[si].name.offs) : strref());
+					if (f&(1<<ObjFileSection::OFS_FIXED)) {
+						SetSection(aSect[si].name.offs>=0 ? strref(str_pool+aSect[si].name.offs) : strref(), aSect[si].start_address);
+					} else {
+						SetSection(aSect[si].name.offs>=0 ? strref(str_pool+aSect[si].name.offs) : strref());
+					}
 					Section &s = CurrSection();
 					s.include_from = filename;
 					s.export_append = aSect[si].exp_app.offs>=0 ? strref(str_pool + aSect[si].name.offs) : strref();
@@ -6593,7 +6451,6 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 						memcpy(s.output, bin_data, aSect[si].output_size);
 						s.curr = s.output + aSect[si].output_size;
 						s.output_capacity = aSect[si].output_size;
-
 						bin_data += aSect[si].output_size;
 					}
 					if (last_linked_section>=0) {
@@ -6623,8 +6480,9 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 
 			for (int mi = 0; mi < hdr.map_symbols; mi++) {
 				struct ObjFileMapSymbol &m = aMapSyms[mi];
-				if (map.size() == map.capacity())
-					map.reserve(map.size() + 256);
+				if (map.size()==map.capacity()) {
+					map.reserve(map.size()+256);
+				}
 				MapSymbol sym;
 				sym.name = m.name.offs>=0 ? strref(str_pool + m.name.offs) : strref();
 				sym.section = m.section >=0 ? aSctRmp[m.section] : m.section;
@@ -6640,14 +6498,13 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				int16_t f = (int16_t)l.flags;
 				int external = f & ObjFileLabel::OFL_XDEF;
 				if (external == ObjFileLabel::OFL_XDEF) {
-					if (!lbl)
-						lbl = AddLabel(name.fnv1a());	// insert shared label
-					else if (!lbl->reference)
-						continue;
+					if (!lbl) { lbl = AddLabel(name.fnv1a()); }	// insert shared label
+					else if (!lbl->reference) { continue; }
 				} else {								// insert protected label
 					while ((file_index + external) >= (int)externals.size()) {
-						if (externals.size() == externals.capacity())
-							externals.reserve(externals.size() + 32);
+						if (externals.size()==externals.capacity()) {
+							externals.reserve(externals.size()+32);
+						}
 						externals.push_back(ExtLabels());
 					}
 					uint32_t hash = name.fnv1a();
@@ -6666,9 +6523,8 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				lbl->external = external == ObjFileLabel::OFL_XDEF;
 				lbl->reference = false;
 			}
-
-			if (file_index==(int)externals.size())
-				file_index = -1;	// no protected labels => don't track as separate file
+			// no protected labels => don't track as separate file
+			if (file_index==(int)externals.size()) { file_index = -1; }
 
 			for (int li = 0; li < hdr.late_evals; ++li) {
 				struct ObjFileLateEval &le = aLateEval[li];
@@ -6691,13 +6547,11 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 					last.file_ref = file_index;
 				}
 			}
-
 			free(aSctRmp);
 
 			// restore previous section
 			current_section = &allSections[prevSection];
-		} else
-			return ERROR_NOT_AN_X65_OBJECT_FILE;
+		} else { return ERROR_NOT_AN_X65_OBJECT_FILE; }
 
 	}
 	return STATUS_OK;
@@ -6750,8 +6604,7 @@ static int sortRelocByOffs(const void *A, const void *B) {
 }
 
 // Export an Apple II GS relocatable executable
-StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
-{
+StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse) {
 	// determine the section with startup code - either first loaded object file or current file
 	int first_section = 0;
 	for (int s = 1; s<(int)allSections.size(); s++) {
@@ -6762,28 +6615,24 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 
 	// collapse all section together that share the same name
 	StatusCode status = MergeSectionsByName(first_section);
-	if (status != STATUS_OK)
-		return status;
+	if (status!=STATUS_OK) { return status; }
 
 	// Zero page section for x65 implies addresses, OMF direct-page/stack seg implies size of direct page + stack
 	// so resolve the zero page sections first
 	status = LinkZP();
-	if (status != STATUS_OK)
-		return status;
+	if (status!=STATUS_OK) { return status; }
 
 	// full collapse means that all sections gets merged into one
 	// code+data section and one bss section which will be appended
 	if (full_collapse) {
 		status = MergeAllSections(first_section);
-		if (status != STATUS_OK)
-			return status;
+		if (status!=STATUS_OK) { return status; }
 	}
 
 	// determine if there is a direct page stack
 	int DP_Stack_Size = 0;	// 0 => default size (don't include)
 	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
-		if (s->type == ST_ZEROPAGE)
-			s->type = ST_REMOVED;
+		if (s->type==ST_ZEROPAGE) { s->type = ST_REMOVED; }
 		if (s->type == ST_BSS && s->name.same_str("directpage_stack")) {
 			DP_Stack_Size += s->addr_size();
 			s->type = ST_REMOVED;
@@ -6798,28 +6647,28 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 
 	// OMF super instructions work by incremental addresses, sort relocs to simplify output
 	for (std::vector<Section>::iterator s = allSections.begin(); s != allSections.end(); ++s) {
-		if (first_section == SectionId(*s))
+		if (first_section==SectionId(*s)) {
 			SegNum.insert(SegNum.begin(), SectionId(*s));
-		else if (s->type != ST_REMOVED)
+		} else if (s->type!=ST_REMOVED) {
 			SegNum.push_back(SectionId(*s));
+		}
 		SegLookup.push_back(-1);
 		if ((s->type == ST_CODE || s->type == ST_DATA) && s->pRelocs && s->pRelocs->size() > 1) {
 			qsort(&(*s->pRelocs)[0], s->pRelocs->size(), sizeof(Reloc), sortRelocByOffs);
-			if ((int)s->pRelocs->size() > reloc_max)
+			if ((int)s->pRelocs->size()>reloc_max) {
 				reloc_max = (int)s->pRelocs->size();
+			}
 		}
 	}
 
 	// reloc_max needs to greater than zero
-	if (reloc_max < 1)
-		return ERROR_ABORTED;
+	if (reloc_max<1) { return ERROR_ABORTED; }
 
-	for (std::vector<int>::iterator i = SegNum.begin(); i != SegNum.end(); ++i)
-		SegLookup[*i] = (int)(&*i - &SegNum[0]);
-
+	for (std::vector<int>::iterator i = SegNum.begin(); i!=SegNum.end(); ++i) {
+		SegLookup[*i] = (int)(&*i-&SegNum[0]);
+	}
 	uint8_t *instructions = (uint8_t*)malloc(reloc_max * 16);
-	if (!instructions)
-		return ERROR_OUT_OF_MEMORY;
+	if (!instructions) { return ERROR_OUT_OF_MEMORY; }
 	
 	// open a file for writing
 	FILE *f = fopen(strown<512>(filename).c_str(), "wb");
@@ -6933,8 +6782,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 
 		// size of seg = file header + 10 bytes file name + 1 byte seg name length + seg nameh + seg.addr_size() + instruction_size 
 		int segSize = sizeof(hdr) + 10 + 1 + (int)segName.get_len() + num_bytes_file + instruction_offs;
-		if (num_bytes_file == 0)
-			segSize -= 5;
+		if (num_bytes_file==0) { segSize -= 5; }
 		_writeNBytes(hdr.SegTotal, 4, segSize);
 		uint8_t lenSegName = (uint8_t)segName.get_len();
 		fwrite(&hdr, sizeof(hdr), 1, f);
@@ -6972,10 +6820,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse)
 	return STATUS_OK;
 }
 
-
-
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
 	const strref listing("lst");
 	const strref allinstr("opcodes");
 	const strref endmacro("endm");
@@ -6997,18 +6842,17 @@ int main(int argc, char **argv)
 	const char *sym_file = nullptr, *vs_file = nullptr;
 	strref list_file, allinstr_file;
 	for (int a = 1; a<argc; a++) {
-		if (argv[a][0] == '-') {
+		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
-			if (arg.get_first()=='i')
-				assembler.AddIncludeFolder(arg+1);
-			else if (arg.same_str("merlin"))
-				assembler.syntax = SYNTAX_MERLIN;
-			else if (arg.get_first()=='D' || arg.get_first()=='d') {
+			if (arg.get_first()=='i') { assembler.AddIncludeFolder(arg+1); }
+			else if (arg.same_str("merlin")) { assembler.syntax = SYNTAX_MERLIN; }
+			else if (arg.get_first()=='D'||arg.get_first()=='d') {
 				++arg;
-				if (arg.find('=')>0)
+				if (arg.find('=')>0) {
 					assembler.AssignLabel(arg.before('='), arg.after('='));
-				else
+				} else {
 					assembler.AssignLabel(arg, "1");
+				}
 			} else if (arg.same_str("c64")) {
 				load_header = true;
 				size_header = false;
@@ -7027,29 +6871,28 @@ int main(int argc, char **argv)
 				gs_os_reloc = true;
 			} else if (arg.same_str("mrg")) {
 				force_merge_sections = true;
-			} else if (arg.same_str("sect"))
+			} else if (arg.same_str("sect")) {
 				info = true;
-			else if (arg.same_str(endmacro))
+			} else if (arg.same_str(endmacro)) {
 				assembler.end_macro_directive = true;
-			else if (arg.has_prefix(listing) && (arg.get_len() == listing.get_len() || arg[listing.get_len()] == '=')) {
+			} else if (arg.has_prefix(listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				list_file = arg.after('=');
-			} else if (arg.has_prefix(allinstr) && (arg.get_len() == allinstr.get_len() || arg[allinstr.get_len()] == '=')) {
+			} else if (arg.has_prefix(allinstr)&&(arg.get_len()==allinstr.get_len()||arg[allinstr.get_len()]=='=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
 			} else if (arg.has_prefix(org)) {
 				arg = arg.after('=');
-				if (arg && arg.get_first() == '$' && arg.get_len()>1)
-					assembler.default_org = (int)(arg + 1).ahextoui();
-				else if (arg.is_number())
-					assembler.default_org = (int)arg.atoi();
+				if (arg && arg.get_first()=='$' && arg.get_len()>1) {
+					assembler.default_org = (int)(arg+1).ahextoui();
+				} else if (arg.is_number()) { assembler.default_org = (int)arg.atoi(); }
 				// force the current section to be org'd
 				assembler.AssignAddressToSection(assembler.SectionId(), assembler.default_org);
-			} else if (arg.has_prefix(acc) && arg[acc.get_len()] == '=') {
-				assembler.accumulator_16bit = arg.after('=').atoi() == 16;
-			} else if (arg.has_prefix(xy) && arg[xy.get_len()] == '=') {
-				assembler.index_reg_16bit = arg.after('=').atoi() == 16;
-			} else if (arg.has_prefix(cpu) && (arg.get_len() == cpu.get_len() || arg[cpu.get_len()] == '=')) {
+			} else if (arg.has_prefix(acc)&&arg[acc.get_len()]=='=') {
+				assembler.accumulator_16bit = arg.after('=').atoi()==16;
+			} else if (arg.has_prefix(xy)&&arg[xy.get_len()]=='=') {
+				assembler.index_reg_16bit = arg.after('=').atoi()==16;
+			} else if (arg.has_prefix(cpu)&&(arg.get_len()==cpu.get_len()||arg[cpu.get_len()]=='=')) {
 				arg.split_token_trim('=');
 				bool found = false;
 				for (int c = 0; c<nCPUs; c++) {
@@ -7059,29 +6902,23 @@ int main(int argc, char **argv)
 							found = true;
 							break;
 						}
-					} else
-						printf("%s\n", aCPUs[c].name);
+					} else { printf("%s\n", aCPUs[c].name); }
 				}
 				if (!found && arg) {
 					printf("ERROR: UNKNOWN CPU " STRREF_FMT "\n", STRREF_ARG(arg));
 					return 1;
 				}
-				if (!arg)
-					return 0;
-			} else if (arg.same_str("sym") && (a + 1) < argc)
+				if (!arg) { return 0; }
+			} else if (arg.same_str("sym")&&(a+1)<argc) {
 				sym_file = argv[++a];
-			else if (arg.same_str("obj") && (a + 1) < argc)
+			} else if (arg.same_str("obj")&&(a+1)<argc) {
 				obj_out_file = argv[++a];
-			else if (arg.same_str("vice") && (a + 1) < argc)
+			} else if (arg.same_str("vice")&&(a+1)<argc) {
 				vs_file = argv[++a];
-			else
-				printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg));
-		} else if (!source_filename)
-			source_filename = argv[a];
-		else if (!binary_out_name)
-			binary_out_name = argv[a];
+			} else { printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg)); }
+		} else if (!source_filename) { source_filename = argv[a]; }
+		else if (!binary_out_name) { binary_out_name = argv[a]; }
 	}
-
 	for (int a = 1; a < argc; a++) {
 		strref arg(argv[a]);
 		printf(STRREF_FMT "\n", STRREF_ARG(arg));
@@ -7118,22 +6955,18 @@ int main(int argc, char **argv)
 	if (source_filename) {
 		size_t size = 0;
 		strref srcname(source_filename);
-
 		assembler.export_base_name =
 			strref(binary_out_name).after_last_or_full('/', '\\').before_or_full('.');
 
 		if (char *buffer = assembler.LoadText(srcname, size)) {
 			// if source_filename contains a path add that as a search path for include files
 			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));
-
 			assembler.Assemble(strref(buffer, strl_t(size)), srcname, obj_out_file != nullptr);
-
-			if (assembler.error_encountered)
+			if (assembler.error_encountered) {
 				return_value = 1;
-			else {
+			} else {
 				// export object file (this can be done at the same time as building a binary)
-				if (obj_out_file)
-					assembler.WriteObjectFile(obj_out_file);
+				if (obj_out_file) { assembler.WriteObjectFile(obj_out_file); }
 
 				// if exporting binary or relocatable executable, complete the build
 				if (binary_out_name && !srcname.same_str(binary_out_name)) {
@@ -7142,8 +6975,7 @@ int main(int argc, char **argv)
 					else {
 						strref binout(binary_out_name);
 						strref ext = binout.after_last('.');
-						if (ext)
-							binout.clip(ext.get_len() + 1);
+						if (ext) { binout.clip(ext.get_len()+1); }
 						strref aAppendNames[MAX_EXPORT_FILES];
 						StatusCode err = assembler.LinkZP();	// link zero page sections
 						if (err > FIRST_ERROR) {
@@ -7238,11 +7070,12 @@ int main(int argc, char **argv)
 									break;
 								}
 							}
-							if (i->name.same_str("debugbreak"))
+							if(i->name.same_str("debugbreak")) {
 								fprintf(f, "break $%04x\n", value);
-							else
+							} else {
 								fprintf(f, "al $%04x %s" STRREF_FMT "\n", value, i->name[0]=='.' ? "" : ".",
-									STRREF_ARG(i->name));
+										STRREF_ARG(i->name));
+							}
 						}
 						fclose(f);
 					}
