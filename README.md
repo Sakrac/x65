@@ -102,6 +102,7 @@ Primarily tested with personal archive of sources written for Kick assmebler, DA
 * irp (indefinite repeat)
 
 **FIXED**
+* Adding MERGE directive, Label Pools rewrite, TEXT data can be indexed from a string symbol
 * Label Pools were destroyed after each scope so they did not work in include files which defeated their purpose. Label pools are now persistent through scopes.
 * Labels reserved from label pools now distinguish between global and local. Use [.!@$] as a prefix to reserve a local label from a label pool (previously always local)
 * Merlin macro parameters are not required on the MAC line, scope braces ('{', '}') can be used in the first column in Merlin.

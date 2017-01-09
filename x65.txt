@@ -660,6 +660,17 @@ Example:
 	STRING concat_example = "ldx #0"
 	concat_example += 
 
+Text data can also be indexed into a String Symbol which may be useful
+if a font doesn't have all characters by specifying the String Symbol
+in brackets between the directive and the value.
+
+Example:
+	; declare a string symbol with valid characters
+	STRING FontChars = "abcdefghijklmnoprstuvw0123456789!"
+
+	; define text data as indexes into the string symbol
+	TEXT [FontChars] "this is an indexed string!"
+
 Directives for String Symbols
 
 * STRING - declare a string symbol
@@ -922,6 +933,28 @@ Sections named DirectPage_Stack and of a BSS type (default) determine the size o
 Zeropage sections will be linked to a fixed address (default at the highest direct page addresses) prior to exporting the relocatable code. Zeropage sections in x65 is intended to allocate ranges of the zero page / direct page which is a bit confusing with OMF that has the concept of the direct page + stack segment.
 
 
+Linking Control of Sections
+
+The MERGE directive allows for listing SECTION names that should be linked in
+order. You may have a number of sections with the same name and a number of
+sections with a different name that should be linked into memory sequentially.
+
+MERGE will take a list of sections on the same line and combine them into one
+larger section that can be saved as a separate file. For example:
+
+    SECTION Code,code
+	; Start address is $1000, link startup code (Code_Init) at that location
+	ORG $1000
+	MERGE Code, Code_Init, Code_Process, Code_Execute
+
+	; Merge Data sections
+	SECTION Data,data
+	MERGE Data, Data_Assets, Data_Constants
+
+	; Data follows directly after Code
+	MERGE Code, Data
+
+
 Directives related to sections:
 
 
@@ -1175,6 +1208,7 @@ All Directives
   initial fixed address (c64 prg and Apple II Dos 3)
 * LONG - data, define comma separated 32 bit values
 * MACRO - macros, start a macro declaration
+* MERGE - Merge sections in order specified, will also merge listed sections by name
 * ORG - set fixed address, same as PC
 * PC - set fixed address, same as ORG
 * POOL - symbols, a stack-like pool of addresses, same as LABPOOL
