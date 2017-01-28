@@ -1640,7 +1640,7 @@ public:
 	StatusCode BuildSegment();
 
 	// Display error in stderr
-	void PrintError(strref line, StatusCode error);
+	void PrintError(strref line, StatusCode error, strref file = strref());
 
 	// Conditional Status
 	bool ConditionalAsm();			// Assembly is currently enabled
@@ -3687,7 +3687,7 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 					if (resolved) { i = lateEval.erase(i); }
 				} else {
 					if (print_missing_reference_errors && ret!=STATUS_XREF_DEPENDENT) {
-						PrintError(i->expression, ret);
+						PrintError(i->expression, ret, i->source_file);
 						error_encountered = true;
 					}
 					++i;
@@ -5572,12 +5572,13 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 }
 
 // Build a line of code
-void Asm::PrintError(strref line, StatusCode error) {
+void Asm::PrintError(strref line, StatusCode error, strref source) {
 	strown<512> errorText;
 	if (contextStack.has_work()) {
 		errorText.sprintf("Error " STRREF_FMT "(%d): ", STRREF_ARG(contextStack.curr().source_name),
 						  contextStack.curr().source_file.count_lines(line)+1);
-	} else { errorText.append("Error: "); }
+	} else if (source) { errorText.sprintf_append("Error (%d): ", source.count_lines(line)); }
+	else { errorText.append("Error: "); }
 	errorText.append(aStatusStrings[error]);
 	errorText.append(" \"");
 	errorText.append(line.get_trimmed_ws());
