@@ -1,0 +1,42 @@
+{
+    "name" : "x65",
+    "displayName" : "x65",
+    "description" : "x65 Assembler syntax",
+    "version" : "0.1.0",
+    "publisher" : "x65",
+	"icon": "x65.png",
+    "license" : "maybe",
+    "engines" : {
+        "vscode" : "^1.0.0"
+    },
+    "categories" : [
+        "Languages"
+    ],
+    "keywords" : [
+        "x65", "6502", "6510", "65816"
+    ],
+    "contributes" : {
+        "languages" : [
+            {
+                "id" : "x65",
+                "aliases" : ["6502"],
+                "extensions" : [ ".s", ".i" ],
+                "configuration" : "./x65.configuration.json"
+            }
+        ],
+        "grammars" : [
+            {
+                "language" : "x65",
+                "scopeName" : "source.asm.6502.x65",
+                "path" : "./x65.tmLanguage"
+            }
+        ],
+   		"themes" : [
+			{
+				"label": "x65",
+				"uiTheme": "vs-dark",
+				"path": "./x65.tmTheme"
+			}
+		]
+   }
+}
