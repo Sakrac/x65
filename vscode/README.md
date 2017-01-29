@@ -4,6 +4,8 @@
 
 As I don't like the marketplaceification of seemingly simple tools I'm not putting this on the visual studio coded marketplace, but if anyone wants to do that I don't mind.
 
+![Visual studio code screenshot](example.png)
+
 In order to "side load" this extension into visual studio code follow these steps
 
 1. Install Visual Studio Code unless already Installed

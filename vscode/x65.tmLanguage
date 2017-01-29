@@ -56,6 +56,12 @@
 					<key>name</key>
 					<string>directive</string>
 				</dict>
+				<dict>
+					<key>match</key>
+					<string>(?i)((^|\s+)(XDEF|XREF|SECTION|SEG|SEGMENT|MERGE|LINK|INCOBJ)|\s+ert)\b</string>
+					<key>name</key>
+					<string>control.segment</string>
+				</dict>
 			</array>
 		</dict>
 		<key>opcodes</key>
@@ -76,7 +82,7 @@
 				</dict>
 				<dict>
 					<key>match</key>
-					<string>(?i)(\s+|(?<=:))(aso|rln|lse|rrd|sax|lax|dcp|isb|anc|alr|arr|ane|anx|sbx|las|sha|shs|shx|shy|npo|cim|dop|top)(?=\s+|[:$#(])</string>
+					<string>\b(aso|rln|lse|rrd|sax|lax|dcp|isb|anc|alr|arr|ane|anx|sbx|las|sha|shs|shx|shy|npo|cim|dop|top)\b</string>
 					<key>name</key>
 					<string>keyword.other.opcode.6502.illegal</string>
 				</dict>
