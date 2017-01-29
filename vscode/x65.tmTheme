@@ -47,6 +47,17 @@
 		</dict>
 		<dict>
 			<key>name</key>
+			<string>SegmentControl</string>
+			<key>scope</key>
+			<string>control.segment</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#a0ff80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
 			<string>Number</string>
 			<key>scope</key>
 			<string>constant.numeric</string>
