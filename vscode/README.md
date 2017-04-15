@@ -8,9 +8,15 @@ As I don't like the marketplaceification of seemingly simple tools I'm not putti
 
 In order to "side load" this extension into visual studio code follow these steps
 
+Windows:
+
+1. Make sure Visual Studio Code is installed
+2. Run vscode\install.bat
+
+Mac / Linux:
+
 1. Install Visual Studio Code unless already Installed
 2. Go to the visual studio code extension folder
- * Windows %USERPROFILE%\.vscode\extensions
  * Mac ~/.vscode/extensions
  * Linux ~/.vscode/extensions
 3. Create a folder named x65
