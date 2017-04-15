@@ -1,0 +1,98 @@
+{
+    "name": "x65",
+    "fileTypes": [ "s", "i" ],
+	"patterns": [
+		{
+			"match": "(?i)((^|\\s+)(CPU|PROCESSOR|PC|ORG|LOAD|EXPORT|SECTION|SEG|SEGMENT|MERGE|LINK|INCOBJ|ALIGN|MACRO|MAC|EVAL|PRINT|ECHO|BYTE|BYTES|WORD|WORDS|LONG|DC.[BWTL]|DC|DV|TEXT|INCLUDE|INCBIN|IMPORT|CONST|LABEL|STRING|UNDEF|INCSYM|LABPOOL|POOL|IF|IFDEF|ELSE|ELIF|ENDIF|STRUCT|ENUM|REPT|REPEAT|INCDIR|A16|A8|XY16|XY8|I16|I8|DUMMY|DUMMY_END|DS|ABORT|ERR)|\\s+ert)\\b",
+			"name": "meta.directive",
+			"comment": "Assembler Control"
+		},
+		{
+			"match": "(?i)((^|\\s+)(XDEF|XREF|SECTION|SEG|SEGMENT|MERGE|LINK|INCOBJ)|\\s+ert)\\b",
+			"name": "meta.segment",
+			"comment": "Segment Control"
+		},
+		{
+			"match": "\\b(adc|and|asl|bit|clc|cld|cli|clv|cmp|cpx|cpy|dec|dex|dey|eor|inc|inx|iny|lda|ldx|ldy|lsr|nop|ora|pha|php|pla|plp|rol|ror|sbc|sec|sed|sei|sta|stx|sty|tax|txa|tay|tya|tsx|txs|ADC|AND|ASL|BIT|CLC|CLD|CLI|CLV|CMP|CPX|CPY|DEC|DEX|DEY|EOR|INC|INX|INY|LDA|LDX|LDY|LSR|NOP|ORA|PHA|PHP|PLA|PLP|ROL|ROR|SBC|SEC|SED|SEI|STA|STX|STY|TAX|TXA|TAY|TYA|TSX|TXS)\\b",
+			"name": "keyword.other.opcode.instruction"
+		},
+		{
+			"match":
+			"\\b(bcc|bcs|beq|bmi|bne|bpl|brk|bvc|bvs|jmp|jsr|rti|rts|BCC|BCS|BEQ|BMI|BNE|BPL|BRK|BVC|BVS|JMP|JSR|RTI|RTS)\\b",
+			"name": "keyword.other.opcode.pc"
+		},
+		{
+			"match": "\\b(aso|rln|lse|rrd|sax|lax|dcp|isb|anc|alr|arr|ane|anx|sbx|las|sha|shs|shx|shy|npo|cim|dop|top)\\b",
+			"name": "keyword.other.opcode.6502.illegal"
+		},
+		{
+			"begin": "/\\*",
+			"end": "\\*/",
+			"name": "comment.block"
+		},
+		{
+			"match": "//.*",
+			"name": "comment.line.double-slash"
+		},
+		{
+			"match": ";.*",
+			"name": "comment.line.semicolon"
+		},
+		{
+			"match": "^\\S*\\s*(\\*.*)",
+			"captures": {
+				"1": { "name": "comment.line.asterisk" }
+			}
+		},
+		{
+			"begin": "'",
+			"end": "'",
+			"name": "string.quoted.single"
+		},
+		{
+			"begin": "\"",
+			"end": "\"",
+			"name": "string.quoted.double"
+		},
+		{
+			"match": "(?i)(?<=,)\\s*[xy]\\b(?!.*\\.reg)",
+			"name":
+			"constant.language.registers"
+		},
+		{
+			"match": "\\b[0-9]+\\b",
+			"name":
+			"constant.numeric.decimal"
+		},
+		{
+			"match": "(?i)\\$\\b\\h+\\b|\\b0x\\h+\\b",
+			"name": "constant.numeric.hexadecimal"
+		},
+		{
+			"match": "%\\b[0-1]+\\b",
+			"name": "constant.numeric.binary"
+		},
+		{
+			"match": "(?i)(^|\\s+)align\\b",
+			"name": "storage.modifier"
+		},
+		{
+			"match": "(?i)(^|\\s+)[\\!\\.][a-zA-Z0-9_]+\\b",
+			"name": "label.local"
+		},
+		{
+			"match": "(?i)(^|\\s+)[!\\!\\.][a-zA-Z0-9_]+\\b",
+			"name": "label.global"
+		},
+		{
+			"match": "(?i)[\\!\\%]\\b",
+			"name": "label.scope"
+		},
+		{
+			"match": "(?i)[+\\-*/%!|^=~\\:&<>;]",
+			"name": "constant.language"
+		}
+	],
+	"scopeName": "source.asm.6502.x65",
+	"uuid": "3a93182b-9647-4133-bead-cd118e3ed088"
+}

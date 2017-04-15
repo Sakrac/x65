@@ -2,7 +2,7 @@
     "name" : "x65",
     "displayName" : "x65",
     "description" : "x65 Assembler syntax",
-    "version" : "0.1.0",
+    "version" : "0.1.1",
     "publisher" : "x65",
 	"icon": "x65.png",
     "license" : "maybe",
@@ -12,14 +12,12 @@
     "categories" : [
         "Languages"
     ],
-    "keywords" : [
-        "x65", "6502", "6510", "65816"
-    ],
+    "keywords" : ["x65", "6502", "6510", "65816" ],
     "contributes" : {
         "languages" : [
             {
                 "id" : "x65",
-                "aliases" : ["6502"],
+                "aliases" : [ "6502" ],
                 "extensions" : [ ".s", ".i" ],
                 "configuration" : "./x65.configuration.json"
             }
@@ -28,14 +26,14 @@
             {
                 "language" : "x65",
                 "scopeName" : "source.asm.6502.x65",
-                "path" : "./x65.tmLanguage"
+                "path" : "./x65.tmLanguage.json"
             }
         ],
    		"themes" : [
 			{
 				"label": "x65",
 				"uiTheme": "vs-dark",
-				"path": "./x65.tmTheme"
+				"path": "./x65.tmTheme.json"
 			}
 		]
    }
