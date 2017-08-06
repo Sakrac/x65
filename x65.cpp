@@ -320,7 +320,7 @@ enum EvalOperator {
 typedef struct sOPLookup {
 	uint32_t op_hash;
 	uint8_t index;	// ground index
-	uint8_t type;		// mnemonic or
+	uint8_t type;	// mnemonic or
 } OPLookup;
 
 enum AddrMode {
@@ -1208,8 +1208,9 @@ typedef struct Section {
 	int align_address;		// for relative sections that needs alignment
 
 	// merged sections
-	int merged_offset;		// -1 if not merged
-	int merged_section;		// which section merged with
+	int merged_at;			// merged into a section at this offset
+	int merged_into;		// -1 if not merged otherwise section merged into
+	int merged_size;		// how many bytes were merged in
 
 	// data output
 	uint8_t *output;	// memory for this section
@@ -1232,7 +1233,8 @@ typedef struct Section {
 		name.clear(); export_append.clear(); include_from.clear();
 		start_address = address = load_address = 0x0; type = ST_CODE;
 		address_assigned = false; output = nullptr; curr = nullptr;
-		dummySection = false; output_capacity = 0; merged_offset = -1; merged_section = -1;
+		dummySection = false; output_capacity = 0;
+		merged_at = -1; merged_into = -1; merged_size = 0;
 		align_address = 1; if (pRelocs) delete pRelocs;
 		next_group = first_group = -1;
 		pRelocs = nullptr;
@@ -1241,7 +1243,7 @@ typedef struct Section {
 	}
 
 	void Cleanup() { if (output) free(output); reset(); }
-	bool empty() const { return merged_offset<0 && curr==output; }
+	bool empty() const { return type != ST_REMOVED && curr==output; }
 	bool unused() const { return !address_assigned && address == start_address; }
 
 	int DataOffset() const { return int(curr - output); }
@@ -1257,7 +1259,7 @@ typedef struct Section {
 	void SetDummySection(bool enable) { dummySection = enable; type = ST_BSS;  }
 	bool IsDummySection() const { return dummySection; }
 	bool IsRelativeSection() const { return address_assigned == false; }
-	bool IsMergedSection() const { return merged_offset >= 0; }
+	bool IsMergedSection() const { return false; }
 	void AddReloc(int base, int offset, int section, int8_t bytes, int8_t shift);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
@@ -2128,8 +2130,9 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 
 	// copy over in order
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
+		if (i->type == ST_REMOVED) { continue; }
 		if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
-			if (i->merged_offset==-1&&i->start_address>=0x200&&i->size()>0) {
+			if (i->start_address>=0x200&&i->size()>0) {
 				memcpy(output+i->start_address-start_address, i->output, i->size());
 			}
 		}
@@ -2273,10 +2276,6 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 				if (i->target_section == section_id) {
 					Section *trg_sect = &s2;
 					size_t output_offs = 0;
-					while (trg_sect->merged_offset>=0) {
-						output_offs += trg_sect->merged_offset;
-						trg_sect = &allSections[trg_sect->merged_section];
-					}
 					// only finalize the target value if fixed address
 					if (section_new == -1 || allSections[section_new].address_assigned) {
 						uint8_t *trg = trg_sect->output + output_offs + i->section_offset;
@@ -2366,6 +2365,8 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 		return ERROR_CANT_APPEND_SECTION_TO_TARGET;
 	}
 
+	m.merged_size = m.address - m.start_address;
+
 	// append the binary to the target..
 	int addr_start = s.address;
 	int align = m.align_address <= 1 ? 0 : (m.align_address - (addr_start % m.align_address)) % m.align_address;
@@ -2381,6 +2382,10 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 	} else if (m.addr_size()) { s.AddAddress(align+m.addr_size()); }
 
 	addr_start += align - s.start_address;
+
+	// append info for result output
+	m.merged_at = addr_start;
+	m.merged_into = section_id;
 
 	// move the relocs from the merge section to the keep section
 	if (m.pRelocs) {
@@ -3581,10 +3586,6 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 					int trg = i->target;
 					int sec = i->section;
 					if (i->type != LateEval::LET_LABEL) {
-						if (allSections[sec].IsMergedSection()) {
-							trg += allSections[sec].merged_offset;
-							sec = allSections[sec].merged_section;
-						}
 					}
 					bool resolved = true;
 					switch (i->type) {
@@ -5865,9 +5866,52 @@ bool Asm::List(strref filename) {
 	int16_t cycles_depth = 0;
 	memset(cycles, 0, sizeof(cycles));
 
+
+	// show merged sections
+	for (size_t i = 0, n = allSections.size(); i < n; ++i)
+	{
+		Section& s = allSections[i];
+		if (s.type != ST_REMOVED) {
+			if (s.include_from) {
+				fprintf(f, "Section " STRREF_FMT " from " STRREF_FMT " $%04x - $%04x ($%04x)\n",
+					STRREF_ARG(s.name), STRREF_ARG(s.include_from), s.start_address, s.address, s.address - s.start_address);
+			} else {
+				fprintf(f, "Section " STRREF_FMT " $%04x - $%04x ($%04x)\n",
+					STRREF_ARG(s.name), s.start_address, s.address, s.address - s.start_address);
+			}
+			for (size_t j = 0; j < n; ++j)
+			{
+				Section& s2 = allSections[j];
+				if (s2.type == ST_REMOVED && s2.merged_into >= 0)
+				{
+					int offset = s2.merged_at;
+					int parent = s2.merged_into;
+					while (parent != i && parent >= 0) {
+						offset += allSections[parent].merged_at;
+						parent = allSections[parent].merged_into;
+					}
+					if (parent == i) {
+						if (s2.include_from) {
+							fprintf(f, " + " STRREF_FMT " from " STRREF_FMT " $%04x - $%04x ($%04x) at offset 0x%04x\n",
+								STRREF_ARG(s2.name), STRREF_ARG(s2.include_from), s2.merged_at + s.start_address,
+								s2.merged_at + s.start_address + s2.merged_size, s2.merged_size, s2.merged_at);
+						} else {
+							fprintf(f, " + " STRREF_FMT " $%04x - $%04x ($%04x) at offset 0x%04x\n",
+								STRREF_ARG(s2.name), s2.merged_at + s.start_address,
+								s2.merged_at + s.start_address + s2.merged_size, s2.merged_size, s2.merged_at);
+						}
+					}
+				}
+			}
+		}
+	}
+
 	strref prev_src;
 	int prev_offs = 0;
 	for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
+		if (si->merged_into >= 0) {
+			fprintf(f, STRREF_FMT " from " STRREF_FMT " merged into " STRREF_FMT " at offset 0x%04x\n",
+			STRREF_ARG(si->name), STRREF_ARG(si->include_from), STRREF_ARG(allSections[si->merged_into].name), si->merged_at); }
 		if (si->type==ST_REMOVED) { continue; }
 		if (si->address_assigned)
 			fprintf(f, "Section " STRREF_FMT " (%d, %s): $%04x-$%04x\n", STRREF_ARG(si->name),
@@ -7036,17 +7080,7 @@ int main(int argc, char **argv) {
 					if (FILE *f = fopen(sym_file, "w")) {
 						bool wasLocal = false;
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							uint32_t value = (uint32_t)i->value;
-							int section = i->section;
-							while (section >= 0 && section < (int)assembler.allSections.size()) {
-								if (assembler.allSections[section].IsMergedSection()) {
-									value += assembler.allSections[section].merged_offset;
-									section = assembler.allSections[section].merged_section;
-								} else {
-									value += assembler.allSections[section].start_address;
-									break;
-								}
-							}
+							uint32_t value = (uint32_t)i->value + assembler.allSections[i->section].start_address;
 							fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal==i->local ? "\n" :
 									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
 							wasLocal = i->local;
@@ -7060,17 +7094,7 @@ int main(int argc, char **argv) {
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							uint32_t value = (uint32_t)i->value;
-							int section = i->section;
-							while (section >= 0 && section < (int)assembler.allSections.size()) {
-								if (assembler.allSections[section].IsMergedSection()) {
-									value += assembler.allSections[section].merged_offset;
-									section = assembler.allSections[section].merged_section;
-								} else {
-									value += assembler.allSections[section].start_address;
-									break;
-								}
-							}
+							uint32_t value = (uint32_t)i->value + assembler.allSections[i->section].start_address;
 							if(i->name.same_str("debugbreak")) {
 								fprintf(f, "break $%04x\n", value);
 							} else {
