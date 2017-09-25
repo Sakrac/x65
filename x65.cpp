@@ -2137,6 +2137,8 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 			}
 		}
 	}
+
+
 	printf("Linker export + \"" STRREF_FMT "\" summary:\n", STRREF_ARG(append));
 	for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
 		if ((*f)->include_from) {
@@ -2341,7 +2343,7 @@ StatusCode Asm::LinkSections(strref name) {
 						int prev = last_section_group >= 0 ? last_section_group : SectionId();
 						int curr = (int)(&*i - &allSections[0]);
 						allSections[prev].next_group = curr;
-						i->first_group = CurrSection().first_group ? CurrSection().first_group : SectionId();
+						i->first_group = CurrSection().first_group >= 0 ? CurrSection().first_group : SectionId();
 						last_section_group = curr;
 					}
 				}
@@ -7080,7 +7082,8 @@ int main(int argc, char **argv) {
 					if (FILE *f = fopen(sym_file, "w")) {
 						bool wasLocal = false;
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							uint32_t value = (uint32_t)i->value + assembler.allSections[i->section].start_address;
+							uint32_t value = (uint32_t)i->value;
+							if (size_t(i->section) < assembler.allSections.size()) { value += assembler.allSections[i->section].start_address; }
 							fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal==i->local ? "\n" :
 									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
 							wasLocal = i->local;
@@ -7094,7 +7097,8 @@ int main(int argc, char **argv) {
 				if (vs_file && !srcname.same_str(vs_file) && !assembler.map.empty()) {
 					if (FILE *f = fopen(vs_file, "w")) {
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
-							uint32_t value = (uint32_t)i->value + assembler.allSections[i->section].start_address;
+							uint32_t value = (uint32_t)i->value;
+							if (size_t(i->section) < assembler.allSections.size()) { value += assembler.allSections[i->section].start_address; }
 							if(i->name.same_str("debugbreak")) {
 								fprintf(f, "break $%04x\n", value);
 							} else {
