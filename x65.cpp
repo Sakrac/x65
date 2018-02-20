@@ -4518,7 +4518,7 @@ StatusCode Asm::Directive_Import(strref line)
 	int q = line.find('"');
 	if (q>=0) {
 		param = line + q;
-		param.scoped_block_skip();
+		param.split_lang();
 		param.trim_whitespace();
 		if (param[0]==',') {
 			++param;
@@ -4533,7 +4533,7 @@ StatusCode Asm::Directive_Import(strref line)
 	}
 	
 	if (line[0]=='"')
-		return Directive_Incbin(line);
+		return Directive_Incbin(line, skip, len);
 	else if (import_source.is_prefix_word(line)) {
 		line += import_source.get_len();
 		line.skip_whitespace();
