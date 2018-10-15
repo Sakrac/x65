@@ -3200,8 +3200,8 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		case '(': if (prev_op != EVOP_VAL) { ++exp; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++exp; return EVOP_RPR;
 		case ',':
-		case '?':
-		case '\'': return EVOP_STP;
+		case '?': return EVOP_STP;
+		case '\'': if( exp[ 2 ] == '\'' ) { value = exp[ 1 ];  exp += 3; return EVOP_VAL; } return EVOP_STP;
 	}
 	// ! by itself is current scope, !+label char is a local label
 	if (c == '!' && !(exp + 1).len_label()) {
