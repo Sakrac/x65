@@ -1857,7 +1857,8 @@ void Asm::SetSection(strref name, int address) {
 	if (allSections.size()==allSections.capacity()) { allSections.reserve(allSections.size()+16); }
 	Section newSection(name, address);
 	// don't compile over zero page and stack frame (may be bad assumption)
-	if (address<0x200) { newSection.SetDummySection(true); }
+	if (address<0x200) {
+		newSection.SetDummySection(true); }
 	allSections.push_back(newSection);
 	current_section = &allSections[allSections.size()-1];
 }
@@ -2132,7 +2133,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 	for (std::vector<Section>::iterator i = allSections.begin(); i != allSections.end(); ++i) {
 		if (i->type == ST_REMOVED) { continue; }
 		if (((!append && !i->export_append) || append.same_str_case(i->export_append)) && i->type != ST_ZEROPAGE) {
-			if (i->start_address>=0x200&&i->size()>0) {
+			if (i->size()>0) {
 				memcpy(output+i->start_address-start_address, i->output, i->size());
 			}
 		}
