@@ -1443,6 +1443,7 @@ public:
 	}
 	void pop() { stack.pop_back(); currContext = stack.size() ? &stack[stack.size()-1] : nullptr; }
 	bool has_work() { return currContext!=nullptr; }
+	bool empty() const { return stack.size() == 0; }
 };
 
 // The state of the assembler
@@ -3101,7 +3102,7 @@ void Asm::SetEvalCtxDefaults(struct EvalContext &etx) {
 	etx.scope_depth = scope_depth;				// scope depth for eval (must match current for scope_end_pc to eval)
 	etx.relative_section = -1;					// return can be relative to this section
 	etx.file_ref = -1;							// can access private label from this file or -1
-	etx.rept_cnt = ReptCnt();					// current repeat counter
+	etx.rept_cnt = contextStack.empty() ? 0 : ReptCnt();					// current repeat counter
 }
 
 // Get a single token from a merlin expression
