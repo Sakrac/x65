@@ -1518,6 +1518,9 @@ public:
 	// Generate assembler listing if requested
 	bool List(strref filename);
 
+	// Mimic TASS listing
+	bool ListTassStyle( strref filename );
+
 	// Generate source for all valid instructions and addressing modes for current CPU
 	bool AllOpcodes(strref filename);
 
@@ -5837,6 +5840,113 @@ struct cycleCnt {
 	}
 };
 
+bool Asm::ListTassStyle( strref filename ) {
+	// NOTE: This file needs more information to be useful for things
+	FILE *f = stdout;
+	bool opened = false;
+	if( filename ) {
+		f = fopen( strown<512>( filename ).c_str(), "w" );
+		if( !f ) { return false; }
+		opened = true;
+	}
+
+	// ensure that the greatest instruction set referenced is used for listing
+	if (list_cpu!=cpu) { SetCPU(list_cpu); }
+
+	// Build a disassembly lookup table
+	uint8_t mnemonic[256];
+	uint8_t addrmode[256];
+	memset(mnemonic, 255, sizeof(mnemonic));
+	memset(addrmode, 255, sizeof(addrmode));
+	for (int i = 0; i < opcode_count; i++) {
+		for (int j = AMB_COUNT-1; j >= 0; j--) {
+			if (opcode_table[i].modes & (1 << j)) {
+				uint8_t op = opcode_table[i].aCodes[j];
+				if (addrmode[op]==255) {
+					mnemonic[op] = (uint8_t)i;
+					addrmode[op] = (uint8_t)j;
+				}
+			}
+		}
+	}
+
+	strref first_src;
+	for( std::vector<Section>::iterator si = allSections.begin(); si != allSections.end() && !first_src; ++si ) {
+		if( !si->pListing )
+			continue;
+		for(auto & li : *si->pListing) {
+			if( li.source_name ) { first_src = li.source_name; break; }
+		}
+	}
+	fprintf( f, ";6502/65C02/65816/CPU64/DTV Turbo Assembler V1.4x listing file of \"" STRREF_FMT "\"\n;done on WkDay Month Date Time\n\n", STRREF_ARG( first_src ) );
+
+	fprintf( f, ";Offset\t;Hex\t\t;Monitor\t;Source\n\n" );
+
+	for(auto &si : allSections) {
+		if( !si.pListing || si.type == ST_REMOVED || !si.pListing ) { continue; }
+		for(const struct ListLine &lst : *si.pListing) {
+			/*if( lst.size && lst.wasMnemonic() )*/ {
+				strown<256> out;
+				/*if( lst.size )*/ { out.sprintf_append( ".%04x\t", lst.address + si.start_address ); }
+				int s = lst.wasMnemonic() ? ( lst.size < 4 ? lst.size : 4 ) : ( lst.size < 8 ? lst.size : 8 );
+				if( si.output && si.output_capacity >= size_t( lst.address + s ) ) {
+					for( int b = 0; b < s; ++b ) {
+						out.sprintf_append( "%02x ", si.output[ lst.address + b ] );
+					}
+				}
+				out.append( "\t\t" );
+				if (lst.size && lst.wasMnemonic()) {
+					//out.pad_to(' ', 21);
+					uint8_t *buf = si.output + lst.address;
+					uint8_t op = mnemonic[*buf];
+					uint8_t am = addrmode[*buf];
+					if (op != 255 && am != 255 && am<(sizeof(aAddrModeFmt)/sizeof(aAddrModeFmt[0]))) {
+						const char *fmt = aAddrModeFmt[am];
+						if (opcode_table[op].modes & AMM_FLIPXY) {
+							if (am == AMB_ZP_X)	fmt = "%s $%02x,y";
+							else if (am == AMB_ABS_X) fmt = "%s $%04x,y";
+						}
+						if (opcode_table[op].modes & AMM_ZP_ABS) {
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[1], (char)buf[2]+lst.address+si.start_address+3);
+						} else if (opcode_table[op].modes & AMM_BRANCH) {
+							out.sprintf_append(fmt, opcode_table[op].instr, (char)buf[1]+lst.address+si.start_address+2);
+						} else if (opcode_table[op].modes & AMM_BRANCH_L) {
+							out.sprintf_append(fmt, opcode_table[op].instr, (int16_t)(buf[1]|(buf[2]<<8))+lst.address+si.start_address+3);
+						} else if (am==AMB_NON||am==AMB_ACC) {
+							out.sprintf_append(fmt, opcode_table[op].instr);
+						} else if (am==AMB_ABS||am==AMB_ABS_X||am==AMB_ABS_Y||am==AMB_REL||am==AMB_REL_X||am==AMB_REL_L) {
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8));
+						} else if (am==AMB_ABS_L||am==AMB_ABS_L_X) {
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8)|(buf[3]<<16));
+						} else if (am==AMB_BLK_MOV) {
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[1], buf[2]);
+						} else if (am==AMB_IMM && lst.size==3) {
+							out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1]|(buf[2]<<8));
+						} else {
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[1]);
+						}
+					}
+				} else { out.append('\t');}
+//				out.pad_to( ' ', 36 );
+				out.append( '\t' );
+				strref line = lst.code.get_skipped( lst.line_offs ).get_line();
+				line.clip_trailing_whitespace();
+				strown<128> line_fix( line );
+				for( strl_t pos = 0; pos < line_fix.len(); ++pos ) {
+					if( line_fix[ pos ] == '\t' )
+						line_fix.exchange( pos, 1, pos & 1 ? strref( " " ) : strref( "  " ) );
+				}
+				out.append( line_fix.get_strref() );
+
+				fprintf( f, STRREF_FMT "\n", STRREF_ARG( out ) );
+			}
+		}
+	}
+	fprintf( f, "\n;******  end of code\n" );
+	if( opened ) { fclose( f ); }
+	return true;
+}
+
 bool Asm::List(strref filename) {
 	FILE *f = stdout;
 	bool opened = false;
@@ -6871,6 +6981,8 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse) {
 
 int main(int argc, char **argv) {
 	const strref listing("lst");
+	const strref tass_listing( "tsl" );
+	const strref tass_labels( "tl" );
 	const strref allinstr("opcodes");
 	const strref endmacro("endm");
 	const strref cpu("cpu");
@@ -6884,12 +6996,16 @@ int main(int argc, char **argv) {
 	bool gen_allinstr = false;
 	bool gs_os_reloc = false;
 	bool force_merge_sections = false;
+	bool list_output = false;
+	bool tass_list_output = false;
+
 	Asm assembler;
 
 	const char *source_filename = nullptr, *obj_out_file = nullptr;
 	const char *binary_out_name = nullptr;
-	const char *sym_file = nullptr, *vs_file = nullptr;
+	const char *sym_file = nullptr, *vs_file = nullptr, *tass_labels_file = nullptr;
 	strref list_file, allinstr_file;
+	strref tass_list_file;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
@@ -6926,7 +7042,12 @@ int main(int argc, char **argv) {
 				assembler.end_macro_directive = true;
 			} else if (arg.has_prefix(listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
-				list_file = arg.after('=');
+				list_output = true;
+				list_file = arg.after( '=' );
+			} else if (arg.has_prefix(tass_listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
+				assembler.list_assembly = true;
+				tass_list_output = true;
+				tass_list_file = arg.after( '=' );
 			} else if (arg.has_prefix(allinstr)&&(arg.get_len()==allinstr.get_len()||arg[allinstr.get_len()]=='=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
@@ -6964,6 +7085,8 @@ int main(int argc, char **argv) {
 				obj_out_file = argv[++a];
 			} else if (arg.same_str("vice")&&(a+1)<argc) {
 				vs_file = argv[++a];
+			} else if (arg.same_str(tass_labels)&&(a+1)<argc) {
+				tass_labels_file = argv[++a];
 			} else { printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg)); }
 		} else if (!source_filename) { source_filename = argv[a]; }
 		else if (!binary_out_name) { binary_out_name = argv[a]; }
@@ -7076,8 +7199,11 @@ int main(int argc, char **argv) {
 				}
 
 				// listing after export since addresses are now resolved
-				if (assembler.list_assembly)
+				if ( list_output )
 					assembler.List(list_file);
+
+				if( tass_list_output )
+					assembler.ListTassStyle(tass_list_file);
 
 				// export .sym file
 				if (sym_file && !srcname.same_str(sym_file) && !assembler.map.empty()) {
@@ -7111,6 +7237,26 @@ int main(int argc, char **argv) {
 						fclose(f);
 					}
 				}
+				// export tass labels
+				if( tass_labels_file && !srcname.same_str( tass_labels_file ) && !assembler.map.empty() ) {
+					if( FILE *f = fopen( tass_labels_file, "w" ) ) {
+						for( MapSymbolArray::iterator i = assembler.map.begin(); i != assembler.map.end(); ++i ) {
+							uint32_t value = ( uint32_t )i->value;
+							if( size_t( i->section ) < assembler.allSections.size() ) { value += assembler.allSections[ i->section ].start_address; }
+							if( i->name.same_str( "debugbreak" ) ) {}
+							else {
+								strown<256> line;
+								line.append( i->name );
+								line.sprintf_append( "\t= $%04x\n", value);
+								fprintf(f, line.c_str());
+							}
+						}
+						fclose( f );
+					}
+				}
+
+				
+
 			}
 			// free some memory
 			assembler.Cleanup();
