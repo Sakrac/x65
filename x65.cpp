@@ -1161,6 +1161,17 @@ struct ListLine {
 };
 typedef std::vector<struct ListLine> Listing;
 
+// Source level debugging info that can be saved into linkable object files, this is close to ListLine so possibly combinable.
+// this belongs in each section so it can be saved with that into the x65 files or generated if linked
+struct SourceDebugEntry {
+	int source_file_index;	// index into Assembler::source_file vector
+	int address;			// local address in section
+	int size;
+	int source_file_offset;	// can be converted into line/column while linking
+};
+typedef std::vector<struct SLDEntry> SourceDebug;
+
+
 enum SectionType : int8_t {	// enum order indicates fixed address linking priority
 	ST_UNDEFINED,			// not set
 	ST_CODE,				// default type
@@ -1220,6 +1231,7 @@ typedef struct Section {
 	// reloc data
 	relocList *pRelocs;		// link time resolve (not all sections need this)
 	Listing *pListing;		// if list output
+	SourceDebug *pSrcDbg;	// if source level debugging info generated
 
 	// grouped sections
 	int next_group;			// next section of a group of relative sections or -1
@@ -1456,6 +1468,7 @@ public:
 	pairArray<uint32_t, LabelStruct> labelStructs;
 	pairArray<uint32_t, strref> xdefs;	// labels matching xdef names will be marked as external
 
+	std::vector<char*> source_files;		// all source files encountered while assembling. referenced by source level debugging
 	std::vector<LateEval> lateEval;
 	std::vector<LocalLabelRecord> localLabels;
 	std::vector<char*> loadedData;			// free when assembler is completed
