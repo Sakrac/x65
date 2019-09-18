@@ -1652,7 +1652,7 @@ public:
 	StatusCode Directive_ENUM_STRUCT(strref line, AssemblerDirective dir);
 
 	// Assembler steps
-	StatusCode GetAddressMode(strref line, bool flipXY, uint32_t validModes,
+	StatusCode GetAddressMode(strref line, bool flipXY, uint32_t &validModes,
 							  AddrMode &addrMode, int &len, strref &expression);
 	StatusCode AddOpcode(strref line, int index, strref source_file);
 	StatusCode BuildLine(strref line);
@@ -5255,7 +5255,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 }
 
 // Make an educated guess at the intended address mode from an opcode argument
-StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t validModes, AddrMode &addrMode, int &len, strref &expression)
+StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, AddrMode &addrMode, int &len, strref &expression)
 {
 	bool force_zp = false;
 	bool force_24 = false;
@@ -5298,18 +5298,18 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t validModes, Ad
 					case 'z': force_zp = true; line += 3; need_more = true; len = 1; break;
 					case 'b': line += 3; need_more = true; len = 1; break;
 					case 'w': line += 3; need_more = true; len = 2; break;
-					case 'l': force_24 = true;  line += 3; need_more = true; len = 3; break;
-					case 'a': force_abs = true;  line += 3; need_more = true; break;
+					case 'l': force_24 = true; line += 3; need_more = true; len = 3; break;
+					case 'a': force_abs = true; line += 3; need_more = true; break;
 				}
 			}
 			if (!need_more) {
-				if (strref("A").is_prefix_word(line)) {
+				if( strref( "A" ).is_prefix_word( line ) ) {
 					addrMode = AMB_ACC;
 				} else {	// absolute (zp, offs x, offs y)
 					addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
 					expression = line.split_token_trim(',');
-					if (line && (line[0]=='s' || line[0]=='S'))
-						addrMode = AMB_STK;
+					if( force_abs ) { validModes &= AMM_ABS | AMM_ABS_X | AMM_ABS_Y | AMM_REL | AMM_REL_X; }
+					if( line && (line[ 0 ] == 's' || line[ 0 ] == 'S') ) { addrMode = AMB_STK; }
 					else {
 						bool relX = line && (line[0]=='x' || line[0]=='X');
 						bool relY = line && (line[0]=='y' || line[0]=='Y');
