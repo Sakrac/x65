@@ -1,5 +1,15 @@
 cpu 65816
 Test65816_ForceAddrMode:
+i8
+	ldx #0
+i16
+	ldx #0
+a8
+	lda #0
+a16
+	lda #0
+	lda.b #0
+
 	{
 		jmp >$123456
 		lda >$123456,x
@@ -33,6 +43,25 @@ Test65816_ForceAddrMode:
 		endif
 	}
 
+	{
+		lda	<$101030 // <addr zero page
+		if !((*-!) == 2)
+			err Expected zero page instruction
+		endif
+	}
+
+	{
+		lda	|$101030 // |addr force absolute
+		if !((*-!) == 3)
+			err Expected zero page instruction
+		endif
+	}
+	{
+		lda	>$101030 // .l force long
+			if !((*-!) == 4)
+			err Expected zero page instruction
+		endif
+	}
 
 	{
 		jmp [$1010]
