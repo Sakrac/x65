@@ -239,7 +239,7 @@ macro asrm.n Trg,Size
   lda Trg+Size-1
   asl
   rept Size {
-    ror (Trg - 1 + Size - rept)
+    ror 0 + (Trg - 1 + Size - rept)
   }
 }
 
@@ -249,7 +249,7 @@ macro asrm.nx Trg,Size
   lda Trg+Size-1,x
   asl
   rept Size {
-    ror (Trg + Size - 1 - rept), x
+    ror 0 + (Trg + Size - 1 - rept), x
   }
 }
 
@@ -493,7 +493,7 @@ macro copy.o Src,Trg,Size,PoolZP
 {
  if (Size<256)
   copy.x Src,Trg,Size
- else 
+ else
  {
   PoolZP zpSrc.w
   PoolZP zpTrg.w
@@ -535,7 +535,7 @@ macro copy.zp Src,Trg,Size,zpTmp1,zpTmp2
 {
  if (Size<256)
   copy.x Src,Trg,Size
- else 
+ else
  {
   set.w zpTmp1,Src
   set.w zpTmp2,Trg
@@ -575,7 +575,7 @@ macro copy.a Src,Trg,Size
 {
  if (Size<256)
   copy.x Src,Trg,Size
- else 
+ else
  {
   set.b >Src, ._addr+2
   set.b >Trg, ._addr+5

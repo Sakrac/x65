@@ -74,6 +74,7 @@
 // ruleset can be specified on the command line.
 enum AsmSyntax {
 	SYNTAX_SANE,
+	SYNTAX_KICKASM,
 	SYNTAX_MERLIN
 };
 
@@ -114,6 +115,7 @@ enum StatusCode {
 	ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_NOT_AN_X65_OBJECT_FILE,
 	ERROR_COULD_NOT_INCLUDE_FILE,
+	ERROR_USER,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
@@ -185,6 +187,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"DS directive failed to evaluate immediately",
 	"File is not a valid x65 object file",
 	"Failed to read include file",
+	"User invoked error",
 
 	"Errors after this point will stop execution",
 
@@ -276,6 +279,7 @@ enum AssemblerDirective {
 	AD_ENT,			// ENT: MERLIN extern this address label
 	AD_EXT,			// EXT: MERLIN reference this address label from a different file
 	AD_CYC,			// CYC: MERLIN start / stop cycle timer
+	AD_ERROR,
 };
 
 // Operators are either instructions or directives
@@ -864,7 +868,7 @@ static const int nCPUs = sizeof(aCPUs) / sizeof(aCPUs[0]);
 // hardtexted strings
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
-static const strref label_end_char_range("!0-9a-zA-Z_@$!.");
+static const strref label_end_char_range("!0-9a-zA-Z_@$!.!:");
 static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$]:?");
 static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()/\\-.");
 static const strref keyword_equ("equ");
@@ -908,7 +912,7 @@ static const char *str_section_type[] = {
 	"CODE",				// default type
 	"DATA",				// data section (matters for GS/OS OMF)
 	"BSS",				// uninitialized data section
-	"ZEROPAGE"			// ununitialized data section in zero page / direct page
+	"ZEROPAGE"			// uninitialized data section in zero page / direct page
 };
 static const int num_section_type_str = sizeof(str_section_type) / sizeof(str_section_type[0]);
 
@@ -1686,6 +1690,7 @@ public:
 
 	// Syntax
 	bool Merlin() const { return syntax == SYNTAX_MERLIN; }
+	bool KickAsm() const { return syntax == SYNTAX_KICKASM; }
 
 	// constructor
 	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502), num_instructions(0),
@@ -5261,37 +5266,134 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 	bool force_24 = false;
 	bool force_abs = false;
 	bool need_more = true;
+	bool first = true;
 	strref arg, deco;
 
 	len = 0;
 	while (need_more) {
 		need_more = false;
+		line.skip_whitespace();
 		uint8_t c = line.get_first();
-		if (!c)
-			addrMode = AMB_NON;
-		else if (!force_abs && (c == '[' || (c == '(' &&
-				(validModes&(AMM_REL | AMM_REL_X | AMM_ZP_REL | AMM_ZP_REL_X | AMM_ZP_Y_REL))))) {
-			deco = line.scoped_block_skip();
-			line.skip_whitespace();
-			expression = deco.split_token_trim(',');
-			addrMode = c == '[' ? (force_zp ? AMB_ZP_REL_L : AMB_REL_L) : (force_zp ? AMB_ZP_REL : AMB_REL);
-			if (strref::tolower(deco[0]) == 'x')
-				addrMode = c == '[' ? AMB_ILL : AMB_ZP_REL_X;
-			else if (line[0] == ',') {
-				++line;
-				line.skip_whitespace();
-				if (strref::tolower(line[0]) == 'y') {
-					if (strref::tolower(deco[0]) == 's')
-						addrMode = AMB_STK_REL_Y;
-					else
-						addrMode = c == '[' ? AMB_ZP_REL_Y_L : AMB_ZP_Y_REL;
-					++line;
+		if (!c) { addrMode = AMB_NON; }
+		if( c == '[' || c == '(' ) {
+			strref block_suffix( line.get(), line.scoped_block_comment_len() );
+			strref suffix = line.get_skipped( block_suffix.get_len() );
+			suffix.trim_whitespace();
+			if( suffix.get_first() == ',' ) { ++suffix; suffix.skip_whitespace(); }
+			else { suffix.clear(); }
+			++block_suffix; block_suffix.clip(1); block_suffix.trim_whitespace();
+			++line; line.skip_whitespace();
+			strref block = block_suffix.split_token_trim( ',' );
+			validModes &= AMM_ZP_REL_X | AMM_ZP_Y_REL | AMM_REL | AMM_ZP_REL | AMM_REL_X | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_STK_REL_Y | AMM_REL_L;
+			if( line.get_first() == '>' ) { // [>$aaaa]
+				if( c == '[' ) { addrMode = AMB_REL_L; validModes &= AMM_REL_L; expression = block+1; }
+			} else if( line.get_first() == '|' || line.get_first() == '!' && c == '(' ) { // (|$aaaa) or (|$aaaa,x)
+				strref arg = block.after( ',' ); arg.skip_whitespace();
+				if( arg && ( arg.get_first() == 'x' || arg.get_first() == 'X' ) ) {
+					addrMode = AMB_REL_X; validModes &= AMM_REL_X; expression = block.before( ',' ); }
+				else { addrMode = AMB_REL; validModes &= AMM_REL; expression = block; }
+			} else if( line.get_first() == '<' ) { // (<$aa) (<$aa),y (<$aa,x) (<$aa,s),y [<$aa] [<$aa],y
+				if( suffix ) {
+					if( suffix.get_first() == 'y' || suffix.get_first() == 'Y' ) {
+						if( c == '(' ) { // (<$aa),y or (<$aa,s),y
+							if( block_suffix && ( block_suffix.get_first() == 's' || block_suffix.get_first() == 'S' ) ) {
+								expression = block+1;
+								addrMode = AMB_STK_REL_Y; validModes &= AMM_STK_REL_Y;
+							} else {
+								expression = block+1;
+								addrMode = AMB_ZP_Y_REL; validModes &= AMM_ZP_Y_REL;
+							}
+						} else { // [<$aa],y
+							expression = block+1;
+							addrMode = AMB_ZP_REL_Y_L; validModes &= AMM_ZP_REL_Y_L;
+						}
+					} else { return ERROR_BAD_ADDRESSING_MODE; }
+				} else { // (<$aa) (<$aa,x) [<$aa]
+					if( c == '[' ) {
+						if( block.find( ',' ) >= 0 || suffix.get_first() == ',' ) { return ERROR_BAD_ADDRESSING_MODE; }
+						expression = block+1;
+						addrMode = AMB_ZP_REL_L; validModes &= AMM_ZP_REL_L;
+					} else {
+						if( block_suffix ) {
+							if( block_suffix.get_first() != 'x' && block_suffix.get_first() != 'X' ) { return ERROR_BAD_ADDRESSING_MODE; }
+							expression = block+1;
+							addrMode = AMB_ZP_REL_X; validModes &= AMM_ZP_REL_X;
+						} else {
+							expression = block+1;
+							addrMode = AMB_ZP_REL; validModes &= AMM_ZP_REL;
+						}
+					}
+				}
+			} else {	// no <, |, ! or > decorator inside (...) or [...]
+				if( c == '[' && ( block_suffix.get_first() == 's' || block_suffix.get_first() == 'S' ) ) {
+					if( suffix.get_first() == 'y' || suffix.get_first() == 'Y' ) {
+						expression = block;
+						addrMode = AMB_STK_REL_Y; validModes &= AMM_STK_REL_Y;
+					} else { return ERROR_BAD_ADDRESSING_MODE; }
+				} else if( block_suffix.get_first() == 'x' || block_suffix.get_first() == 'X' ) { // ($aa,x) ($aaaa,x)
+					if( c == '[' ) { return ERROR_BAD_ADDRESSING_MODE; }
+					expression = block;
+					switch( validModes & ( AMM_ZP_REL_X | AMM_REL_X ) ) {
+						case AMM_ZP_REL_X: addrMode = AMB_ZP_REL_X; validModes = AMM_ZP_REL_X; break;
+						case AMM_REL_X: addrMode = AMB_REL_X; validModes = AMM_REL_X; break;
+						default: addrMode = force_zp ? AMB_ZP_REL_X : AMB_REL_X; validModes &= force_zp ? AMM_ZP_REL_X : ( force_abs ? AMM_ZP_REL_X : ( AMM_ZP_REL_X | AMM_REL_X ) );
+							break;
+					}
+				} else if( suffix && ( suffix.get_first() == 'y' || suffix.get_first() == 'Y' ) ) {
+					if( c == '[' ) {
+						expression = block;
+						addrMode = AMB_ZP_REL_Y_L; validModes &= AMM_ZP_REL_Y_L;
+					} else { // ($aa),y
+						expression = block;
+						addrMode = AMB_ZP_Y_REL; validModes &= AMM_ZP_Y_REL;
+					}
+				} else {	// ($aa), ($aaaa), [$aa], [$aaaa]
+					if( c == '[' ) { // [$aa], [$aaaa]
+						expression = block;
+						addrMode = force_zp ? AMB_ZP_REL_L : AMB_REL_L; validModes &= force_zp ? AMM_ZP_REL_L : ( force_abs ? AMM_REL_L : ( AMM_ZP_REL_L | AMM_REL_L ) );
+					}
+					else { // ($aa), ($aaaa)
+						expression = block;
+						addrMode = force_zp ? AMB_ZP_REL : AMB_REL; validModes &= force_zp ? AMM_ZP_REL : ( force_abs ? AMM_REL : ( AMM_ZP_REL | AMM_REL ) );
+					}
 				}
 			}
+			expression.trim_whitespace();
+		} else if (c == '<' ) {	// force zero page not indirect
+			++line; line.trim_whitespace();
+			strref suffix = line.after(','); suffix.skip_whitespace();
+			expression = line.before_or_full(','); expression.trim_whitespace();
+			if( suffix ) {
+				if( suffix.get_first() == 's' || suffix.get_first() == 'S' ) {
+					addrMode = AMB_STK; validModes &= AMM_STK;	// not correct usage of < but I'll allow it.
+				} else if( suffix.get_first() == 'x' || suffix.get_first() == 'X' ) {
+					addrMode = AMB_ZP_X; validModes &= AMM_ZP_X;
+				} else { return ERROR_BAD_ADDRESSING_MODE; }
+			} else {
+				addrMode = AMB_ZP; validModes &= AMM_ZP;
+			}
+		} else if( c == '>' ) {
+			++line; line.trim_whitespace();
+			strref suffix = line.after( ',' ); suffix.skip_whitespace();
+			expression = line.before_or_full( ',' ); expression.trim_whitespace();
+			if( suffix ) {
+				if( suffix.get_first() == 'x' || suffix.get_first() == 'X' ) {
+					addrMode = AMB_ABS_L_X; validModes &= AMM_ABS_L_X;
+				}
+				else { return ERROR_BAD_ADDRESSING_MODE; }
+			}
+			else {
+				addrMode = AMB_ABS_L; validModes &= AMM_ABS_L;
+			}
+
 		} else if (c == '#') {
 			++line;
 			addrMode = AMB_IMM;
+			validModes &= AMM_IMM;
 			expression = line;
+		} else if (c == '<') {
+			validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
+				AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY;
 		} else if (line) {
 			if (line[0]=='.' && strref::is_ws(line[2])) {
 				switch (strref::tolower(line[1])) {
@@ -5309,6 +5411,8 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 					addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
 					expression = line.split_token_trim(',');
 					if( force_abs ) { validModes &= AMM_ABS | AMM_ABS_X | AMM_ABS_Y | AMM_REL | AMM_REL_X; }
+					if( force_zp ) { validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
+						AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY; }
 					if( line && (line[ 0 ] == 's' || line[ 0 ] == 'S') ) { addrMode = AMB_STK; }
 					else {
 						bool relX = line && (line[0]=='x' || line[0]=='X');
@@ -5323,6 +5427,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 				}
 			}
 		}
+		first = false;
 	}
 	return STATUS_OK;
 }
@@ -5629,16 +5734,17 @@ StatusCode Asm::BuildLine(strref line) {
 		line = line.before_or_full(';');	// clip any line comments
 		line = line.before_or_full(c_comment);
 		line.clip_trailing_whitespace();
-		if (line[0]==':'&&!Merlin()) { ++line; }	// Kick Assembler macro prefix (incompatible with merlin)
+		if (KickAsm()&&line.get_first()==':') { ++line; }	// Kick Assembler macro prefix (incompatible with merlin and sane syntax)
 		strref line_nocom = line;
 		strref operation = line.split_range(Merlin() ? label_end_char_range_merlin : label_end_char_range);
+		if( operation.get_last() == ':' ) { operation.clip( 1 ); }
 		char char1 = operation[0];			// first char of first word
 		char charE = operation.get_last();	// end char of first word
 		line.trim_whitespace();
 		bool force_label = charE==':' || charE=='$';
 		if (!force_label && Merlin()&&(line||operation)) { // MERLIN fixes and PoP does some naughty stuff like 'and = 0'
 			force_label = (!strref::is_ws(char0)&&char0!='{' && char0!='}')||char1==']'||charE=='?';
-		} else if (!Merlin()&&line[0]==':') { force_label = true; }
+		} /*else if (!Merlin()&&line[0]==':') { force_label = true; }*/
 		if (!operation && !force_label) {
 			if (ConditionalAsm()) {
 				// scope open / close
@@ -7023,6 +7129,7 @@ int main(int argc, char **argv) {
 		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
 			if (arg.get_first()=='i') { assembler.AddIncludeFolder(arg+1); }
+			else if (arg.same_str("kickasm") ) { assembler.syntax = SYNTAX_KICKASM; }
 			else if (arg.same_str("merlin")) { assembler.syntax = SYNTAX_MERLIN; }
 			else if (arg.get_first()=='D'||arg.get_first()=='d') {
 				++arg;
