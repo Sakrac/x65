@@ -5372,6 +5372,23 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			} else {
 				addrMode = AMB_ZP; validModes &= AMM_ZP;
 			}
+		} else if (c == '<') {
+			validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
+				AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY;
+		} else if( c == '|' || c == '!' ) {
+			++line; line.trim_whitespace();
+			strref suffix = line.after( ',' ); suffix.skip_whitespace();
+			expression = line.before_or_full( ',' ); expression.trim_whitespace();
+			addrMode = AMB_NON;
+			if( suffix ) {
+				if( suffix.get_first() == 'x' || suffix.get_first() == 'X' ) {
+					addrMode = AMB_ABS_X; validModes &= AMM_ABS_X;
+				} else if( suffix.get_first() == 'y' || suffix.get_first() == 'Y' ) {
+					addrMode = AMB_ABS_Y; validModes &= AMM_ABS_Y;
+				}
+			} else {
+				addrMode = AMB_ABS; validModes &= AMM_ABS;
+			}
 		} else if( c == '>' ) {
 			++line; line.trim_whitespace();
 			strref suffix = line.after( ',' ); suffix.skip_whitespace();
@@ -5385,20 +5402,16 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			else {
 				addrMode = AMB_ABS_L; validModes &= AMM_ABS_L;
 			}
-
 		} else if (c == '#') {
 			++line;
 			addrMode = AMB_IMM;
-			validModes &= AMM_IMM;
+			validModes &= AMM_IMM | AMM_IMM_DBL_A | AMM_IMM_DBL_XY;
 			expression = line;
-		} else if (c == '<') {
-			validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
-				AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY;
 		} else if (line) {
 			if (line[0]=='.' && strref::is_ws(line[2])) {
 				switch (strref::tolower(line[1])) {
 					case 'z': force_zp = true; line += 3; need_more = true; len = 1; break;
-					case 'b': line += 3; need_more = true; len = 1; break;
+					case 'b': line += 3; need_more = true; len = 1; validModes &= ~(AMM_IMM_DBL_A | AMM_IMM_DBL_XY); break;
 					case 'w': line += 3; need_more = true; len = 2; break;
 					case 'l': force_24 = true; line += 3; need_more = true; len = 3; break;
 					case 'a': force_abs = true; line += 3; need_more = true; break;

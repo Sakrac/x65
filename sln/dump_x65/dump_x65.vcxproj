@@ -23,7 +23,7 @@
     <ProjectGuid>{57EFF4A4-7BF2-43F0-AD62-A79092DA67D1}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>dump_x65</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.16299.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
