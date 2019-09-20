@@ -5375,7 +5375,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 		} else if (c == '<') {
 			validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
 				AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY;
-		} else if( c == '|' || c == '!' ) {
+		} else if( cpu == CPU_65816 && ( c == '|' /*|| c == '!'*/ ) ) { // disabling ! for now since it conflicts with scope start
 			++line; line.trim_whitespace();
 			strref suffix = line.after( ',' ); suffix.skip_whitespace();
 			expression = line.before_or_full( ',' ); expression.trim_whitespace();
@@ -5389,7 +5389,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			} else {
 				addrMode = AMB_ABS; validModes &= AMM_ABS;
 			}
-		} else if( c == '>' ) {
+		} else if( cpu == CPU_65816 && c == '>' ) {
 			++line; line.trim_whitespace();
 			strref suffix = line.after( ',' ); suffix.skip_whitespace();
 			expression = line.before_or_full( ',' ); expression.trim_whitespace();
