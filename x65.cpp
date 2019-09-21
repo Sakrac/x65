@@ -5604,16 +5604,14 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 					break;
 
 				case AMB_IMM:			// 2 #$12
-					if (op_param && (validModes&(AMM_IMM_DBL_A | AMM_IMM_DBL_XY)))
-						codeArg = op_param == 2 ? CA_TWO_BYTES : CA_ONE_BYTE;
-					else if ((validModes&(AMM_IMM_DBL_A | AMM_IMM_DBL_XY)) &&
-							 expression[0]=='$' && (expression+1).len_hex()==4)
-						codeArg = CA_TWO_BYTES;
-					else if (((validModes&AMM_IMM_DBL_A) && accumulator_16bit) ||
-						((validModes&AMM_IMM_DBL_XY) && index_reg_16bit))
-						codeArg = CA_TWO_BYTES;
-					else
-						codeArg = CA_ONE_BYTE;
+					codeArg = CA_ONE_BYTE;
+					// check for double immediate
+					if( validModes & ( AMM_IMM_DBL_A | AMM_IMM_DBL_XY ) ) {
+						if( op_param ) { codeArg = op_param == 2 ? CA_TWO_BYTES : CA_ONE_BYTE; }
+						else if( ( ( validModes&AMM_IMM_DBL_A ) && accumulator_16bit ) ||
+							( ( validModes&AMM_IMM_DBL_XY ) && index_reg_16bit ) ) { codeArg = CA_TWO_BYTES; }
+						else { codeArg = CA_ONE_BYTE; }
+					}
 					break;
 					
 				case AMB_ACC:			// 9 A

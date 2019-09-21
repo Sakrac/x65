@@ -73,6 +73,18 @@ echo x65macro.i test failed
 goto exit
 :x65macro_test_pass
 
+echo x65 Scope Test >>results\unittest.txt
+..\bin\x64\x65 x65scope.s results\x65scope.prg -lst -sym results\x65scope.sym
+if %errorlevel% GTR 0 goto x65scope_test_fail
+fc /B compare\x65scope.prg results\x65scope.prg >>results\unittest.txt
+if %errorlevel% GTR 0 goto x65scope_test_fail
+fc compare\x65scope.sym results\x65scope.sym >>results\unittest.txt
+if %errorlevel% EQU 0 goto x65scope_test_pass
+:x65scope_test_fail
+echo x65 Scope Test failed
+goto exit
+:x65scope_test_pass
+
 echo Merlin LUP Test >>results\unittest.txt
 echo --------------- >>results\unittest.txt
 ..\bin\x64\x65 merlin_lup.s results\merlin_lup.bin -bin -org=$1000 -merlin -lst >>results\unittest.txt

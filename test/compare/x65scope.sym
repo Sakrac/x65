@@ -1,0 +1,6 @@
+
+.label ClearVICPage = $1000
+.label LenStr = $1012
+.label GetSkip = $1019 {
+.label .addr = $1026
+}
