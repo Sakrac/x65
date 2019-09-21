@@ -1,14 +1,17 @@
 cpu 65816
 Test65816_ForceAddrMode:
+	sep #$30
 i8
-	ldx #0
-i16
-	ldx #0
+	ldx #$1234
 a8
-	lda #0
+	lda #$1234
+	lda.w #$1234
+
+i16
+	ldx #$1234
 a16
-	lda #0
-	lda.b #0
+	lda #$1234
+	lda.b #$1234
 
 	{
 		jmp >$123456
