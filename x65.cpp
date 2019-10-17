@@ -5,7 +5,7 @@
 //  Created by Carl-Henrik Skårstedt on 9/23/15.
 //
 //
-//	A simple 6502 assembler
+//	A "simple" 6502/65C02/65816 assembler
 //
 //
 // The MIT License (MIT)
@@ -1347,6 +1347,7 @@ typedef struct sLateEval {
 	int16_t section;			// which section to apply to.
 	int16_t rept;				// value of rept
 	int file_ref;			// -1 if current or xdef'd otherwise index of file for label
+	char* expression_mem;		// if a temporary string was used for the expression
 	strref label;			// valid if this is not a target but another label
 	strref expression;
 	strref source_file;
@@ -1705,12 +1706,16 @@ void Asm::Cleanup() {
 		if (char *data = *i)
 			free(data);
 	}
+	for( std::vector<LateEval>::iterator i = lateEval.begin(); i != lateEval.end(); ++i ) {
+		if( i->expression_mem ) { free( i->expression_mem ); i->expression_mem = nullptr; i->expression.clear(); }
+	}
 	map.clear();
 	labelPools.clear();
 	loadedData.clear();
 	labels.clear();
 	macros.clear();
 	allSections.clear();
+	lateEval.clear();
 	for (uint32_t i = 0; i < strings.count(); ++i) {
 		StringSymbol &str = strings.getValue(i);
 		if (str.string_value.cap())
@@ -3177,7 +3182,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 		char e0 = expression[0];
 		int start_pos = (e0==']' || e0==':' || e0=='!' || e0=='.') ? 1 : 0;
 		strref label = expression.split_range_trim(label_end_char_range_merlin, start_pos);
-		Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
+		Label *pLabel = GetLabel(label, etx.file_ref);
 		if (!pLabel) {
 			StatusCode ret = EvalStruct(label, value);
 			if (ret==STATUS_OK) { return EVOP_VAL; }
@@ -3240,7 +3245,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		char e0 = exp[0];
 		int start_pos = (e0 == ':' || e0 == '!' || e0 == '.') ? 1 : 0;
 		strref label = exp.split_range_trim(label_end_char_range, start_pos);
-		Label *pLabel = pLabel = GetLabel(label, etx.file_ref);
+		Label *pLabel = GetLabel(label, etx.file_ref);
 		if (!pLabel) {
 			StatusCode ret = EvalStruct(label, value);
 			if (ret==STATUS_OK) { return EVOP_VAL; }
@@ -3554,7 +3559,7 @@ char* Asm::PartialEval( strref expression )
 		int16_t section = -1, index_section = -1;
 		EvalOperator op = EVOP_NONE;
 		strref subexp;
-		while( expression.get_len() && strref::is_sep_ws( expression.get_first() ) ) {
+		while( expression.get_len() && strref::is_ws( expression.get_first() ) ) {
 			partial.append( expression.get_first() );
 			++expression;
 		}
@@ -3564,33 +3569,25 @@ char* Asm::PartialEval( strref expression )
 				strl_t l = expression.len_alphanumeric();
 				partial.append( strref( expression.get(), l ) );
 				expression += l;
-			} else if( strref::is_valid_label( f ) ) {
-//				if( !expression.is_prefix_word( strref( "rept" ) ) ) {
-					strref orig_exp = expression;
-					if( Merlin() ) {
-						op = RPNToken_Merlin( expression, etx, prev_op, section, value );
-					}
-					else {
-						op = RPNToken( expression, etx, prev_op, section, value, subexp );
-					}
-					prev_op = op;
-					if( op == EVOP_VAL ) {
-						partial.sprintf_append( "$%x ", value );	// insert extra whitespace for separation
-						partial_solved = true;
-					} else { partial.append( strref( orig_exp.get(), orig_exp.get_len() - expression.get_len() ) ); }
-//				}
-//				else {
-					//partial.append( expression.split( 4 ) );
-//				}
+			} else if( f=='.' || f == '_' || strref::is_alphabetic( f ) ) {
+				strref label = expression.split_range( label_end_char_range );
+				Label *pLabel = GetLabel( label, etx.file_ref );
+
+				if( pLabel && pLabel->evaluated && pLabel->section < 0 ) {
+					partial.sprintf_append( "$%x ", pLabel->value );	// insert extra whitespace for separation
+					partial_solved = true;
+				} else {
+					partial.append( label );
+				}
 			} else {
 				partial.append( expression.get_first() );
 				++expression;
 			}
 		}
 	}
-
 	if( partial_solved ) {
-		printf( "PARTIAL EXPRESSION SOLVED:\n\t" STRREF_FMT "\n\t" STRREF_FMT "\n", STRREF_ARG( input ), STRREF_ARG( partial.get_strref() ) );
+		//printf( "PARTIAL EXPRESSION SOLVED:\n\t" STRREF_FMT "\n\t" STRREF_FMT "\n", STRREF_ARG( input ), STRREF_ARG( partial.get_strref() ) ); 
+		return _strdup( partial.c_str() );
 	}
 	return nullptr;
 }
@@ -3599,7 +3596,7 @@ char* Asm::PartialEval( strref expression )
 // the action to perform if it can be evaluated later.
 void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strref source_file, LateEval::Type type) {
 	LateEval le;
-	PartialEval( expression );
+	char* partial = PartialEval( expression );
 	le.address = pc;
 	le.scope = scope_pc;
 	le.scope_depth = scope_depth;
@@ -3608,7 +3605,8 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
 	le.label.clear();
-	le.expression = expression;
+	le.expression = partial ? strref( partial ) : expression;
+	le.expression_mem = partial;
 	le.source_file = source_file;
 	le.type = type;
 
@@ -3617,7 +3615,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 
 void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEval::Type type) {
 	LateEval le;
-	PartialEval( expression );
+	char* partial = PartialEval( expression );
 	le.address = pc;
 	le.scope = scope_pc;
 	le.scope_depth = scope_depth;
@@ -3626,7 +3624,8 @@ void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, Lat
 	le.section = (int16_t)(&CurrSection() - &allSections[0]);
 	le.rept = contextStack.curr().repeat_total - contextStack.curr().repeat;
 	le.file_ref = -1; // current or xdef'd
-	le.expression = expression;
+	le.expression = partial ? strref( partial ) : expression;
+	le.expression_mem = partial;
 	le.source_file.clear();
 	le.type = type;
 
