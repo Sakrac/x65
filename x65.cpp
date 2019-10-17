@@ -1598,7 +1598,8 @@ public:
 	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
 		EvalOperator prev_op, int16_t &section, int &value, strref &subexp);
 	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
-	void SetEvalCtxDefaults(struct EvalContext &etx);
+	char* PartialEval( strref expression );
+	void SetEvalCtxDefaults( struct EvalContext &etx );
 	int ReptCnt() const;
 
 	// Access labels
@@ -3535,10 +3536,70 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 	return STATUS_OK;
 }
 
+// if labels referenced in the expression have been evaluated absolutely
+// create a new expression with those labels replaced by their value.
+char* Asm::PartialEval( strref expression )
+{
+	struct EvalContext etx;
+	SetEvalCtxDefaults( etx );
+	strown< 1024 > partial;
+
+	strref input = expression;
+
+	EvalOperator prev_op = EVOP_NONE;
+	bool partial_solved = false;
+
+	while( expression ) {
+		int value = 0;
+		int16_t section = -1, index_section = -1;
+		EvalOperator op = EVOP_NONE;
+		strref subexp;
+		while( expression.get_len() && strref::is_sep_ws( expression.get_first() ) ) {
+			partial.append( expression.get_first() );
+			++expression;
+		}
+		if( expression ) {
+			char f = expression.get_first();
+			if( strref::is_number( f ) ) {
+				strl_t l = expression.len_alphanumeric();
+				partial.append( strref( expression.get(), l ) );
+				expression += l;
+			} else if( strref::is_valid_label( f ) ) {
+//				if( !expression.is_prefix_word( strref( "rept" ) ) ) {
+					strref orig_exp = expression;
+					if( Merlin() ) {
+						op = RPNToken_Merlin( expression, etx, prev_op, section, value );
+					}
+					else {
+						op = RPNToken( expression, etx, prev_op, section, value, subexp );
+					}
+					prev_op = op;
+					if( op == EVOP_VAL ) {
+						partial.sprintf_append( "$%x ", value );	// insert extra whitespace for separation
+						partial_solved = true;
+					} else { partial.append( strref( orig_exp.get(), orig_exp.get_len() - expression.get_len() ) ); }
+//				}
+//				else {
+					//partial.append( expression.split( 4 ) );
+//				}
+			} else {
+				partial.append( expression.get_first() );
+				++expression;
+			}
+		}
+	}
+
+	if( partial_solved ) {
+		printf( "PARTIAL EXPRESSION SOLVED:\n\t" STRREF_FMT "\n\t" STRREF_FMT "\n", STRREF_ARG( input ), STRREF_ARG( partial.get_strref() ) );
+	}
+	return nullptr;
+}
+
 // if an expression could not be evaluated, add it along with
 // the action to perform if it can be evaluated later.
 void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strref source_file, LateEval::Type type) {
 	LateEval le;
+	PartialEval( expression );
 	le.address = pc;
 	le.scope = scope_pc;
 	le.scope_depth = scope_depth;
@@ -3556,6 +3617,7 @@ void Asm::AddLateEval(int target, int pc, int scope_pc, strref expression, strre
 
 void Asm::AddLateEval(strref label, int pc, int scope_pc, strref expression, LateEval::Type type) {
 	LateEval le;
+	PartialEval( expression );
 	le.address = pc;
 	le.scope = scope_pc;
 	le.scope_depth = scope_depth;
@@ -3958,7 +4020,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 }
 
 // Request a label from a pool
-StatusCode LabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope) {
+StatusCode sLabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope) {
 	if (numBytes>(end-start)||depth==MAX_SCOPE_DEPTH) { return ERROR_OUT_OF_LABELS_IN_POOL; }
 	if (!depth||scope!=scopeUsed[depth-1][1]) {
 		scopeUsed[depth][0] = end;
@@ -3971,7 +4033,7 @@ StatusCode LabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t sc
 }
 
 // Release a label from a pool (at scope closure)
-void LabelPool::ExitScope(uint16_t scope) {
+void sLabelPool::ExitScope(uint16_t scope) {
 	if (depth && scopeUsed[depth-1][1]==scope) {
 		end = scopeUsed[--depth][0];
 	}
@@ -3989,12 +4051,12 @@ bool Asm::MatchXDEF(strref label) {
 }
 
 // assignment of label (<label> = <expression>)
-StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant) {
-	line.trim_whitespace();
+StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant) {
+	expression.trim_whitespace();
 	int val = 0;
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
-	StatusCode status = EvalExpression(line, etx, val);
+	StatusCode status = EvalExpression(expression, etx, val);
 	if (status!=STATUS_NOT_READY && status!=STATUS_OK && status!=STATUS_RELATIVE_SECTION) {
 		return status;
 	}
@@ -4018,7 +4080,7 @@ StatusCode Asm::AssignLabel(strref label, strref line, bool make_constant) {
 
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (!pLabel->evaluated) {
-		AddLateEval(label, CurrSection().GetPC(), scope_address[scope_depth], line, LateEval::LET_LABEL);
+		AddLateEval(label, CurrSection().GetPC(), scope_address[scope_depth], expression, LateEval::LET_LABEL);
 	}  else {
 		if (local) { MarkLabelLocal(label); }
 		LabelAdded(pLabel, local);
