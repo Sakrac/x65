@@ -868,6 +868,7 @@ static const int nCPUs = sizeof(aCPUs) / sizeof(aCPUs[0]);
 // hardtexted strings
 static const strref c_comment("//");
 static const strref word_char_range("!0-9a-zA-Z_@$!#");
+static const strref macro_arg_bookend("!0-9a-zA-Z_@$!.");
 static const strref label_end_char_range("!0-9a-zA-Z_@$!.!:");
 static const strref label_end_char_range_merlin("!0-9a-zA-Z_@$]:?");
 static const strref filename_end_char_range("!0-9a-zA-Z_!@#$%&()/\\-.");
@@ -2934,7 +2935,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 			macexp.copy(macro_src);
 			while (strref param = params.split_token_trim(token_macro)) {
 				strref a = arg_list.split_token_trim(token);
-				macexp.replace_bookend(param, a, label_end_char_range);
+				macexp.replace_bookend(param, a, macro_arg_bookend);
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			return STATUS_OK;

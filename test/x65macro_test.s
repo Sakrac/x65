@@ -1,3 +1,16 @@
+; Test macro defining a label
+macro LabelMacro( lbl, str, len ) {
+lbl:
+	TEXT str
+const len = * - lbl
+}
+
+dc.w Label1
+dc.b Label1_Len
+
+
+LabelMacro Label1, "Hey!", Label1_Len
+
 	include "../macros/x65macro.i"
 
 	sec
