@@ -74,7 +74,7 @@ goto exit
 :x65macro_test_pass
 
 echo x65 Scope Test >>results\unittest.txt
-..\bin\x64\x65 x65scope.s results\x65scope.prg -lst -sym results\x65scope.sym
+..\bin\x64\x65 x65scope.s results\x65scope.prg -lst -sym results\x65scope.sym >>results\unittest.txt
 if %errorlevel% GTR 0 goto x65scope_test_fail
 fc /B compare\x65scope.prg results\x65scope.prg >>results\unittest.txt
 if %errorlevel% GTR 0 goto x65scope_test_fail
