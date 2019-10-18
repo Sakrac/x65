@@ -96,7 +96,6 @@ enum StatusCode {
 	ERROR_EXPRESSION_MISSING_VALUES,
 	ERROR_INSTRUCTION_NOT_ZP,
 	ERROR_INVALID_ADDRESSING_MODE,
-	ERROR_BRANCH_OUT_OF_RANGE,
 	ERROR_LABEL_MISPLACED_INTERNAL,
 	ERROR_BAD_ADDRESSING_MODE,
 	ERROR_UNEXPECTED_CHARACTER_IN_ADDRESSING_MODE,
@@ -119,6 +118,7 @@ enum StatusCode {
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
+	ERROR_BRANCH_OUT_OF_RANGE,
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -2697,8 +2697,9 @@ StatusCode Asm::EnterScope() {
 
 StatusCode Asm::ExitScope()
 {
-	CheckLateEval(strref(), CurrSection().GetPC());
-	StatusCode error = FlushLocalLabels(scope_depth);
+	StatusCode error = CheckLateEval(strref(), CurrSection().GetPC());
+	if( error >= FIRST_ERROR ) { return error; }
+	error = FlushLocalLabels(scope_depth);
 	if (error>=FIRST_ERROR) { return error; }
 	--scope_depth;
 	if (scope_depth<0) { return ERROR_UNBALANCED_SCOPE_CLOSURE; }
@@ -5932,6 +5933,7 @@ StatusCode Asm::BuildLine(strref line) {
 				}
 			}
 		}
+		if( error >= ERROR_STOP_PROCESSING_ON_HIGHER ) { return error; }
 		// Check for unterminated condition in source
 		if (!contextStack.curr().next_source &&
 			(!ConditionalAsm() || ConditionalConsumed() || !conditional_depth)) {
@@ -6401,6 +6403,7 @@ void Asm::Assemble(strref source, strref filename, bool obj_target) {
 	scope_address[scope_depth] = CurrSection().GetPC();
 	while (contextStack.has_work() && error == STATUS_OK) {
 		error = BuildSegment();
+		if( error >= ERROR_STOP_PROCESSING_ON_HIGHER ) { break; }
 		if (contextStack.curr().complete()) {
 			error = PopContext();
 		} else {
