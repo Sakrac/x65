@@ -1893,8 +1893,9 @@ void Asm::SetSection(strref name, int address) {
 }
 
 void Asm::SetSection(strref line) {
-	if (allSections.size()&&CurrSection().unused()) { allSections.erase(allSections.begin()+SectionId()); }
-	if (allSections.size()==allSections.capacity()) { allSections.reserve(allSections.size()+16); }
+	if (allSections.size()==allSections.capacity()) {
+		allSections.reserve(allSections.size()+16);
+	}
 
 	SectionType type = ST_UNDEFINED;
 	if (line.get_first() == '.') { 	// SEG.U etc.
@@ -2046,7 +2047,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 	// link any relocs to sections that are fixed
 	for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
 		const Section &section = allSections[section_id];
-		if(!section.IsMergedSection()&&!section.IsRelativeSection()) {
+		if (section.address_assigned) {
 			LinkRelocs((int)section_id, -1, section.start_address);
 		}
 	}
@@ -2146,6 +2147,12 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 							}
 						}
 					}
+				}
+			}
+			for (size_t section_id = 0; section_id!=allSections.size(); ++section_id) {
+				const Section &section = allSections[section_id];
+				if (section.address_assigned) {
+					LinkRelocs((int)section_id, -1, section.start_address);
 				}
 			}
 		}
@@ -2316,12 +2323,10 @@ StatusCode Asm::LinkRelocs(int section_id, int section_new, int section_address)
 							value >>= -i->shift;
 						else if (i->shift)
 							value <<= i->shift;
-
 						for (int b = 0; b < i->bytes; b++)
 							*trg++ = (uint8_t)(value >> (b * 8));
 						i = pList->erase(i);
-						if (i != pList->end())
-							++i;
+						if (i!=pList->end()) { ++i; }
 					}
 				}
 			}
@@ -2472,6 +2477,12 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 			i->address += addr_start;
 			if (i->scope>=0) { i->scope += addr_start; }
 		}
+	}
+
+	if (m.output) {
+		free(m.output);
+		m.output = nullptr;
+		m.curr = nullptr;
 	}
 
 	// go through listing
@@ -3575,7 +3586,7 @@ char* Asm::PartialEval( strref expression )
 				strref label = expression.split_range( label_end_char_range );
 				Label *pLabel = GetLabel( label, etx.file_ref );
 
-				if( pLabel && pLabel->evaluated && pLabel->section < 0 ) {
+				if (pLabel && pLabel->evaluated&&!pLabel->external && pLabel->section<0) {
 					partial.sprintf_append( "$%x ", pLabel->value );	// insert extra whitespace for separation
 					partial_solved = true;
 				} else {
@@ -4788,7 +4799,7 @@ StatusCode Asm::Directive_XREF(strref label)
 		pLabelXREF->value = 0;
 		pLabelXREF->evaluated = true;
 		pLabelXREF->pc_relative = true;
-		pLabelXREF->external = false;
+		pLabelXREF->external = true;
 		pLabelXREF->constant = false;
 		pLabelXREF->reference = true;
 	}
