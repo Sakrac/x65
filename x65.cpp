@@ -1430,9 +1430,11 @@ typedef struct sSourceContext {
 	strref code_segment;	// the segment of the file for this context
 	strref read_source;		// current position/length in source file
 	strref next_source;		// next position/length in source file
+	strref var_args;
 	int16_t repeat;			// how many times to repeat this code segment
 	int16_t repeat_total;	// initial number of repeats for this code segment
 	int16_t conditional_ctx;	// conditional depth at root of this context
+	int16_t var_arg_cnt;
 	void restart() { read_source = code_segment; }
 	bool complete() { repeat--; return repeat <= 0; }
 } SourceContext;
@@ -1446,7 +1448,7 @@ public:
 	ContextStack() : currContext(nullptr) { stack.reserve(32); }
 	SourceContext& curr() { return *currContext; }
 	const SourceContext& curr() const { return *currContext; }
-	void push(strref src_name, strref src_file, strref code_seg, int rept = 1) {
+	void push(strref src_name, strref src_file, strref code_seg, int rept = 1, strref var_args = strref(), int var_arg_cnt = 0 ) {
 		if (currContext)
 			currContext->read_source = currContext->next_source;
 		SourceContext context;
@@ -1455,6 +1457,8 @@ public:
 		context.code_segment = code_seg;
 		context.read_source = code_seg;
 		context.next_source = code_seg;
+		context.var_args = var_args;
+		context.var_arg_cnt = var_arg_cnt;
 		context.repeat = (int16_t)rept;
 		context.repeat_total = (int16_t)rept;
 		stack.push_back(context);
@@ -1532,7 +1536,7 @@ public:
 	void Assemble(strref source, strref filename, bool obj_target);
 
 	// Push a new context and handle enter / exit of context
-	StatusCode PushContext(strref src_name, strref src_file, strref code_seg, int rept = 1);
+	StatusCode PushContext(strref src_name, strref src_file, strref code_seg, int rept = 1, strref var_args = strref(), int var_arg_cnt = 0);
 	StatusCode PopContext();
 
 	// Generate assembler listing if requested
@@ -2724,13 +2728,13 @@ StatusCode Asm::ExitScope()
 //
 //
 
-StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, int rept)
+StatusCode Asm::PushContext(strref src_name, strref src_file, strref code_seg, int rept, strref var_args, int var_arg_cnt )
 {
 	if (conditional_depth>=(MAX_CONDITIONAL_DEPTH-1)) { return ERROR_CONDITION_TOO_NESTED; }
 	conditional_depth++;
 	conditional_nesting[conditional_depth] = 0;
 	conditional_consumed[conditional_depth] = false;
-	contextStack.push(src_name, src_file, code_seg, rept);
+	contextStack.push(src_name, src_file, code_seg, rept, var_args, var_arg_cnt );
 	contextStack.curr().conditional_ctx = (int16_t)conditional_depth;
 	if (scope_depth>=(MAX_SCOPE_DEPTH-1)) {
 		return ERROR_TOO_DEEP_SCOPE;
@@ -2765,6 +2769,9 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 {	//
 	// Recommended macro syntax:
 	// macro name(optional params) { actual macro }
+	//	* last param can be "..." indicating any number of parameters.
+	//	 - count when expanding is va_cnt
+	//	 - access by va_arg( int ), probably via a rept
 	//
 	// -endm option macro syntax:
 	// macro name arg
@@ -2934,7 +2941,10 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 		int dSize = 0;
 		char token = arg_list.find(',')>=0 ? ',' : ' ';
 		char token_macro = m.params_first_line && params.find(',') < 0 ? ' ' : ',';
-		while (strref param = pchk.split_token_trim(token_macro)) {
+		for( ;; ) { // count extra size
+			if (pchk.has_prefix("...")) { break; }
+			strref param = pchk.split_token_trim(token_macro);
+			if (!param) { break; }
 			strref a = arg.split_token_trim(token);
 			if (param.get_len() < a.get_len()) {
 				int count = macro_src.substr_case_count(param);
@@ -2946,11 +2956,21 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
 			macexp.copy(macro_src);
-			while (strref param = params.split_token_trim(token_macro)) {
+			strref varArgs;
+			int varArgCount = 0;
+			for (;;) { // count extra size
+				if (params.has_prefix("...")) {
+					// variadic macro, count arguments
+					varArgs = arg_list;
+					while (arg_list.split_token_trim(token)) { ++varArgCount; }
+					break;
+				}
+				strref param = params.split_token_trim(token_macro);
+				if (!param) { break;  }
 				strref a = arg_list.split_token_trim(token);
 				macexp.replace_bookend(param, a, macro_arg_bookend);
 			}
-			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
+			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref(), 1, varArgs, varArgCount );
 			return STATUS_OK;
 		} else { return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION; }
 	}
@@ -3202,6 +3222,7 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 			if (ret==STATUS_OK) { return EVOP_VAL; }
 			if (ret!=STATUS_NOT_STRUCT) { return EVOP_ERR; }	// partial struct
 		}
+		if (!pLabel && label.same_str("va_cnt")) { value = contextStack.curr().var_arg_cnt; return EVOP_VAL; }
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel||!pLabel->evaluated) { return EVOP_NRY; }	// this label could not be found (yet)
 		value = pLabel->value; section = int16_t(pLabel->section); return EVOP_VAL;
@@ -3265,6 +3286,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 			if (ret==STATUS_OK) { return EVOP_VAL; }
 			if (ret!=STATUS_NOT_STRUCT) { return EVOP_ERR; }	// partial struct
 		}
+		if (!pLabel && label.same_str("va_cnt")) { value = contextStack.curr().var_arg_cnt; return EVOP_VAL; }
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
 		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
