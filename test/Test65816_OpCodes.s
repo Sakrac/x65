@@ -278,7 +278,7 @@ TestOpcodes:
 	mvp $21,$20
 	mvn $21,$20
 	pea $2120
-	pei ($21)
+	pei $21
 	per $2120
 	rep $21
 	rep #$21

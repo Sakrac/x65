@@ -40,6 +40,29 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+// Command line arguments
+static const strref cmdarg_listing("lst");		// -lst / -lst=(file.lst) : generate disassembly text from result(file or stdout)
+static const strref cmdarg_tass_listing("tsl");	// -tsl=(file) : generate listing file in TASS style
+static const strref cmdarg_tass_labels("tl");	// -tl=(file) : generate labels in TASS style
+static const strref cmdarg_allinstr("opcodes");	// -opcodes / -opcodes=(file.s) : dump all available opcodes(file or stdout)
+static const strref cmdarg_endmacro("endm");	// -endm : macros end with endm or endmacro instead of scoped('{' - '}')
+static const strref cmdarg_cpu("cpu");			// declare CPU type, use with argument: -cpu=6502/65c02/65c02wdc/65816
+static const strref cmdarg_acc("acc");			// [65816] -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
+static const strref cmdarg_xy("xy");			// [65816] -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
+static const strref cmdarg_org("org");			// -org = $2000 or - org = 4096: force fixed address code at address
+static const strref cmdarg_kickasm("kickasm");	// -kickasm: use Kick Assembler syntax
+static const strref cmdarg_merlin("merlin");	// -merlin: use Merlin syntax
+static const strref cmdarg_c64("c64");			// -c64 : Include load address(default)
+static const strref cmdarg_a2b("a2b");			// -a2b : Apple II Dos 3.3 Binary
+static const strref cmdarg_bin("bin");			// -bin : Produce raw binary\n"
+static const strref cmdarg_a2p("a2p");			// -a2p : Apple II ProDos Binary
+static const strref cmdarg_a2o("a2o");			// -a2o : Apple II GS OS executable (relocatable)
+static const strref cmdarg_mrg("mrg");			// -mrg : Force merge all sections (use with -a2o)
+static const strref cmdarg_sect("sect");		// -sect: display sections loaded and built
+static const strref cmdarg_sym("sym");			// -sym (file.sym) : generate symbol file
+static const strref cmdarg_obj("obj");			// -obj (file.x65) : generate object file for later linking
+static const strref cmdarg_vice("vice");		// -vice (file.vs) : export a vice symbol file
+
 // if the number of resolved labels exceed this in one late eval then skip
 //	checking for relevance and just eval all unresolved expressions.
 #define MAX_LABELS_EVAL_ALL 16
@@ -153,72 +176,72 @@ enum StatusCode {
 
 // The following strings are in the same order as StatusCode
 const char *aStatusStrings[STATUSCODE_COUNT] = {
-	"ok",
-	"relative section",
-	"not ready",
-	"XREF dependent result",
-	"name is not a struct",
-	"Exporting binary without code or data section",
-	"Undefined code",
-	"Unexpected character in expression",
-	"Too many values in expression",
-	"Too many operators in expression",
-	"Unbalanced right parenthesis in expression",
-	"Expression operation",
-	"Expression missing values",
-	"Instruction can not be zero page",
-	"Invalid addressing mode for instruction",
-	"Branch out of range",
-	"Internal label organization mishap",
-	"Bad addressing mode",
-	"Unexpected character in addressing mode",
-	"Unexpected label assignment format",
-	"Changing value of label that is constant",
-	"Out of labels in pool",
-	"Internal label pool release confusion",
-	"Label pool range evaluation failed",
-	"Label pool was redeclared within its scope",
-	"Pool label already defined",
-	"Struct already defined",
-	"Referenced struct not found",
-	"Declare constant type not recognized (dc.?)",
-	"rept count expression could not be evaluated",
-	"hex must be followed by an even number of hex numbers",
-	"DS directive failed to evaluate immediately",
-	"File is not a valid x65 object file",
-	"Failed to read include file",
-	"User invoked error",
+	"ok",														// STATUS_OK,			// everything is fine
+	"relative section",											// STATUS_RELATIVE_SECTION, // value is relative to a single section
+	"not ready",												// STATUS_NOT_READY,	// label could not be evaluated at this time
+	"XREF dependent result",									// STATUS_XREF_DEPENDENT,	// evaluated but relied on an XREF label to do so
+	"name is not a struct",										// STATUS_NOT_STRUCT,	// return is not a struct.
+	"Exporting binary without code or data section",			// STATUS_EXPORT_NO_CODE_OR_DATA_SECTION,
+	"Undefined code",											// ERROR_UNDEFINED_CODE = FIRST_ERROR,
+	"Unexpected character in expression",						// ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION,
+	"Too many values in expression",							// ERROR_TOO_MANY_VALUES_IN_EXPRESSION,
+	"Too many operators in expression",							// ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION,
+	"Unbalanced right parenthesis in expression",				// ERROR_UNBALANCED_RIGHT_PARENTHESIS,
+	"Expression operation",										// ERROR_EXPRESSION_OPERATION,
+	"Expression missing values",								// ERROR_EXPRESSION_MISSING_VALUES,
+	"Instruction can not be zero page",							// ERROR_INSTRUCTION_NOT_ZP,
+	"Invalid addressing mode for instruction",					// ERROR_INVALID_ADDRESSING_MODE,
+	"Internal label organization mishap",						// ERROR_LABEL_MISPLACED_INTERNAL,
+	"Bad addressing mode",										// ERROR_BAD_ADDRESSING_MODE,
+	"Unexpected character in addressing mode",					// ERROR_UNEXPECTED_CHARACTER_IN_ADDRESSING_MODE,
+	"Unexpected label assignment format",						// ERROR_UNEXPECTED_LABEL_ASSIGMENT_FORMAT,
+	"Changing value of label that is constant",					// ERROR_MODIFYING_CONST_LABEL,
+	"Out of labels in pool",									// ERROR_OUT_OF_LABELS_IN_POOL,
+	"Internal label pool release confusion",					// ERROR_INTERNAL_LABEL_POOL_ERROR,
+	"Label pool range evaluation failed",						// ERROR_POOL_RANGE_EXPRESSION_EVAL,
+	"Label pool was redeclared within its scope",				// ERROR_LABEL_POOL_REDECLARATION,
+	"Pool label already defined",								// ERROR_POOL_LABEL_ALREADY_DEFINED,
+	"Struct already defined",									// ERROR_STRUCT_ALREADY_DEFINED,
+	"Referenced struct not found",								// ERROR_REFERENCED_STRUCT_NOT_FOUND,
+	"Declare constant type not recognized (dc.?)",				// ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT,
+	"rept count expression could not be evaluated",				// ERROR_REPT_COUNT_EXPRESSION,
+	"hex must be followed by an even number of hex numbers",	// ERROR_HEX_WITH_ODD_NIBBLE_COUNT,
+	"DS directive failed to evaluate immediately",				// ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
+	"File is not a valid x65 object file",						// ERROR_NOT_AN_X65_OBJECT_FILE,
+	"Failed to read include file",								// ERROR_COULD_NOT_INCLUDE_FILE,
+	"User invoked error",										// ERROR_USER,
 
-	"Errors after this point will stop execution",
+	"Errors after this point will stop execution",				// ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
-	"Target address must evaluate immediately for this operation",
-	"Scoping is too deep",
-	"Unbalanced scope closure",
-	"Unexpected macro formatting",
-	"Align must evaluate immediately",
-	"Out of memory for macro expansion",
-	"Problem with macro argument",
-	"Conditional could not be resolved",
-	"#endif encountered outside conditional block",
-	"#else or #elif outside conditional block",
-	"Struct can not be assembled as is",
-	"Enum can not be assembled as is",
-	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",
-	"rept is missing a scope ('{ ... }')",
-	"Link can only be used in a fixed address section",
-	"Link can not be used in dummy sections",
-	"Can not process this line",
-	"Unexpected target offset for reloc or late evaluation",
-	"CPU is not supported",
-	"Can't append sections",
-	"Zero page / Direct page section out of range",
-	"Attempting to assign an address to a non-existent section",
-	"Attempting to assign an address to a fixed address section",
-	"Can not link a zero page section with a non-zp section",
-	"Out of memory while building",
-	"Can not write to file",
-	"Assembly aborted",
-	"Condition too deeply nested",
+	"Branch is out of range",													// ERROR_BRANCH_OUT_OF_RANGE,
+	"Target address must evaluate immediately for this operation",				// ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
+	"Scoping is too deep",														// ERROR_TOO_DEEP_SCOPE,
+	"Unbalanced scope closure",													// ERROR_UNBALANCED_SCOPE_CLOSURE,
+	"Unexpected macro formatting",												// ERROR_BAD_MACRO_FORMAT,
+	"Align must evaluate immediately",											// ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY,
+	"Out of memory for macro expansion",										// ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION,
+	"Problem with macro argument",												// ERROR_MACRO_ARGUMENT,
+	"Conditional could not be resolved",										// ERROR_CONDITION_COULD_NOT_BE_RESOLVED,
+	"#endif encountered outside conditional block",								// ERROR_ENDIF_WITHOUT_CONDITION,
+	"#else or #elif outside conditional block",									// ERROR_ELSE_WITHOUT_IF,
+	"Struct can not be assembled as is",										// ERROR_STRUCT_CANT_BE_ASSEMBLED,
+	"Enum can not be assembled as is",											// ERROR_ENUM_CANT_BE_ASSEMBLED,
+	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",	// ERROR_UNTERMINATED_CONDITION,
+	"rept is missing a scope ('{ ... }')",										// ERROR_REPT_MISSING_SCOPE,
+	"Link can only be used in a fixed address section",							// ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION,
+	"Link can not be used in dummy sections",									// ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
+	"Can not process this line",												// ERROR_UNABLE_TO_PROCESS,
+	"Unexpected target offset for reloc or late evaluation",					// ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE,
+	"CPU is not supported",														// ERROR_CPU_NOT_SUPPORTED,
+	"Can't append sections",													// ERROR_CANT_APPEND_SECTION_TO_TARGET,
+	"Zero page / Direct page section out of range",								// ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE,
+	"Attempting to assign an address to a non-existent section",				// ERROR_NOT_A_SECTION,
+	"Attempting to assign an address to a fixed address section",				// ERROR_CANT_REASSIGN_FIXED_SECTION,
+	"Can not link a zero page section with a non-zp section",					// ERROR_CANT_LINK_ZP_AND_NON_ZP,
+	"Out of memory while building",												// ERROR_OUT_OF_MEMORY,
+	"Can not write to file",													// ERROR_CANT_WRITE_TO_FILE,
+	"Assembly aborted",															// ERROR_ABORTED,
+	"Condition too deeply nested",												// ERROR_CONDITION_TOO_NESTED,
 };
 
 // Assembler directives
@@ -251,6 +274,7 @@ enum AssemblerDirective {
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
 	AD_IF,			// #IF: Conditional assembly follows based on expression
 	AD_IFDEF,		// #IFDEF: Conditional assembly follows based on label defined or not
+	AD_IFNDEF,		// #IFNDEF: Conditional assembly inverted from IFDEF
 	AD_ELSE,		// #ELSE: Otherwise assembly
 	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
@@ -268,6 +292,8 @@ enum AssemblerDirective {
 	AD_LST,			// LST: Controls symbol listing
 	AD_DUMMY,		// DUM: Start a dummy section (increment address but don't write anything???)
 	AD_DUMMY_END,	// DEND: End a dummy section
+	AD_SCOPE,		// SCOPE: Begin ca65 style scope
+	AD_ENDSCOPE,	// ENDSCOPR: End ca65 style scope
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
 	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
@@ -964,6 +990,7 @@ DirectiveName aDirectiveNames[] {
 	{ "POOL", AD_LABPOOL },
 	{ "IF", AD_IF },
 	{ "IFDEF", AD_IFDEF },
+	{ "IFNDEF", AD_IFNDEF },
 	{ "ELSE", AD_ELSE },
 	{ "ELIF", AD_ELIF },
 	{ "ENDIF", AD_ENDIF },
@@ -980,6 +1007,8 @@ DirectiveName aDirectiveNames[] {
 	{ "I8", AD_XY8 },			// I8: Set 8 bit index register mode
 	{ "DUMMY", AD_DUMMY },
 	{ "DUMMY_END", AD_DUMMY_END },
+	{ "SCOPE", AD_SCOPE },		// SCOPE: Begin ca65 style scope
+	{ "ENDSCOPE", AD_ENDSCOPE },// ENDSCOPR: End ca65 style scope
 	{ "DS", AD_DS },			// Define space
 	{ "ABORT", AD_ABORT },
 	{ "ERR", AD_ABORT },		// DASM version of ABORT
@@ -1195,7 +1224,6 @@ public:
 	strovl string_value;	// string contents if modified, initialized to null string
 
 	StatusCode Append(strref append);
-	StatusCode ParseLine(strref line);
 
 	strref get() { return string_value.valid() ? string_value.get_strref() : string_const; }
 	void clear() {
@@ -1513,13 +1541,17 @@ public:
 	int scope_depth;
 	int brace_depth;			// scope depth defined only by braces, not files
 
+	strref export_base_name;	// binary output name if available
+	strref last_label;			// most recently defined label for Merlin macro
+	
+	// ca65 style scope (for now treat global symbols as local symbols, no outside name lookup)
+	int directive_scope_depth;
+
 	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
 	int lastEvalValue;
 	int8_t lastEvalShift;
 
-	strref export_base_name;	// binary output name if available
-	strref last_label;			// most recently defined label for Merlin macro
 	int8_t list_flags;			// listing flags accumulating for each line
 	bool accumulator_16bit;		// 65816 specific software dependent immediate mode
 	bool index_reg_16bit;		// -"-
@@ -1737,6 +1769,7 @@ void Asm::Cleanup() {
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
+	directive_scope_depth = 0;
 	error_encountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
@@ -1865,7 +1898,7 @@ char* Asm::LoadBinary(strref filename, size_t &size) {
 		if (file.get_last()!='/' && file.get_last()!='\\')
 			file.append('/');
 		file.append(filename);
-#ifdef WIN32
+#ifdef _WIN32
 		file.replace('/', '\\');
 #endif
 		++i;
@@ -2792,8 +2825,9 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		} else { return ERROR_BAD_MACRO_FORMAT; }
 	} else {
 		name = macro.split_range(label_end_char_range);
-		macro.skip_whitespace();
+		while (macro.get_first() == ' ' || macro.get_first() == '\t') { ++macro; }
 		strref left_line = macro.get_line();
+		if (left_line.get_first() == ';' || left_line.has_prefix("//")) { left_line.clear(); }
 		left_line.skip_whitespace();
 		left_line = left_line.before_or_full(';').before_or_full(c_comment);
 		if (left_line && left_line[0]!='(' && left_line[0]!='{') {
@@ -2837,7 +2871,10 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		for (;;) {
 			f = macro.find(endm, f+1);
 			if (f<0) { return ERROR_BAD_MACRO_FORMAT; }
-			if (f==0||strref::is_ws(macro[f-1])) { break; }
+			if (f == 0 || strref::is_ws(macro[f - 1]) || macro[f - 1] == '.') {
+				if (f && macro[f - 1] == '.') { --f; }
+				break;
+			}
 		}
 		pMacro->macro = macro.get_substr(0, f);
 		macro += f;
@@ -4125,7 +4162,7 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->constant = constLabel;
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
-	LabelAdded(pLabel, local);
+	LabelAdded(pLabel, local || directive_scope_depth>0);	// TODO: in named scopes the label can still be referenced outside the scope directive
 	if (local) { MarkLabelLocal(label); }
 	status = CheckLateEval(label);
 	if (!local && label[0]!=']') { // MERLIN: Variable label does not invalidate local labels
@@ -4214,7 +4251,7 @@ StringSymbol *Asm::AddString(strref string_name, strref string_value)
 }
 
 // append a string to another string
-StatusCode StringSymbol::Append(strref append)
+StatusCode sStringSymbols::Append(strref append)
 {
 	if (!append)
 		return STATUS_OK;
@@ -5215,16 +5252,27 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_IFDEF:
 			if (NewConditional()) {			// Start new conditional block
 				CheckConditionalDepth();	// Check if nesting
-				bool conditional_result;
-				error = EvalStatement(line, conditional_result);
-				strref name = line.get_trimmed_ws();
-				if (GetLabel(name) != nullptr || GetString(name) != nullptr)
+				// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label = line.split_range_trim(label_end_char_range);
+				if( GetLabel(label, etx.file_ref) )
 					ConsumeConditional();
 				else
 					SetConditional();
 			}
 			break;
 			
+		case AD_IFNDEF:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label = line.split_range_trim(label_end_char_range);
+				if (!GetLabel(label, etx.file_ref))
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+
 		case AD_ELSE:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
@@ -5327,7 +5375,15 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					break;
 			}
 			break;
+
+		case AD_SCOPE:
+			directive_scope_depth++;
+			break;
 			
+		case AD_ENDSCOPE:
+			directive_scope_depth--;
+			break;
+
 		case AD_DS:
 			return Directive_DS(line);
 	}
@@ -5893,15 +5949,13 @@ StatusCode Asm::BuildLine(strref line) {
 				error = AssignLabel(label, line);
 				line.clear();
 				list_flags |= ListLine::KEYWORD;
-			}
-			else if (keyword_equ.is_prefix_word(line)) {
+			} else if (keyword_equ.is_prefix_word(line)) {
 				line += keyword_equ.get_len();
 				line.skip_whitespace();
 				error = AssignLabel(label, line);
 				line.clear();
 				list_flags |= ListLine::KEYWORD;
-			}
-			else {
+			} else {
 				uint32_t nameHash = label.fnv1a();
 				uint32_t macro = FindLabelIndex(nameHash, macros.getKeys(), macros.count());
 				bool gotConstruct = false;
@@ -7187,15 +7241,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse) {
 }
 
 int main(int argc, char **argv) {
-	const strref listing("lst");
-	const strref tass_listing( "tsl" );
-	const strref tass_labels( "tl" );
-	const strref allinstr("opcodes");
-	const strref endmacro("endm");
-	const strref cpu("cpu");
-	const strref acc("acc");
-	const strref xy("xy");
-	const strref org("org");
+
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -7210,15 +7256,15 @@ int main(int argc, char **argv) {
 
 	const char *source_filename = nullptr, *obj_out_file = nullptr;
 	const char *binary_out_name = nullptr;
-	const char *sym_file = nullptr, *vs_file = nullptr, *tass_labels_file = nullptr;
+	const char *sym_file = nullptr, *vs_file = nullptr, *cmdarg_tass_labels_file = nullptr;
 	strref list_file, allinstr_file;
 	strref tass_list_file;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
 			if (arg.get_first()=='i') { assembler.AddIncludeFolder(arg+1); }
-			else if (arg.same_str("kickasm") ) { assembler.syntax = SYNTAX_KICKASM; }
-			else if (arg.same_str("merlin")) { assembler.syntax = SYNTAX_MERLIN; }
+			else if (arg.same_str(cmdarg_kickasm) ) { assembler.syntax = SYNTAX_KICKASM; }
+			else if (arg.same_str(cmdarg_merlin)) { assembler.syntax = SYNTAX_MERLIN; }
 			else if (arg.get_first()=='D'||arg.get_first()=='d') {
 				++arg;
 				if (arg.find('=')>0) {
@@ -7226,51 +7272,51 @@ int main(int argc, char **argv) {
 				} else {
 					assembler.AssignLabel(arg, "1");
 				}
-			} else if (arg.same_str("c64")) {
+			} else if (arg.same_str(cmdarg_c64)) {
 				load_header = true;
 				size_header = false;
-			} else if (arg.same_str("a2b")) {
+			} else if (arg.same_str(cmdarg_a2b)) {
 				assembler.default_org = 0x0803;
 				load_header = true;
 				size_header = true;
-			} else if (arg.same_str("bin")) {
+			} else if (arg.same_str(cmdarg_bin)) {
 				load_header = false;
 				size_header = false;
-			} else if (arg.same_str("a2p")) {
+			} else if (arg.same_str(cmdarg_a2p)) {
 				assembler.default_org = 0x2000;
 				load_header = false;
 				size_header = false;
-			} else if (arg.same_str("a2o")) {
+			} else if (arg.same_str(cmdarg_a2o)) {
 				gs_os_reloc = true;
-			} else if (arg.same_str("mrg")) {
+			} else if (arg.same_str(cmdarg_mrg)) {
 				force_merge_sections = true;
-			} else if (arg.same_str("sect")) {
+			} else if (arg.same_str(cmdarg_sect)) {
 				info = true;
-			} else if (arg.same_str(endmacro)) {
+			} else if (arg.same_str(cmdarg_endmacro)) {
 				assembler.end_macro_directive = true;
-			} else if (arg.has_prefix(listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				list_output = true;
 				list_file = arg.after( '=' );
-			} else if (arg.has_prefix(tass_listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_tass_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				tass_list_output = true;
 				tass_list_file = arg.after( '=' );
-			} else if (arg.has_prefix(allinstr)&&(arg.get_len()==allinstr.get_len()||arg[allinstr.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_allinstr)&&(arg.get_len()==cmdarg_allinstr.get_len()||arg[cmdarg_allinstr.get_len()]=='=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
-			} else if (arg.has_prefix(org)) {
+			} else if (arg.has_prefix(cmdarg_org)) {
 				arg = arg.after('=');
 				if (arg && arg.get_first()=='$' && arg.get_len()>1) {
 					assembler.default_org = (int)(arg+1).ahextoui();
 				} else if (arg.is_number()) { assembler.default_org = (int)arg.atoi(); }
 				// force the current section to be org'd
 				assembler.AssignAddressToSection(assembler.SectionId(), assembler.default_org);
-			} else if (arg.has_prefix(acc)&&arg[acc.get_len()]=='=') {
+			} else if (arg.has_prefix(cmdarg_acc)&&arg[cmdarg_acc.get_len()]=='=') {
 				assembler.accumulator_16bit = arg.after('=').atoi()==16;
-			} else if (arg.has_prefix(xy)&&arg[xy.get_len()]=='=') {
+			} else if (arg.has_prefix(cmdarg_xy)&&arg[cmdarg_xy.get_len()]=='=') {
 				assembler.index_reg_16bit = arg.after('=').atoi()==16;
-			} else if (arg.has_prefix(cpu)&&(arg.get_len()==cpu.get_len()||arg[cpu.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_cpu)&&(arg.get_len()==cmdarg_cpu.get_len()||arg[cmdarg_cpu.get_len()]=='=')) {
 				arg.split_token_trim('=');
 				bool found = false;
 				for (int c = 0; c<nCPUs; c++) {
@@ -7287,14 +7333,14 @@ int main(int argc, char **argv) {
 					return 1;
 				}
 				if (!arg) { return 0; }
-			} else if (arg.same_str("sym")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_sym)&&(a+1)<argc) {
 				sym_file = argv[++a];
-			} else if (arg.same_str("obj")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_obj)&&(a+1)<argc) {
 				obj_out_file = argv[++a];
-			} else if (arg.same_str("vice")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_vice)&&(a+1)<argc) {
 				vs_file = argv[++a];
-			} else if (arg.same_str(tass_labels)&&(a+1)<argc) {
-				tass_labels_file = argv[++a];
+			} else if (arg.same_str(cmdarg_tass_labels)&&(a+1)<argc) {
+				cmdarg_tass_labels_file = argv[++a];
 			} else { printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg)); }
 		} else if (!source_filename) { source_filename = argv[a]; }
 		else if (!binary_out_name) { binary_out_name = argv[a]; }
@@ -7446,8 +7492,8 @@ int main(int argc, char **argv) {
 					}
 				}
 				// export tass labels
-				if( tass_labels_file && !srcname.same_str( tass_labels_file ) && !assembler.map.empty() ) {
-					if( FILE *f = fopen( tass_labels_file, "w" ) ) {
+				if( cmdarg_tass_labels_file && !srcname.same_str( cmdarg_tass_labels_file ) && !assembler.map.empty() ) {
+					if( FILE *f = fopen( cmdarg_tass_labels_file, "w" ) ) {
 						for( MapSymbolArray::iterator i = assembler.map.begin(); i != assembler.map.end(); ++i ) {
 							uint32_t value = ( uint32_t )i->value;
 							if( size_t( i->section ) < assembler.allSections.size() ) { value += assembler.allSections[ i->section ].start_address; }
