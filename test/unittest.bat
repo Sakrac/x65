@@ -85,6 +85,16 @@ echo Merlin LUP test failed
 goto exit
 :merlup_pass
 
+echo CA65 directives Test >>results\unittest.txt
+..\bin\x64\x65.exe ca65directive.s -lst -endm >>results\unittest.txt
+if %errorlevel% GTR 0 goto ca65_fail
+rem check data here when relevant
+if %errorlevel% EQU 0 goto ca65_pass
+:ca65_fail
+echo CA65 directives failed
+goto exit
+:ca65_pass
+
 rem REVIEW MACROS!
 rem echo x65macro.i Test >>results\unittest.txt
 rem echo --------------- >>results\unittest.txt
