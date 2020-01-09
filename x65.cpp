@@ -62,6 +62,7 @@ static const strref cmdarg_sect("sect");		// -sect: display sections loaded and 
 static const strref cmdarg_sym("sym");			// -sym (file.sym) : generate symbol file
 static const strref cmdarg_obj("obj");			// -obj (file.x65) : generate object file for later linking
 static const strref cmdarg_vice("vice");		// -vice (file.vs) : export a vice symbol file
+static const strref cmdarg_xrefimp("xrefimp");	// -xrefimp : import directive means xref, not include/incbin
 
 // if the number of resolved labels exceed this in one late eval then skip
 //	checking for relevance and just eval all unresolved expressions.
@@ -1559,6 +1560,7 @@ public:
 	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
+	bool import_means_xref;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -1773,6 +1775,7 @@ void Asm::Cleanup() {
 	error_encountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
+	import_means_xref = false;
 	accumulator_16bit = false;	// default 65816 8 bit immediate mode
 	index_reg_16bit = false;	// other CPUs won't be affected.
 	cycle_counter_level = 0;
@@ -4646,7 +4649,7 @@ StatusCode Asm::Directive_Incbin(strref line, int skip, int len)
 StatusCode Asm::Directive_Import(strref line)
 {
 	line.skip_whitespace();
-	
+
 	int skip = 0;	// binary import skip this amount
 	int len = 0;	// binary import load up to this amount
 	strref param;	// read out skip & max len parameters
@@ -5051,6 +5054,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return ERROR_CPU_NOT_SUPPORTED;
 
 		case AD_EXPORT:
+			if (import_means_xref) { return Directive_XDEF(line); }
 			line.trim_whitespace();
 			CurrSection().export_append = line.split_label();
 			break;
@@ -5208,6 +5212,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return Directive_Incbin(line);
 			
 		case AD_IMPORT:
+			if (import_means_xref) { return Directive_XREF(line); }
 			return Directive_Import(line);
 
 		case AD_LABEL:
@@ -7294,6 +7299,8 @@ int main(int argc, char **argv) {
 				info = true;
 			} else if (arg.same_str(cmdarg_endmacro)) {
 				assembler.end_macro_directive = true;
+			} else if (arg.same_str(cmdarg_xrefimp)) {
+				assembler.import_means_xref = true;
 			} else if (arg.has_prefix(cmdarg_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				list_output = true;
