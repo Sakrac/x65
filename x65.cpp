@@ -4165,7 +4165,8 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->constant = constLabel;
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
-	LabelAdded(pLabel, local || directive_scope_depth>0);	// TODO: in named scopes the label can still be referenced outside the scope directive
+	if (directive_scope_depth > 0) { local = true; }
+	LabelAdded(pLabel, local);	// TODO: in named scopes the label can still be referenced outside the scope directive
 	if (local) { MarkLabelLocal(label); }
 	status = CheckLateEval(label);
 	if (!local && label[0]!=']') { // MERLIN: Variable label does not invalidate local labels
@@ -5383,11 +5384,11 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_SCOPE:
 			directive_scope_depth++;
-			break;
+			return EnterScope();
 			
 		case AD_ENDSCOPE:
 			directive_scope_depth--;
-			break;
+			return ExitScope();
 
 		case AD_DS:
 			return Directive_DS(line);
