@@ -279,6 +279,9 @@ enum AssemblerDirective {
 	AD_IF,			// #IF: Conditional assembly follows based on expression
 	AD_IFDEF,		// #IFDEF: Conditional assembly follows based on label defined or not
 	AD_IFNDEF,		// #IFNDEF: Conditional assembly inverted from IFDEF
+	AD_IFCONST,		// #IFCONST: Conditional assembly follows based on label being const
+	AD_IFBLANK,		// #IFBLANK: Conditional assembly follows based on rest of line empty
+	AD_IFNBLANK,	// #IFNBLANK: Conditional assembly follows based on rest of line not empty
 	AD_ELSE,		// #ELSE: Otherwise assembly
 	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
@@ -312,6 +315,15 @@ enum AssemblerDirective {
 	AD_EXT,			// EXT: MERLIN reference this address label from a different file
 	AD_CYC,			// CYC: MERLIN start / stop cycle timer
 	AD_ERROR,
+};
+
+// evaluation functions
+enum EvalFuncs {
+	EF_DEFINED,		// DEFINED(label) 1 if label is defined
+	EF_REFERENCED,	// REFERENCED(label) 1 if label has been referenced in this file
+	EF_BLANK,		// BLANK() 1 if the contents within the parenthesis is empty
+	EF_CONST,		// CONST(label) 1 if label is a const label
+	EF_SIN,			// SIN(index, period, amplitude)
 };
 
 // Operators are either instructions or directives
@@ -997,6 +1009,9 @@ DirectiveName aDirectiveNames[] {
 	{ "IF", AD_IF },
 	{ "IFDEF", AD_IFDEF },
 	{ "IFNDEF", AD_IFNDEF },
+	{ "IFCONST", AD_IFCONST },
+	{ "IFBLANK", AD_IFBLANK },		// #IFBLANK: Conditional assembly follows based on rest of line empty
+	{ "IFNBLANK", AD_IFNBLANK },	// #IFDEF: Conditional assembly follows based on rest of line not empty
 	{ "ELSE", AD_ELSE },
 	{ "ELIF", AD_ELIF },
 	{ "ENDIF", AD_ENDIF },
@@ -1058,8 +1073,23 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "CYC", AD_CYC },			// MERLIN: Start and stop cycle counter
 };
 
+struct EvalFuncNames {
+	const char* name;
+	EvalFuncs function;
+};
+
+EvalFuncNames aEvalFunctions[] = {
+	{ "DEFINED", EF_DEFINED },			// DEFINED(label) 1 if label is defined
+	{ "DEF", EF_DEFINED },				// DEFINED(label) 1 if label is defined
+	{ "REFERENCED", EF_REFERENCED },	// REFERENCED(label) 1 if label has been referenced in this file
+	{ "BLANK", EF_BLANK },				// BLANK() 1 if the contents within the parenthesis is empty
+	{ "CONST", EF_CONST },				// CONST(label) 1 if label is a const label
+	{ "TRIGSIN", EF_SIN },				// TRIGSIN(index, period, amplitude)
+};
+
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
 static const int nDirectiveNamesMerlin = sizeof(aDirectiveNamesMerlin) / sizeof(aDirectiveNamesMerlin[0]);
+static const int nEvalFuncs = sizeof(aEvalFunctions) / sizeof(aEvalFunctions[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 uint32_t FindLabelIndex(uint32_t hash, uint32_t *table, uint32_t count)
@@ -1533,6 +1563,7 @@ public:
 	bool constant;			// the value of this label can not change
 	bool external;			// this label is globally accessible
 	bool reference;			// this label is accessed from external and can't be used for evaluation locally
+	bool referenced;		// this label has been found via GetLabel and can be assumed to be referenced for some purpose
 } Label;
 
 
@@ -1819,6 +1850,9 @@ public:
 	StatusCode EvalStruct(strref name, int &value);
 	StatusCode BuildEnum(strref name, strref declaration);
 
+	// Check if function is a valid function and if so evaluate the expression
+	bool EvalFunction(strref function, strref &expression, int &value);
+
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
 								 EvalOperator prev_op, int16_t &section, int &value);
@@ -1830,7 +1864,7 @@ public:
 	int ReptCnt() const;
 
 	// Access labels
-	Label* GetLabel(strref label);
+	Label * GetLabel(strref label, bool reference_check = false);
 	Label* GetLabel(strref label, int file_ref);
 	Label* AddLabel(uint32_t hash);
 	bool MatchXDEF(strref label);
@@ -1974,7 +2008,7 @@ StatusCode SymbolStackTable::PullSymbol(StringSymbol* string)
 	} else {
 		if (string->string_value.empty() || string->string_value.cap() < (strlen(str) + 1)) {
 			if (string->string_value.charstr()) { free(string->string_value.charstr()); }
-			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), strlen(str) + 1);
+			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), (strl_t)strlen(str) + 1);
 		}
 		string->string_value.copy(str);
 		free(str);
@@ -3416,6 +3450,56 @@ StatusCode Asm::EvalStruct(strref name, int &value) {
 }
 
 //
+// 
+// EVAL FUNCTIONS
+//
+//
+
+bool Asm::EvalFunction(strref function, strref& expression, int &value)
+{
+	// all eval functions take a parenthesis with arguments
+	if (expression.get_first() != '(') { return false; }
+
+	strref expRet = expression;
+	strref params = expRet.scoped_block_comment_skip();
+	params.trim_whitespace();
+	if (function.get_first() == '.') { ++function; }
+	for (int i = 0; i < nEvalFuncs; ++i) {
+		if (function.same_str(aEvalFunctions[i].name)) {
+			switch (aEvalFunctions[i].function) {
+				case EF_DEFINED:
+					expression = expRet;
+					value = GetLabel(params, true) != nullptr ? 1 : 0;
+					return true;
+				case EF_REFERENCED:
+					expression = expRet;
+					if (Label* label = GetLabel(params, true)) { value = label->referenced; return true; }
+					return false;
+				case EF_BLANK:
+					expression = expRet;
+					if (params.get_first() == '{') { params = params.scoped_block_comment_skip(); }
+					params.trim_whitespace();
+					value = params.is_empty();
+					return true;
+				case EF_CONST:
+					expression = expRet;
+					if (Label* label = GetLabel(params, true)) {
+						return label->constant;
+					}
+					return false;
+				case EF_SIN:
+					expression = expRet;
+					value = 0; // TODO: implement trigsin
+					return true;
+			}
+			return false;
+		}
+	}
+	return false;
+}
+
+
+//
 //
 // EXPRESSIONS AND LATE EVALUATION
 //
@@ -3556,6 +3640,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		}
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
+		if (!pLabel) { if (EvalFunction(label, exp, value)) { return EVOP_VAL; } }
 		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 		value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 	}
@@ -4097,12 +4182,14 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 //
 
 // Get a label record if it exists
-Label *Asm::GetLabel(strref label) {
+Label *Asm::GetLabel(strref label, bool reference_check) {
 	uint32_t label_hash = label.fnv1a();
 	uint32_t index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && label_hash == labels.getKey(index)) {
 		if (label.same_str(labels.getValue(index).label_name)) {
-			return labels.getValues()+index;
+			Label *label = labels.getValues() + index;
+			if (!reference_check) { label->referenced = true; }
+			return label;
 		}
 		index++;
 	}
@@ -4117,7 +4204,9 @@ Label *Asm::GetLabel(strref label, int file_ref) {
 		uint32_t index = FindLabelIndex(label_hash, labs.labels.getKeys(), labs.labels.count());
 		while (index < labs.labels.count() && label_hash == labs.labels.getKey(index)) {
 			if (label.same_str(labs.labels.getValue(index).label_name)) {
-				return labs.labels.getValues()+index;
+				Label *label = labs.labels.getValues()+index;
+				label->referenced = true;
+				return label;
 			}
 			index++;
 		}
@@ -4311,6 +4400,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 	pLabel->constant = true;
 	pLabel->external = false;
 	pLabel->reference = false;
+	pLabel->referenced = false;
 	bool local = false;
 
 	if (label[ 0 ] == '.' || label[ 0 ] == '@' || label[ 0 ] == '!' || label[ 0 ] == ':' || label.get_last() == '$') {
@@ -4367,7 +4457,7 @@ StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant)
 		if (pLabel->constant && pLabel->evaluated && val!=pLabel->value) {
 			return (status==STATUS_NOT_READY) ? STATUS_OK : ERROR_MODIFYING_CONST_LABEL;
 		}
-	} else { pLabel = AddLabel(label.fnv1a()); }
+	} else { pLabel = AddLabel(label.fnv1a()); pLabel->referenced = false; }
 
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
@@ -4399,6 +4489,7 @@ StatusCode Asm::AddressLabel(strref label)
 	bool constLabel = false;
 	if (!pLabel) {
 		pLabel = AddLabel(label.fnv1a());
+		pLabel->referenced = false;	// if this label already exists but is changed then it may already have been referenced
 	} else if (pLabel->constant && pLabel->value!=CurrSection().GetPC()) {
 		return ERROR_MODIFYING_CONST_LABEL;
 	} else { constLabel = pLabel->constant; }
@@ -5093,6 +5184,7 @@ StatusCode Asm::Directive_XREF(strref label)
 		pLabelXREF->external = true;
 		pLabelXREF->constant = false;
 		pLabelXREF->reference = true;
+		pLabelXREF->referenced = false;	// referenced is only within the current object file
 	}
 	return STATUS_OK;
 }
@@ -5522,6 +5614,41 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 				// ifdef doesn't need to evaluate the value, just determine if it exists or not
 				strref label = line.split_range_trim(label_end_char_range);
 				if (!GetLabel(label, etx.file_ref))
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+
+		case AD_IFCONST:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+											// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label_name = line.split_range_trim(label_end_char_range);
+				if (Label* label = GetLabel(label_name, etx.file_ref)) {
+					if (label->constant) { ConsumeConditional(); }
+					else { SetConditional(); }
+				}
+				else { SetConditional(); }
+			}
+			break;
+
+		case AD_IFBLANK:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				line.trim_whitespace();
+				if (line.is_empty())
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+			
+		case AD_IFNBLANK:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				line.trim_whitespace();
+				if (!line.is_empty())
 					ConsumeConditional();
 				else
 					SetConditional();
@@ -7194,7 +7321,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				int16_t f = (int16_t)l.flags;
 				int external = f & ObjFileLabel::OFL_XDEF;
 				if (external == ObjFileLabel::OFL_XDEF) {
-					if (!lbl) { lbl = AddLabel(name.fnv1a()); }	// insert shared label
+					if (!lbl) { lbl = AddLabel(name.fnv1a()); lbl->referenced = false; }	// insert shared label
 					else if (!lbl->reference) { continue; }
 				} else {								// insert protected label
 					while ((file_index + external) >= (int)externals.size()) {

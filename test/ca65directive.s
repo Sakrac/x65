@@ -6,12 +6,32 @@
         dc.b rept
 .ENDR
 
+eval Checking defined function, Should be 0: .defined(test_stack)
 test_stack = 0
+eval Checking referenced function, Should be 0: .referenced(test_stack)
+eval Checking defined function, Should be 1: .defined(test_stack)
 PUSH test_stack
+eval Checking referenced function, Should be 1: .referenced(test_stack)
 test_stack = 10
-eval test_stack
+eval Push Before Pull: test_stack
 PULL test_stack
-eval test_stack
+eval Pull original: test_stack
+
+eval Checking symbol is not const (0): .const(test_stack)
+const ConstAddress = $1000
+eval Checking symbol is const (0): .const(ConstAddress)
+
+eval This should be blank (1): .blank()
+eval This should be blank (1): .blank({})
+eval This should be not be blank (0): .blank({monkeys})
+
+.ifconst test_stack
+eval Checking ifconst with non-const symbol, should not print:
+.endif
+
+.ifconst ConstAddress
+eval Checking ifconst with const symbol, this should print:
+.endif
 
 zp_len_lo = $a7
 zp_len_hi = $a8
