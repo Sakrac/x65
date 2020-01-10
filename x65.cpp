@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <assert.h>
 
 // Command line arguments
 static const strref cmdarg_listing("lst");		// -lst / -lst=(file.lst) : generate disassembly text from result(file or stdout)
@@ -138,6 +139,7 @@ enum StatusCode {
 	ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_NOT_AN_X65_OBJECT_FILE,
 	ERROR_COULD_NOT_INCLUDE_FILE,
+	ERROR_PULL_WITHOUT_PUSH,
 	ERROR_USER,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
@@ -210,6 +212,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"DS directive failed to evaluate immediately",				// ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 	"File is not a valid x65 object file",						// ERROR_NOT_AN_X65_OBJECT_FILE,
 	"Failed to read include file",								// ERROR_COULD_NOT_INCLUDE_FILE,
+	"Using symbol PULL without first using a PUSH",				// ERROR_PULL_WITHOUT_PUSH
 	"User invoked error",										// ERROR_USER,
 
 	"Errors after this point will stop execution",				// ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
@@ -295,6 +298,8 @@ enum AssemblerDirective {
 	AD_DUMMY_END,	// DEND: End a dummy section
 	AD_SCOPE,		// SCOPE: Begin ca65 style scope
 	AD_ENDSCOPE,	// ENDSCOPR: End ca65 style scope
+	AD_PUSH,		// PUSH: Push the value of a variable symbol on a stack
+	AD_PULL,		// PULL: Pull the value of a variable symbol from its stack, must be pushed first
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
 	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
@@ -1008,9 +1013,11 @@ DirectiveName aDirectiveNames[] {
 	{ "I8", AD_XY8 },			// I8: Set 8 bit index register mode
 	{ "DUMMY", AD_DUMMY },
 	{ "DUMMY_END", AD_DUMMY_END },
+	{ "DS", AD_DS },			// Define space
 	{ "SCOPE", AD_SCOPE },		// SCOPE: Begin ca65 style scope
 	{ "ENDSCOPE", AD_ENDSCOPE },// ENDSCOPR: End ca65 style scope
-	{ "DS", AD_DS },			// Define space
+	{ "PUSH", AD_PUSH },
+	{ "PULL", AD_PULL },
 	{ "ABORT", AD_ABORT },
 	{ "ERR", AD_ABORT },		// DASM version of ABORT
 };
@@ -1158,6 +1165,176 @@ public:
 		_count = 0;
 	}
 };
+
+
+
+template< class KeyType, class ValueType, class CountType = size_t > struct HashTable {
+	CountType size, maxSteps, used;
+	KeyType* keys;
+	ValueType* values;
+
+	static CountType HashFunction(KeyType v) { return CountType(((v + (v >> 27) + (v << 29)) + 14695981039346656037) * 1099511628211); }
+	static CountType HashIndex(KeyType hash, CountType tableSize) { return hash & (tableSize - 1); }
+	static CountType GetNextIndex(KeyType hash, CountType tableSize) { return (hash + 1) & (tableSize - 1); }
+	static CountType KeyToIndex(KeyType key, CountType tableSize) { return HashIndex(HashFunction(key), tableSize); }
+	static CountType FindKeyIndex(KeyType hash, CountType hashTableSize, KeyType* hashKeys, CountType maxKeySteps) {
+		CountType index = KeyToIndex(hash, hashTableSize);
+		while (hashKeys) {
+			KeyType key = hashKeys[index];
+			if (!key || key == hash) { return index; }
+			index = GetNextIndex(index, hashTableSize);
+			if (!maxKeySteps--) { break; }
+		}
+		return index;
+	}
+
+	CountType KeyToIndex(KeyType key) { return KeyToIndex(key, size); }
+
+	CountType InsertKey(KeyType key, CountType index) {
+		const KeyType* hashKeys = keys;
+		CountType currSize = size;
+		CountType insertSteps = 0;
+		while (KeyType k = hashKeys[index]) {
+			if (k == key) { return index; }  // key already exists
+			CountType kfirst = KeyToIndex(k, currSize);
+			CountType ksteps = kfirst > index ? (currSize + index - kfirst) : (index - kfirst);
+			if (insertSteps > ksteps) { return index; }
+			index = GetNextIndex(index, size);
+			++insertSteps;
+		}
+		return index;
+	}
+
+	CountType FindKeyIndex(KeyType hash) const { return FindKeyIndex(hash, size, keys, maxSteps); }
+
+	CountType Steps(KeyType hash) {
+		CountType slot = KeyToIndex(hash, size);
+		CountType numSteps = 0;
+		while (keys[slot] && keys[slot] != hash) {
+			++numSteps;
+			slot = GetNextIndex(slot, size);
+		}
+		return numSteps;
+	}
+
+	void UpdateSteps(CountType first, CountType slot) {
+		CountType steps = slot > first ? (slot - first) : (size + slot - first);
+		if (steps > maxSteps) { maxSteps = steps; }
+	}
+
+	ValueType* InsertFitted(KeyType key) {
+		assert(key); // key may not be 0
+		CountType first = KeyToIndex(key);
+		CountType slot = InsertKey(key, first);
+		UpdateSteps(first, slot);
+		if (keys[slot]) {
+			if (keys[slot] == key) { return &values[slot]; } else {
+				KeyType prvKey = keys[slot];
+				ValueType prev_value = values[slot];
+				keys[slot] = key;
+				for (;; ) {
+					CountType prev_first = KeyToIndex(prvKey);
+					CountType slotRH = InsertKey(prvKey, prev_first);
+					UpdateSteps(prev_first, slotRH);
+					if (keys[slotRH] && keys[slotRH] != prvKey) {
+						KeyType tmpKey = keys[slotRH];
+						keys[slotRH] = prvKey;
+						prvKey = tmpKey;
+						ValueType temp_value = values[slotRH];
+						values[slotRH] = prev_value;
+						prev_value = temp_value;
+					} else {
+						keys[slotRH] = prvKey;
+						values[slotRH] = prev_value;
+						++used;
+						return &values[slot];
+					}
+				}
+			}
+		}
+		keys[slot] = key;
+		++used;
+		return &values[slot];
+	}
+
+	HashTable() { Reset(); }
+
+	void Reset() {
+		used = 0;
+		size = 0;
+		maxSteps = 0;
+		keys = nullptr;
+		values = nullptr;
+	}
+
+	~HashTable() { Clear(); }
+
+	void Clear() {
+		if (values) {
+			for (CountType i = 0, n = size; i < n; ++i) {
+				values[i].~ValueType();
+			}
+			free(values);
+		}
+		if (keys) { free(keys); }
+		Reset();
+	}
+
+	CountType GetUsed() const { return used; }
+	bool TableMax() const { return used && (used << 4) >= (size * 13); }
+
+	void Grow() {
+		KeyType *prevKeys = keys;
+		ValueType *prevValues = values;
+		CountType prevSize = size, newSize = prevSize ? (prevSize << 1) : 64;
+		size = newSize;
+		keys = (KeyType*)calloc(1, newSize * sizeof(KeyType));
+		values = (ValueType*)calloc(1, newSize * sizeof(ValueType));
+		maxSteps = 0;
+		for (CountType i = 0; i < newSize; ++i) { new (values + i) ValueType; }
+		if (used) {
+			used = 0;
+			for (CountType i = 0; i < prevSize; i++) {
+				if (KeyType key = prevKeys[i]) { *InsertFitted(key) = prevValues[i]; }
+			}
+		}
+		if (prevKeys) { free(prevKeys); }
+		if (prevValues) {
+			for (CountType i = 0; i != prevSize; ++i) { prevValues[i].~ValueType(); }
+			free(prevValues);
+		}
+	}
+
+	ValueType* InsertKey(KeyType key)
+	{
+		if (!size || TableMax()) { Grow(); }
+		return InsertFitted(key);
+	}
+
+	ValueType* InsertKeyValue(KeyType key, const ValueType& value)
+	{
+		ValueType* value_ptr = InsertKeyValue(key);
+		*value_ptr = value;
+		return value_ptr;
+	}
+
+	bool KeyExists(KeyType key)
+	{
+		return size && key && keys[FindKeyIndex(key)] == key;
+	}
+
+	ValueType* GetValue(KeyType key)
+	{
+		if (size && key) {
+			CountType slot = FindKeyIndex(key);
+			if (keys[slot] == key) {
+				return &values[slot];
+			}
+		}
+		return nullptr;
+	}
+};
+
 
 // relocs are cheaper than full expressions and work with
 // local labels for relative sections which would otherwise
@@ -1494,6 +1671,17 @@ public:
 	bool empty() const { return stack.size() == 0; }
 };
 
+// Support for the PULL and PUSH directives
+typedef union { int value; char* string; } ValueOrString;
+typedef std::vector < ValueOrString > SymbolStack;
+class SymbolStackTable : public HashTable< uint64_t, SymbolStack* > {
+public:
+	void PushSymbol(Label* symbol);
+	StatusCode PullSymbol(Label* symbol);
+	void PushSymbol(StringSymbol* string);
+	StatusCode PullSymbol(StringSymbol* string);
+};
+
 // The state of the assembler
 class Asm {
 public:
@@ -1513,6 +1701,8 @@ public:
 	std::vector<Section> allSections;
 	std::vector<ExtLabels> externals;		// external labels organized by object file
 	MapSymbolArray map;
+
+	SymbolStackTable symbolStacks;			// enable push/pull of symbols
 
 	// CPU target
 	struct mnem *opcode_table;
@@ -1735,6 +1925,65 @@ public:
 		cpu(CPU_6502), list_cpu(CPU_6502) {
 		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
+
+
+void SymbolStackTable::PushSymbol(Label* symbol)
+{
+	uint64_t key = symbol->label_name.fnv1a_64(symbol->pool_name.fnv1a_64());
+	SymbolStack** ppStack = InsertKey(key);	// ppStack will exist but contains a pointer that may not exist
+	if (!*ppStack) { *ppStack = new SymbolStack; }
+	ValueOrString val;
+	val.value = symbol->value;
+	(*ppStack)->push_back(val);
+}
+
+StatusCode SymbolStackTable::PullSymbol(Label* symbol)
+{
+	uint64_t key = symbol->label_name.fnv1a_64(symbol->pool_name.fnv1a_64());
+	SymbolStack** ppStack = GetValue(key);
+	if (!ppStack || !(*ppStack)->size()) { return ERROR_PULL_WITHOUT_PUSH; }
+	symbol->value = (**ppStack)[(*ppStack)->size() - 1].value;
+	(*ppStack)->pop_back();
+	return STATUS_OK;
+}
+
+void SymbolStackTable::PushSymbol(StringSymbol* string)
+{
+	uint64_t key = string->string_name.fnv1a_64();
+	SymbolStack** ppStack = InsertKey(key);	// ppStack will exist but contains a pointer that may not exist
+	if (!*ppStack) { *ppStack = new SymbolStack; }
+	ValueOrString val;
+	val.string = nullptr;
+	if (string->string_value) {
+		val.string = (char*)malloc(string->string_value.get_len() + 1);
+		memcpy(val.string, string->string_value.get(), string->string_value.get_len());
+		val.string[string->string_value.get_len()] = 0;
+	}
+	(*ppStack)->push_back(val);
+}
+
+StatusCode SymbolStackTable::PullSymbol(StringSymbol* string)
+{
+	uint64_t key = string->string_name.fnv1a_64();
+	SymbolStack** ppStack = GetValue(key);
+	if (!ppStack || !(*ppStack)->size()) { return ERROR_PULL_WITHOUT_PUSH; }
+	char* str = (**ppStack)[(*ppStack)->size() - 1].string;
+	if (!str && string->string_value) {
+		free(string->string_value.charstr());
+		string->string_value.invalidate();
+	} else {
+		if (string->string_value.empty() || string->string_value.cap() < (strlen(str) + 1)) {
+			if (string->string_value.charstr()) { free(string->string_value.charstr()); }
+			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), strlen(str) + 1);
+		}
+		string->string_value.copy(str);
+		free(str);
+	}
+	(*ppStack)->pop_back();
+	return STATUS_OK;
+}
+
+
 
 // Clean up work allocations
 void Asm::Cleanup() {
@@ -5382,6 +5631,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			break;
 
+		case AD_DS:
+			return Directive_DS(line);
+
 		case AD_SCOPE:
 			directive_scope_depth++;
 			return EnterScope();
@@ -5390,8 +5642,26 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			directive_scope_depth--;
 			return ExitScope();
 
-		case AD_DS:
-			return Directive_DS(line);
+		case AD_PUSH:
+			line.trim_whitespace();
+			if (Label *label = GetLabel(line)) {
+				symbolStacks.PushSymbol(label);
+				return STATUS_OK;
+			} else if( StringSymbol* string = GetString(line)) {
+				symbolStacks.PushSymbol(string);
+				return STATUS_OK;
+			}
+			return ERROR_UNABLE_TO_PROCESS;
+
+		case AD_PULL:
+			line.trim_whitespace();
+			if (Label *label = GetLabel(line)) {
+				return symbolStacks.PullSymbol(label);
+			} else if (StringSymbol* string = GetString(line)) {
+				return symbolStacks.PullSymbol(string);
+			}
+			return ERROR_UNABLE_TO_PROCESS;
+
 	}
 	return error;
 }

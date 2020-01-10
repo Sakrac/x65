@@ -6,6 +6,13 @@
         dc.b rept
 .ENDR
 
+test_stack = 0
+PUSH test_stack
+test_stack = 10
+eval test_stack
+PULL test_stack
+eval test_stack
+
 zp_len_lo = $a7
 zp_len_hi = $a8
 
