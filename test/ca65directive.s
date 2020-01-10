@@ -2,6 +2,10 @@
 
 .org $2000
 
+.REPT 7
+        dc.b rept
+.ENDR
+
 zp_len_lo = $a7
 zp_len_hi = $a8
 
