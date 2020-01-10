@@ -314,6 +314,14 @@ enum AssemblerDirective {
 	AD_ERROR,
 };
 
+// evaluation functions
+enum EvalFuncs {
+	EF_DEFINED,		// DEFINED(label) 1 if label is defined
+	EF_BLANK,		// BLANK() 1 if the contents within the parenthesis is empty
+	EF_CONST,		// CONST(label) 1 if label is a const label
+	EF_SIN,			// SIN(index, period, amplitude)
+};
+
 // Operators are either instructions or directives
 enum OperationType {
 	OT_NONE,
@@ -1058,8 +1066,21 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "CYC", AD_CYC },			// MERLIN: Start and stop cycle counter
 };
 
+struct EvalFuncNames {
+	const char* name;
+	EvalFuncs function;
+};
+
+EvalFuncNames aEvalFunctions[] = {
+	{ "DEFINED", EF_DEFINED },		// DEFINED(label) 1 if label is defined
+	{ "BLANK", EF_BLANK },		// BLANK() 1 if the contents within the parenthesis is empty
+	{ "CONST", EF_CONST },		// CONST(label) 1 if label is a const label
+	{ "SIN", EF_SIN },			// SIN(index, period, amplitude)
+};
+
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
 static const int nDirectiveNamesMerlin = sizeof(aDirectiveNamesMerlin) / sizeof(aDirectiveNamesMerlin[0]);
+static const int nEvalFuncs = sizeof(aEvalFunctions) / sizeof(aEvalFunctions[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 uint32_t FindLabelIndex(uint32_t hash, uint32_t *table, uint32_t count)
@@ -1974,7 +1995,7 @@ StatusCode SymbolStackTable::PullSymbol(StringSymbol* string)
 	} else {
 		if (string->string_value.empty() || string->string_value.cap() < (strlen(str) + 1)) {
 			if (string->string_value.charstr()) { free(string->string_value.charstr()); }
-			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), strlen(str) + 1);
+			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), (strl_t)strlen(str) + 1);
 		}
 		string->string_value.copy(str);
 		free(str);
