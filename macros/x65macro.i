@@ -635,7 +635,7 @@ _ForLoop
 macro for.y Start, End {
   ldx #Start
   if Start < End
-    string _ForEnd = "iny\ncpx #End\nbne _ForLoop"
+    string _ForEnd = "iny\ncpy #End\nbne _ForLoop"
   elif Start > End
   {
     if (-1 == End) & (Start<129)
