@@ -10,7 +10,7 @@ is the same as
 
 	REPT 8 { dc.b 1<<rept }
 
-Some directives change behavior based on command line options, such as -endm, -xrefimp, -kickasm and -merlin.
+Some directives change behavior based on [command line options](command_line_options.md), such as -endm, -xrefimp, -kickasm and -merlin.
 
 
 ## CPU, PROCESSOR

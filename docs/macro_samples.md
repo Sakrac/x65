@@ -1,6 +1,6 @@
 # x65macro.i
 
-This is a file under macros and is intended as an example to look at for understanding macro features, it is not super tested for correctness. This information is included in the header file itself but to ease reading copied here. The macros folder also has more detailed documentation.
+This is a file under macros and is intended as an example to look at for understanding macro features, it is not super tested for correctness. This information is included in the header file itself but to ease reading copied here. The macros folder also has [more detailed documentation](../macros/README.MD).
 
 ## Suffix definition
 

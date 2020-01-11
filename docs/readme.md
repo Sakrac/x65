@@ -37,12 +37,12 @@ result.
 
 ## Command Line Options
 
-See [command_line_options.md]
+See [Command Line Options](command_line_options.md)
 
 ## Directives
 
-See [directives.md]
+See [Directives](directives.md)
 
 ## Macro examples
 
-See [macro_samples.md]
+See [Macro Samples](macro_samples.md)
