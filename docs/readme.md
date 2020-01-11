@@ -37,12 +37,24 @@ result.
 
 ## Command Line Options
 
+Controls the assembler for the entire file
+
 See [Command Line Options](command_line_options.md)
 
 ## Directives
 
+Controls the assembler on a line basis
+
 See [Directives](directives.md)
 
+## Eval Functions
+
+Functions that returns values for use in expressions.
+
+See [Eval Functions](eval_functions.md)
+
 ## Macro examples
+
+Some info about the included example x65macro.i file.
 
 See [Macro Samples](macro_samples.md)
