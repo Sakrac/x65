@@ -323,6 +323,7 @@ enum EvalFuncs {
 	EF_REFERENCED,	// REFERENCED(label) 1 if label has been referenced in this file
 	EF_BLANK,		// BLANK() 1 if the contents within the parenthesis is empty
 	EF_CONST,		// CONST(label) 1 if label is a const label
+	EF_SIZEOF,		// SIZEOF(struct) returns size of structs
 	EF_SIN,			// SIN(index, period, amplitude)
 };
 
@@ -1029,6 +1030,7 @@ DirectiveName aDirectiveNames[] {
 	{ "DUMMY", AD_DUMMY },
 	{ "DUMMY_END", AD_DUMMY_END },
 	{ "DS", AD_DS },			// Define space
+	{ "RES", AD_DS },			// Reserve space
 	{ "SCOPE", AD_SCOPE },		// SCOPE: Begin ca65 style scope
 	{ "ENDSCOPE", AD_ENDSCOPE },// ENDSCOPR: End ca65 style scope
 	{ "PUSH", AD_PUSH },
@@ -1084,6 +1086,7 @@ EvalFuncNames aEvalFunctions[] = {
 	{ "REFERENCED", EF_REFERENCED },	// REFERENCED(label) 1 if label has been referenced in this file
 	{ "BLANK", EF_BLANK },				// BLANK() 1 if the contents within the parenthesis is empty
 	{ "CONST", EF_CONST },				// CONST(label) 1 if label is a const label
+	{ "SIZEOF", EF_SIZEOF},				// SIZEOF(struct) returns size of structs
 	{ "TRIGSIN", EF_SIN },				// TRIGSIN(index, period, amplitude)
 };
 
@@ -1617,10 +1620,10 @@ typedef struct sLabelPool {
 	strref pool_name;
 	int16_t numRanges;		// normally 1 range, support multiple for ease of use
 	int16_t depth;			// Required for scope closure cleanup
-	uint16_t start;
-	uint16_t end;
-	uint16_t scopeUsed[MAX_SCOPE_DEPTH][2]; // last address assigned + scope depth
-	StatusCode Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope);
+	uint32_t start;
+	uint32_t end;
+	uint32_t scopeUsed[MAX_SCOPE_DEPTH][2]; // last address assigned + scope depth
+	StatusCode Reserve(uint32_t numBytes, uint32_t &ret_addr, uint16_t scope);
 	void ExitScope(uint16_t scope);
 } LabelPool;
 
@@ -1711,6 +1714,7 @@ public:
 	StatusCode PullSymbol(Label* symbol);
 	void PushSymbol(StringSymbol* string);
 	StatusCode PullSymbol(StringSymbol* string);
+	~SymbolStackTable();
 };
 
 // The state of the assembler
@@ -2015,6 +2019,17 @@ StatusCode SymbolStackTable::PullSymbol(StringSymbol* string)
 	}
 	(*ppStack)->pop_back();
 	return STATUS_OK;
+}
+
+SymbolStackTable::~SymbolStackTable()
+{
+	for (size_t i = 0; i < size; ++i) {
+		if (keys[i] && values[i]) {
+			delete values[i];
+			values[i] = nullptr;
+			keys[i] = 0;
+		}
+	}
 }
 
 
@@ -3474,7 +3489,7 @@ bool Asm::EvalFunction(strref function, strref& expression, int &value)
 				case EF_REFERENCED:
 					expression = expRet;
 					if (Label* label = GetLabel(params, true)) { value = label->referenced; return true; }
-					return false;
+					return true;
 				case EF_BLANK:
 					expression = expRet;
 					if (params.get_first() == '{') { params = params.scoped_block_comment_skip(); }
@@ -3484,9 +3499,25 @@ bool Asm::EvalFunction(strref function, strref& expression, int &value)
 				case EF_CONST:
 					expression = expRet;
 					if (Label* label = GetLabel(params, true)) {
-						return label->constant;
+						value = label->constant ? 1 : 0;
 					}
-					return false;
+					return true;
+				case EF_SIZEOF:
+				{
+					expression = expRet;
+					uint32_t hash = params.fnv1a();
+					uint32_t index = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+					value = 0;
+					while (index < labelStructs.count() && labelStructs.getKey(index) == hash) {
+						if (params.same_str_case(labelStructs.getValue(index).name)) {
+							value = (labelStructs.getValues() + index)->size;
+							break;
+						}
+						++index;
+					}
+					return true;
+				}
+
 				case EF_SIN:
 					expression = expRet;
 					value = 0; // TODO: implement trigsin
@@ -4299,7 +4330,7 @@ StatusCode Asm::AddLabelPool(strref name, strref args) {
 	// check that there is at least one valid address
 	int ranges = 0;
 	int num32 = 0;
-	uint16_t aRng[256];
+	uint32_t aRng[256];
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	while (strref arg = args.split_token_trim(',')) {
@@ -4314,8 +4345,8 @@ StatusCode Asm::AddLabelPool(strref name, strref args) {
 		if (addr1<=addr0||addr0<0) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 		}
-		aRng[ranges++] = (uint16_t)addr0;
-		aRng[ranges++] = (uint16_t)addr1;
+		aRng[ranges++] = (uint32_t)addr0;
+		aRng[ranges++] = (uint32_t)addr1;
 		num32 += (addr1-addr0+15)>>4;
 		if (ranges>2||num32>((MAX_POOL_BYTES+15)>>4)) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
@@ -4345,10 +4376,10 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		strref size = label;
 		label = size.split_label();
 		if (strref::is_number(size.get_first())) {
-			uint16_t bytes = (uint16_t)size.atoi();
+			uint32_t bytes = (uint32_t)size.atoi();
 			if (!bytes) { return ERROR_POOL_RANGE_EXPRESSION_EVAL; }
 			if (!GetLabelPool(label)) {
-				uint16_t addr;
+				uint32_t addr;
 				StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
 				if( error == STATUS_OK ) {
 					// permanently remove this chunk from the parent pool
@@ -4370,13 +4401,13 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 	}
 	strref type = label;
-	uint16_t bytes = 1;
+	uint32_t bytes = 1;
 	int sz = label.find_at( '.', 1 );
 	if (sz > 0) {
 		label = type.split( sz );
 		++type;
 		if (strref::is_number(type.get_first())) {
-			bytes = (uint16_t)type.atoi();
+			bytes = (uint32_t)type.atoi();
 		} else {
 			switch (strref::tolower(type.get_first())) {
 				case 'l': bytes = 4; break;
@@ -4387,7 +4418,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		}
 	}
 	if (GetLabel(label)) { return ERROR_POOL_LABEL_ALREADY_DEFINED; }
-	uint16_t addr;
+	uint32_t addr;
 	StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
 	if (error!=STATUS_OK) { return error; }
 	Label *pLabel = AddLabel(label.fnv1a());
@@ -4412,7 +4443,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 }
 
 // Request a label from a pool
-StatusCode sLabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope) {
+StatusCode sLabelPool::Reserve(uint32_t numBytes, uint32_t &ret_addr, uint16_t scope) {
 	if (numBytes>(end-start)||depth==MAX_SCOPE_DEPTH) { return ERROR_OUT_OF_LABELS_IN_POOL; }
 	if (!depth||scope!=scopeUsed[depth-1][1]) {
 		scopeUsed[depth][0] = end;

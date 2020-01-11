@@ -1,6 +1,6 @@
 ; TEST CODE FROM EXOMIZER
-
-.org $2000
+cpu 65816
+.org $52000
 
 .REPT 7
         dc.b rept
@@ -19,7 +19,7 @@ eval Pull original: test_stack
 
 eval Checking symbol is not const (0): .const(test_stack)
 const ConstAddress = $1000
-eval Checking symbol is const (0): .const(ConstAddress)
+eval Checking symbol is const (1): .const(ConstAddress)
 
 eval This should be blank (1): .blank()
 eval This should be blank (1): .blank({})
@@ -32,6 +32,13 @@ eval Checking ifconst with non-const symbol, should not print:
 .ifconst ConstAddress
 eval Checking ifconst with const symbol, this should print:
 .endif
+
+struct MyStruct {
+        word addr
+        byte value
+}
+
+eval Size of MyStruct (3): .sizeof(MyStruct)
 
 zp_len_lo = $a7
 zp_len_hi = $a8
