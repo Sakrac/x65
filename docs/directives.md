@@ -13,7 +13,7 @@ is the same as
 Some directives change behavior based on [command line options](command_line_options.md), such as -endm, -xrefimp, -kickasm and -merlin.
 
 
-## CPU, PROCESSOR
+### CPU, PROCESSOR
 
 Assemble for this target, valid options are:
  * 6502
@@ -26,47 +26,47 @@ example:
 
 	cpu 6502ill
 
-## PC, ORG
+### PC, ORG
 
 Assemble as if loaded at this address
 
-## LOAD
+### LOAD
 
 If applicable, instruct to load at this address
 
-## EXPORT
+### EXPORT
 
 Export this section or disable export Note that with the -xdefimp command line option this means XDEF instead and the EXPORT directive is not available.
 
-## SECTION, SEG, SEGMENT
+### SECTION, SEG, SEGMENT
 
 Enable code that will be assigned a start address during a link step, or alternatively its own load address. BSS and ZP sections will not be included in the binary output, and sections can be separately exported using the EXPORT directive.
 
-## MERGE
+### MERGE
 
 Merge named sections in order listed
 
-## LINK
+### LINK
 
 Put sections with this name at this address (must be ORG / fixed address section)
 
-## XDEF
+### XDEF
 
 Externally declare a symbol. When using the command line option -xdefimp EXPORT means the same thing.
 
-## XREF
+### XREF
 
 Reference an external symbol. When using the command line option -xdefimp IMPORT means the same thing.
 
-## INCOBJ
+### INCOBJ
 
 Read in an object file saved from a previous build (that was assembled using the -obj command line option).
 
-## ALIGN
+### ALIGN
 
 Add to address to make it evenly divisible by this. This only works at the start of a SECTION or in the middle of a section that is assembled to a fixed address.
 
-## MACRO, MAC
+### MACRO, MAC
 
 Create a macro. When used with the command line option -endm the macro ends with a ENDMACRO or ENDM directive, and if not using -endm the macro is defined within braces ( { and } ).
 
@@ -81,7 +81,7 @@ Create a macro. When used with the command line option -endm the macro ends with
 	ENDM
 
 
-## EVAL, PRINT, ECHO
+### EVAL, PRINT, ECHO
 
 Print expression to stdout during assemble. The syntax is:
 
@@ -95,41 +95,41 @@ for example
 	eval Checking referenced function, Should be 0: .referenced(test_stack)
 	eval Checking defined function, Should be 1: .defined(test_stack)
 
-## DC, DV
+### DC, DV
 
 Declare constant / Declare Value. The directive can be specific by appending .b for byte size, .w for word size, .t for triple size or .l for long size. The default size is 1 byte.
 
 	Test:
 	  dc.b $20, *-Test
 
-## BYTE, BYTES
+### BYTE, BYTES
 
 Same as dc.b
 
-## WORD, WORDS
+### WORD, WORDS
 
 Same as dc.w
 
-## LONG
+### LONG
 
 Same as dc.l
 
-## TEXT
+### TEXT
 
 Add text to output, the order of characters can be changed with a string symbol, for instance:
 
 	STRING FontOrder = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&*"
 	TEXT [FontOrder] "HELLO #1!"
 
-## INCLUDE
+### INCLUDE
 
 Load and assemble another file at this address.
 
-## INCBIN
+### INCBIN
 
 Load another file and include as binary data at this address.
 
-## INCSYM
+### INCSYM
 
 Load symbols from a .sym file
 
@@ -139,11 +139,11 @@ Symbols can also be selected by a list on the same line:
 
 	INCSYM InitMain, UpdateMain, ShutdownMain, "Main.Sym"
 
-## INCDIR
+### INCDIR
 
 Add a folder to search for include files.
 
-## IMPORT
+### IMPORT
 
 Generic version of INCLUDE, INCBIN with custom arguments
 
@@ -165,7 +165,7 @@ Generic version of INCLUDE, INCBIN with custom arguments
 
 Note that if the command line argument -xdefimp is used then IMPORT is equivalent to XREF instead.
 
-## CONST
+### CONST
 
 Declare a symbol as const, assgning it again will cause an error.
 
@@ -173,11 +173,11 @@ Declare a symbol as const, assgning it again will cause an error.
 
 The constness of a symbol can be tested with the IFCONST directive or the CONST() eval function.
 
-## LABEL
+### LABEL
 
 Optional directive create a mutable label, a way to specify non-CONST. It has no actual function.
 
-## STRING
+### STRING
 
 Declare a string symbol. Strings are a little bit limited but can be used for ordering characters in a TEXT declaration, or it can be used as assembler source.
 
@@ -214,14 +214,14 @@ Declare a string symbol. Strings are a little bit limited but can be used for or
 		sta buf2,x
 	forend
 
-## UNDEF
+### UNDEF
 
 Remove a symbol
 
 	like_bananas = 1
 	UNDEF like_bananas
 
-## LABPOOL, POOL
+### LABPOOL, POOL
 
 Create a pool of addresses to assign as labels dynamically. This acts as a linear stack allocator for temporary storage and is deallocated when the scope ends if declared as a local symbol.
 
@@ -247,7 +247,7 @@ Allocate from a pool by using the pool name
 		zpLocal .zpCount		; 1 byte, same address as .zpSrc used above
 	}
 
-## IF
+### IF
 
 Begin conditional code. Whatever lines follow will be assembled only if the expression following the IF evaluates to a non-zero value, the conditional block ends with ELSE, ELSEIF or ENDIF.
 	
@@ -256,7 +256,7 @@ Begin conditional code. Whatever lines follow will be assembled only if the expr
 		...				; this will be assembled because conditional_code is not zero
 	ENDIF
 
-## IFDEF, IFNDEF
+### IFDEF, IFNDEF
 
 Similar to IF but only takes one symbol and the following lines will be assembled only if the symbol was defined previously (IFDEF) or not defined previously (IFNDEF)
 
@@ -265,19 +265,19 @@ Similar to IF but only takes one symbol and the following lines will be assemble
 		...				; this will be assembled because defined_symbol exists
 	ENDIF
 
-## IFCONST
+### IFCONST
 
 Similar to IF but like IFDEF only takes one symbol and the following lines will be assembled if the symbol is CONST. The symbol should be defined prior to testing it.
 
 CONST() is also an Eval Function that can be used to form more complex expressions using IF. IFCONST is equivalent to IF CONST(<symbol>)
 
-## IFBLANK, IFNBLANK
+### IFBLANK, IFNBLANK
 
 Checks if the argument exists, mostly for use in macros to test if an argument exists.
 
 BLANK() is also an Eval Function, IFBLANK is equivalent to IF BLANK(...)
 
-## ELSE
+### ELSE
 
 Requires a prior IF, the following line will be assembled only if the prior conditional block was not assembled. ELSE must be terminated by an ENDIF
 
@@ -287,7 +287,7 @@ Requires a prior IF, the following line will be assembled only if the prior cond
 		lda #2
 	ENDIF
 
-## ELIF
+### ELIF
 
 Requires a prior IF and allows another expression check before ending the conditional blocks
 
@@ -299,11 +299,11 @@ Requires a prior IF and allows another expression check before ending the condit
 		lda #human_value
 	ENDIF
 
-## ENDIF
+### ENDIF
 
 Terminated a conditional segment of blocks.
 
-## STRUCT
+### STRUCT
 
 Declare a set of labels offset from a base address.
 
@@ -323,7 +323,7 @@ Members of the structure can be referenced by the struct name dot member name:
 	ArtSetData:
 		ds SIZEOF(ArtSet)
 
-## ENUM
+### ENUM
 
 Declare a set of incremental labels. Values can either be assigned or one more than the previous. The default first value is 0.
 
@@ -347,7 +347,7 @@ Enum values can be referenced by enum name dot value name:
 
 	lda #PlayerIndex.Four
 
-## REPT, REPEAT
+### REPT, REPEAT
 
 Repeats the code within { and } following the REPT directive and counter. Within the REPT code the symbol REPT has the current iteration count, starting at 0.
 
@@ -361,25 +361,25 @@ If the command line option -endm is used then REPT uses ENDR instead of the brac
 		dc.b rept / 2
 	.endr
 
-## A16, A8, XY16, XY8, I16, I8
+### A16, A8, XY16, XY8, I16, I8
 
 Specific to 65816 assembly, controls the current accumulator and index register width (8 or 16 bits). Different assemblers use different names so various alternatives are allowed.
 
-## DUMMY, DUMMY_END
+### DUMMY, DUMMY_END
 
 Creates a dummy section between DUMMY and DUMMY_END directives.
 
-## DS, RES
+### DS, RES
 
 Define "section", Reserve. Reserves a number of bytes at the current address. The first argument is the number of bytes and the second argument is optional and is the byte to fill with. The main purpose is to reserve space in a BSS or ZP section.
 
-## SCOPE, ENDSCOPE
+### SCOPE, ENDSCOPE
 
 A specialized version of a scope, does the same this as a brace scope (code between { and }) but additionally marks all labels defined within as local. An unimplemented feature is that the scope can be named and then labels defined can be accessed outside the scope as
 
 <scope name>::<label> or <scope name>.label (TODO!)
 
-## PUSH, PULL
+### PUSH, PULL
 
 Creates a stack for a mutable symbol so that it can temporarily be redefined and then restored.
 
@@ -402,7 +402,7 @@ Creates a stack for a mutable symbol so that it can temporarily be redefined and
 		..			; restored symbol, let's do thing again!
 	ENDIF
 
-## ABORT, ERR
+### ABORT, ERR
 
 Stops assembly with an error if encountered and prints the rest of the line to the output.
 
@@ -411,62 +411,62 @@ Stops assembly with an error if encountered and prints the rest of the line to t
 
 # Merlin Specific Directives
 
-## MX
+### MX
 
-## STR
+### STR
 
-## DA
+### DA
 
-## DN
+### DN
 
-## ASC
+### ASC
 
-## PUT
+### PUT
 
-## DDB
+### DDB
 
-## DB
+### DB
 
-## DFB
+### DFB
 
-## HEX
+### HEX
 
-## DO
+### DO
 
-## FIN
+### FIN
 
-## EJECT
+### EJECT
 
-## OBJ
+### OBJ
 
-## TR
+### TR
 
-## END
+### END
 
-## REL
+### REL
 
-## USR
+### USR
 
-## DUM
+### DUM
 
-## DEND
+### DEND
 
-## LST, LSTDO
+### LST, LSTDO
 
-## LUP
+### LUP
 
-## SAV, DSK
+### SAV, DSK
 
-## LNK
+### LNK
 
-## XC
+### XC
 
-## ENT
+### ENT
 
-## EXT
+### EXT
 
-## ADR
+### ADR
 
-## ADRL
+### ADRL
 
-## CYC
+### CYC
