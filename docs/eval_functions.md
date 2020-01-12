@@ -44,4 +44,5 @@ Returns the byte size of a given struct.
 
 ### TRIGSIN
 
-Not implemented, experimental math feature, currently returns 0
+Not implemented, experimental math feature, currently returns 0.
+
