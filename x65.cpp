@@ -146,6 +146,8 @@ enum StatusCode {
 
 	ERROR_BRANCH_OUT_OF_RANGE,
 	ERROR_INCOMPLETE_FUNCTION,
+	ERROR_FUNCTION_DID_NOT_RESOLVE,
+	ERROR_EXPRESSION_RECURSION,
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -220,6 +222,8 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 
 	"Branch is out of range",													// ERROR_BRANCH_OUT_OF_RANGE,
 	"Function declaration is missing name or expression",						// ERROR_INCOMPLETE_FUNCTION,
+	"Function could not resolve the expression",								// ERROR_FUNCTION_DID_NOT_RESOLVE
+	"Expression evaluateion recursion too deep",								// ERROR_EXPRESSION_RECURSION
 	"Target address must evaluate immediately for this operation",				// ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	"Scoping is too deep",														// ERROR_TOO_DEEP_SCOPE,
 	"Unbalanced scope closure",													// ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -360,12 +364,13 @@ enum EvalOperator {
 	EVOP_EOR,		// r, ^
 	EVOP_SHL,		// s, <<
 	EVOP_SHR,		// t, >>
-	EVOP_NEG,		// u, negate value
-	EVOP_STP,		// v, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// w, Not ready yet
-	EVOP_XRF,		// x, value from XREF label
-	EVOP_EXP,		// y, sub expression
-	EVOP_ERR,		// z, Error
+	EVOP_NOT,		// u, ~
+	EVOP_NEG,		// v, negate value
+	EVOP_STP,		// w, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// x, Not ready yet
+	EVOP_XRF,		// y, value from XREF label
+	EVOP_EXP,		// z, sub expression
+	EVOP_ERR,		// z+1, Error
 };
 
 // Opcode encoding
@@ -1662,12 +1667,13 @@ struct EvalContext {
 	int file_ref;			// can access private label from this file or -1
 	int rept_cnt;			// current repeat counter
 	int recursion;			// track recursion depth
+	StatusCode internalErr;	// if an error occured during an internal stage of evaluation
 	EvalContext() : pc(0), scope_pc(0), scope_end_pc(0), scope_depth(0), relative_section(-1),
-	file_ref(-1), rept_cnt(0), recursion(0) {}
+	file_ref(-1), rept_cnt(0), recursion(0), internalErr(STATUS_OK) {}
 	EvalContext(int _pc, int _scope, int _close, int _sect, int _rept_cnt) :
 		pc(_pc), scope_pc(_scope), scope_end_pc(_close), scope_depth(-1),
 		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt),
-		recursion(0) {}
+		recursion(0), internalErr(STATUS_OK) {}
 };
 
 // Source context is current file (include file, etc.) or current macro.
@@ -3549,13 +3555,10 @@ int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
 	strref paraiter = orig_param;
 	strref in_params = params;
 	int newSize = expression.get_len();
-	while (strref param = paraiter.next_token(',')) {
-		strref replace = in_params.next_token(',');
+	while (strref param = paraiter.split_token(',')) {
+		strref replace = in_params.split_token(',');
 		param.trim_whitespace();
 		replace.trim_whitespace();
-		paraiter.skip_whitespace();
-		in_params.skip_whitespace();
-
 
 		if (param.get_len() < replace.get_len()) {
 			int count = expression.substr_count(param);
@@ -3566,20 +3569,23 @@ int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
 	char* subst = (char*)malloc(newSize);
 	strovl subststr(subst, newSize);
 	subststr.copy(expression);
-	while (strref param = paraiter.next_token(',')) {
-		strref replace = in_params.next_token(',');
+	while (strref param = orig_param.split_token(',')) {
+		strref replace = params.split_token(',');
 		param.trim_whitespace();
 		replace.trim_whitespace();
-		paraiter.skip_whitespace();
-		in_params.skip_whitespace();
 
-		// subststr.replace_bookend(param, a, macro_arg_bookend);
+		subststr.replace_bookend(param, replace, macro_arg_bookend);
 	}
 
+	int value = 0;
+	etx.internalErr = EvalExpression(subststr.get_strref(), etx, value);
+	if (etx.internalErr != STATUS_OK && etx.internalErr < FIRST_ERROR) {
+		etx.internalErr = ERROR_FUNCTION_DID_NOT_RESOLVE;
+	}
 
+	free(subst);
 
-
-	return 0;
+	return value;
 }
 
 //
@@ -3771,6 +3777,7 @@ EvalOperator Asm::RPNToken(strref &exp, EvalContext &etx, EvalOperator prev_op, 
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
 				  ++exp;  return EVOP_BAB;
 		case '&': ++exp; return EVOP_AND;
+		case '~': ++exp; return EVOP_NOT;
 		case '(': if (prev_op != EVOP_VAL) { ++exp; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++exp; return EVOP_RPR;
 		case ',':
@@ -3845,6 +3852,9 @@ StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 	int16_t section_val[MAX_EVAL_VALUES] = { 0 };	// each value can be assigned to one section, or -1 if fixed
 	int16_t num_sections = 0;		// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	bool xrefd = false;
+
+	// don't allow too deep recursion of this function, this should be rare as it takes a user function or variadic macro to recurse.
+	if (etx.recursion > 3) { return ERROR_EXPRESSION_RECURSION; }
 	etx.recursion++;				// increment recursion of EvalExpression body
 	values[0] = 0;					// Initialize RPN if no expression
 	{
@@ -3956,7 +3966,7 @@ StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 			EvalOperator op = (EvalOperator)ops[o];
 			shift_bits = 0;
 			prev_val = ri ? values[ri-1] : prev_val;
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2) {
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && op!=EVOP_NOT && ri<2) {
 				break; // ignore suffix operations that are lacking values
 			}
 			switch (op) {
@@ -4048,6 +4058,9 @@ StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 					shift_bits = -values[ri];
 					prev_val = values[ri - 1];
 					values[ri - 1] >>= values[ri]; break;
+				case EVOP_NOT:
+					if (ri) { values[ri - 1] = ~values[ri - 1]; }
+					break;
 				case EVOP_LOB:	// low byte
 					if (ri) { values[ri-1] &= 0xff; }
 					break;
