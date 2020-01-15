@@ -40,6 +40,13 @@ struct MyStruct {
 
 eval Size of MyStruct (3): .sizeof(MyStruct)
 
+DISP_BRIGHTNESS_MASK    = $f0
+DISP_BLANKING_SHIFT     = 7
+
+.function inidisp(blanking, brightness) (<(((~blanking & 1) << DISP_BLANKING_SHIFT) | (brightness & ~DISP_BRIGHTNESS_MASK)))
+
+eval Function test, should be (<(((~7&1)<<7)|(12&~$f0) = <((0<<7)|(c&f)) = $c: inidisp(7, 12)
+
 zp_len_lo = $a7
 zp_len_hi = $a8
 
