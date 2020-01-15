@@ -145,6 +145,7 @@ enum StatusCode {
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
 	ERROR_BRANCH_OUT_OF_RANGE,
+	ERROR_INCOMPLETE_FUNCTION,
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -218,6 +219,7 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Errors after this point will stop execution",				// ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
 	"Branch is out of range",													// ERROR_BRANCH_OUT_OF_RANGE,
+	"Function declaration is missing name or expression",						// ERROR_INCOMPLETE_FUNCTION,
 	"Target address must evaluate immediately for this operation",				// ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	"Scoping is too deep",														// ERROR_TOO_DEEP_SCOPE,
 	"Unbalanced scope closure",													// ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -273,6 +275,7 @@ enum AssemblerDirective {
 	AD_CONST,		// CONST: Prevent a label from mutating during assemble
 	AD_LABEL,		// LABEL: Create a mutable label (optional)
 	AD_STRING,		// STRING: Declare a string symbol
+	AD_FUNCTION,	// FUNCTION: Declare a user defined function
 	AD_UNDEF,		// UNDEF: remove a string or a label
 	AD_INCSYM,		// INCSYM: Reference labels from another assemble
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
@@ -1003,6 +1006,7 @@ DirectiveName aDirectiveNames[] {
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
 	{ "STRING", AD_STRING },
+	{ "FUNCTION", AD_FUNCTION },
 	{ "UNDEF", AD_UNDEF },
 	{ "INCSYM", AD_INCSYM },
 	{ "LABPOOL", AD_LABPOOL },
@@ -1344,9 +1348,9 @@ template< class KeyType, class ValueType, class CountType = size_t > struct Hash
 		return InsertFitted(key);
 	}
 
-	ValueType* InsertKeyValue(KeyType key, const ValueType& value)
+	ValueType* InsertKeyValue(KeyType key, ValueType& value)
 	{
-		ValueType* value_ptr = InsertKeyValue(key);
+		ValueType* value_ptr = InsertKey(key);
 		*value_ptr = value;
 		return value_ptr;
 	}
@@ -1717,6 +1721,19 @@ public:
 	~SymbolStackTable();
 };
 
+// user declared functions
+struct UserFunction {
+	const char* name;
+	const char* params;
+	const char* expression;
+};
+class UserFunctionMap : public HashTable<uint64_t, UserFunction*> {
+public:
+	UserFunction *Get(strref name);
+	StatusCode Add(strref name, strref params, strref expresion);
+	~UserFunctionMap();
+};
+
 // The state of the assembler
 class Asm {
 public:
@@ -1738,6 +1755,7 @@ public:
 	MapSymbolArray map;
 
 	SymbolStackTable symbolStacks;			// enable push/pull of symbols
+	UserFunctionMap	userFunctions;			// user defined expression functions
 
 	// CPU target
 	struct mnem *opcode_table;
@@ -1904,6 +1922,7 @@ public:
 	StatusCode Directive_Rept(strref line);
 	StatusCode Directive_Macro(strref line);
 	StatusCode Directive_String(strref line);
+	StatusCode Directive_Function(strref line);
 	StatusCode Directive_Undef(strref line);
 	StatusCode Directive_Include(strref line);
 	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
@@ -2032,6 +2051,52 @@ SymbolStackTable::~SymbolStackTable()
 	}
 }
 
+
+UserFunction* UserFunctionMap::Get(strref name)
+{
+	UserFunction** ret = GetValue(name.fnv1a_64());
+	if (ret) { return *ret; }
+	return nullptr;
+}
+
+StatusCode UserFunctionMap::Add(strref name, strref params, strref expresion)
+{
+	if (!name || !expresion) { return ERROR_INCOMPLETE_FUNCTION; }
+	strl_t stringlen = name.get_len() + 1 + (params ? (params.get_len() + 1) : 0) + expresion.get_len() + 1;
+	UserFunction *func = (UserFunction*)calloc(1, sizeof(UserFunction) + stringlen);
+	char* strings = (char*)(func + 1);
+	func->name = strings;
+	memcpy(strings, name.get(), name.get_len());
+	strings[name.get_len()] = 0;
+	strings += name.get_len() + 1;
+	if (params) {
+		func->params = strings;
+		memcpy(strings, params.get(), params.get_len());
+		strings[params.get_len()] = 0;
+		strings += params.get_len() + 1;
+	}
+	func->expression = strings;
+	memcpy(strings, expresion.get(), expresion.get_len());
+
+	if (UserFunction** existing = GetValue(name.fnv1a_64())) {
+		free(*existing);
+		*existing = func;
+	} else {
+		InsertKeyValue(name.fnv1a_64(), func);
+	}
+	return STATUS_OK;
+}
+
+UserFunctionMap::~UserFunctionMap()
+{
+	for (size_t i = 0; i < size; ++i) {
+		if (keys[i] && values[i]) {
+			free(values[i]);
+			values[i] = nullptr;
+			keys[i] = 0;
+		}
+	}
+}
 
 
 // Clean up work allocations
@@ -3479,6 +3544,14 @@ bool Asm::EvalFunction(strref function, strref& expression, int &value)
 	strref params = expRet.scoped_block_comment_skip();
 	params.trim_whitespace();
 	if (function.get_first() == '.') { ++function; }
+
+	// look up user defined function
+	if (UserFunction* user = userFunctions.Get(function)) {
+		value = 0;
+		return true;
+	}
+
+	// built-in function
 	for (int i = 0; i < nEvalFuncs; ++i) {
 		if (function.same_str(aEvalFunctions[i].name)) {
 			switch (aEvalFunctions[i].function) {
@@ -4925,6 +4998,25 @@ StatusCode Asm::Directive_String(strref line)
 	return STATUS_OK;
 }
 
+StatusCode Asm::Directive_Function(strref line)
+{
+	line.skip_whitespace();
+	strref function_name = line.split_label(), params;
+
+	line.skip_whitespace();
+	if (line.get_first() == '(') {
+		params = line.scoped_block_comment_skip();
+		params.trim_whitespace();
+	}
+
+	line.skip_whitespace();
+	userFunctions.Add(function_name, params, line);
+
+	return STATUS_OK;
+}
+
+
+
 StatusCode Asm::Directive_Undef(strref line)
 {
 	strref name = line.split_range_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
@@ -5602,6 +5694,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_STRING:
 			return Directive_String(line);
+
+		case AD_FUNCTION:
+			return Directive_Function(line);
 			
 		case AD_UNDEF:
 			return Directive_Undef(line);
@@ -7954,3 +8049,4 @@ int main(int argc, char **argv) {
 	}
 	return return_value;
 }
+
