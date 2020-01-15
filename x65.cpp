@@ -145,6 +145,9 @@ enum StatusCode {
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
 	ERROR_BRANCH_OUT_OF_RANGE,
+	ERROR_INCOMPLETE_FUNCTION,
+	ERROR_FUNCTION_DID_NOT_RESOLVE,
+	ERROR_EXPRESSION_RECURSION,
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -218,6 +221,9 @@ const char *aStatusStrings[STATUSCODE_COUNT] = {
 	"Errors after this point will stop execution",				// ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
 	"Branch is out of range",													// ERROR_BRANCH_OUT_OF_RANGE,
+	"Function declaration is missing name or expression",						// ERROR_INCOMPLETE_FUNCTION,
+	"Function could not resolve the expression",								// ERROR_FUNCTION_DID_NOT_RESOLVE
+	"Expression evaluateion recursion too deep",								// ERROR_EXPRESSION_RECURSION
 	"Target address must evaluate immediately for this operation",				// ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	"Scoping is too deep",														// ERROR_TOO_DEEP_SCOPE,
 	"Unbalanced scope closure",													// ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -273,6 +279,7 @@ enum AssemblerDirective {
 	AD_CONST,		// CONST: Prevent a label from mutating during assemble
 	AD_LABEL,		// LABEL: Create a mutable label (optional)
 	AD_STRING,		// STRING: Declare a string symbol
+	AD_FUNCTION,	// FUNCTION: Declare a user defined function
 	AD_UNDEF,		// UNDEF: remove a string or a label
 	AD_INCSYM,		// INCSYM: Reference labels from another assemble
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
@@ -357,12 +364,13 @@ enum EvalOperator {
 	EVOP_EOR,		// r, ^
 	EVOP_SHL,		// s, <<
 	EVOP_SHR,		// t, >>
-	EVOP_NEG,		// u, negate value
-	EVOP_STP,		// v, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// w, Not ready yet
-	EVOP_XRF,		// x, value from XREF label
-	EVOP_EXP,		// y, sub expression
-	EVOP_ERR,		// z, Error
+	EVOP_NOT,		// u, ~
+	EVOP_NEG,		// v, negate value
+	EVOP_STP,		// w, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// x, Not ready yet
+	EVOP_XRF,		// y, value from XREF label
+	EVOP_EXP,		// z, sub expression
+	EVOP_ERR,		// z+1, Error
 };
 
 // Opcode encoding
@@ -1003,6 +1011,7 @@ DirectiveName aDirectiveNames[] {
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
 	{ "STRING", AD_STRING },
+	{ "FUNCTION", AD_FUNCTION },
 	{ "UNDEF", AD_UNDEF },
 	{ "INCSYM", AD_INCSYM },
 	{ "LABPOOL", AD_LABPOOL },
@@ -1344,9 +1353,9 @@ template< class KeyType, class ValueType, class CountType = size_t > struct Hash
 		return InsertFitted(key);
 	}
 
-	ValueType* InsertKeyValue(KeyType key, const ValueType& value)
+	ValueType* InsertKeyValue(KeyType key, ValueType& value)
 	{
-		ValueType* value_ptr = InsertKeyValue(key);
+		ValueType* value_ptr = InsertKey(key);
 		*value_ptr = value;
 		return value_ptr;
 	}
@@ -1657,10 +1666,14 @@ struct EvalContext {
 	int relative_section;	// return can be relative to this section
 	int file_ref;			// can access private label from this file or -1
 	int rept_cnt;			// current repeat counter
-	EvalContext() {}
+	int recursion;			// track recursion depth
+	StatusCode internalErr;	// if an error occured during an internal stage of evaluation
+	EvalContext() : pc(0), scope_pc(0), scope_end_pc(0), scope_depth(0), relative_section(-1),
+	file_ref(-1), rept_cnt(0), recursion(0), internalErr(STATUS_OK) {}
 	EvalContext(int _pc, int _scope, int _close, int _sect, int _rept_cnt) :
 		pc(_pc), scope_pc(_scope), scope_end_pc(_close), scope_depth(-1),
-		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt) {}
+		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt),
+		recursion(0), internalErr(STATUS_OK) {}
 };
 
 // Source context is current file (include file, etc.) or current macro.
@@ -1717,6 +1730,19 @@ public:
 	~SymbolStackTable();
 };
 
+// user declared functions
+struct UserFunction {
+	const char* name;
+	const char* params;
+	const char* expression;
+};
+class UserFunctionMap : public HashTable<uint64_t, UserFunction*> {
+public:
+	UserFunction *Get(strref name);
+	StatusCode Add(strref name, strref params, strref expresion);
+	~UserFunctionMap();
+};
+
 // The state of the assembler
 class Asm {
 public:
@@ -1738,6 +1764,7 @@ public:
 	MapSymbolArray map;
 
 	SymbolStackTable symbolStacks;			// enable push/pull of symbols
+	UserFunctionMap	userFunctions;			// user defined expression functions
 
 	// CPU target
 	struct mnem *opcode_table;
@@ -1854,15 +1881,18 @@ public:
 	StatusCode EvalStruct(strref name, int &value);
 	StatusCode BuildEnum(strref name, strref declaration);
 
+	// determine a value from a user function with given parameters
+	int EvalUserFunction(UserFunction* user, strref params, EvalContext& etx);
+
 	// Check if function is a valid function and if so evaluate the expression
-	bool EvalFunction(strref function, strref &expression, int &value);
+	bool EvalFunction(strref function, strref &expression, EvalContext& etx, int &value);
 
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
 								 EvalOperator prev_op, int16_t &section, int &value);
-	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
+	EvalOperator RPNToken(strref &expression, EvalContext &etx,
 		EvalOperator prev_op, int16_t &section, int &value, strref &subexp);
-	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
+	StatusCode EvalExpression(strref expression, struct EvalContext &etx, int &result);
 	char* PartialEval( strref expression );
 	void SetEvalCtxDefaults( struct EvalContext &etx );
 	int ReptCnt() const;
@@ -1904,6 +1934,7 @@ public:
 	StatusCode Directive_Rept(strref line);
 	StatusCode Directive_Macro(strref line);
 	StatusCode Directive_String(strref line);
+	StatusCode Directive_Function(strref line);
 	StatusCode Directive_Undef(strref line);
 	StatusCode Directive_Include(strref line);
 	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
@@ -2032,6 +2063,52 @@ SymbolStackTable::~SymbolStackTable()
 	}
 }
 
+
+UserFunction* UserFunctionMap::Get(strref name)
+{
+	UserFunction** ret = GetValue(name.fnv1a_64());
+	if (ret) { return *ret; }
+	return nullptr;
+}
+
+StatusCode UserFunctionMap::Add(strref name, strref params, strref expresion)
+{
+	if (!name || !expresion) { return ERROR_INCOMPLETE_FUNCTION; }
+	strl_t stringlen = name.get_len() + 1 + (params ? (params.get_len() + 1) : 0) + expresion.get_len() + 1;
+	UserFunction *func = (UserFunction*)calloc(1, sizeof(UserFunction) + stringlen);
+	char* strings = (char*)(func + 1);
+	func->name = strings;
+	memcpy(strings, name.get(), name.get_len());
+	strings[name.get_len()] = 0;
+	strings += name.get_len() + 1;
+	if (params) {
+		func->params = strings;
+		memcpy(strings, params.get(), params.get_len());
+		strings[params.get_len()] = 0;
+		strings += params.get_len() + 1;
+	}
+	func->expression = strings;
+	memcpy(strings, expresion.get(), expresion.get_len());
+
+	if (UserFunction** existing = GetValue(name.fnv1a_64())) {
+		free(*existing);
+		*existing = func;
+	} else {
+		InsertKeyValue(name.fnv1a_64(), func);
+	}
+	return STATUS_OK;
+}
+
+UserFunctionMap::~UserFunctionMap()
+{
+	for (size_t i = 0; i < size; ++i) {
+		if (keys[i] && values[i]) {
+			free(values[i]);
+			values[i] = nullptr;
+			keys[i] = 0;
+		}
+	}
+}
 
 
 // Clean up work allocations
@@ -3464,13 +3541,60 @@ StatusCode Asm::EvalStruct(strref name, int &value) {
 	return STATUS_OK;
 }
 
+
+//
+// 
+// USER FUNCTION EVAL
+//
+//
+
+int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
+{
+	strref expression(user->expression);
+	strref orig_param(user->params);
+	strref paraiter = orig_param;
+	strref in_params = params;
+	int newSize = expression.get_len();
+	while (strref param = paraiter.split_token(',')) {
+		strref replace = in_params.split_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+
+		if (param.get_len() < replace.get_len()) {
+			int count = expression.substr_count(param);
+			newSize += count * (replace.get_len() - param.get_len());
+		}
+	}
+
+	char* subst = (char*)malloc(newSize);
+	strovl subststr(subst, newSize);
+	subststr.copy(expression);
+	while (strref param = orig_param.split_token(',')) {
+		strref replace = params.split_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+
+		subststr.replace_bookend(param, replace, macro_arg_bookend);
+	}
+
+	int value = 0;
+	etx.internalErr = EvalExpression(subststr.get_strref(), etx, value);
+	if (etx.internalErr != STATUS_OK && etx.internalErr < FIRST_ERROR) {
+		etx.internalErr = ERROR_FUNCTION_DID_NOT_RESOLVE;
+	}
+
+	free(subst);
+
+	return value;
+}
+
 //
 // 
 // EVAL FUNCTIONS
 //
 //
 
-bool Asm::EvalFunction(strref function, strref& expression, int &value)
+bool Asm::EvalFunction(strref function, strref& expression, EvalContext& etx, int &value)
 {
 	// all eval functions take a parenthesis with arguments
 	if (expression.get_first() != '(') { return false; }
@@ -3479,6 +3603,15 @@ bool Asm::EvalFunction(strref function, strref& expression, int &value)
 	strref params = expRet.scoped_block_comment_skip();
 	params.trim_whitespace();
 	if (function.get_first() == '.') { ++function; }
+
+	// look up user defined function
+	if (UserFunction* user = userFunctions.Get(function)) {
+		expression = expRet;
+		value = EvalUserFunction(user, params, etx);
+		return true;
+	}
+
+	// built-in function
 	for (int i = 0; i < nEvalFuncs; ++i) {
 		if (function.same_str(aEvalFunctions[i].name)) {
 			switch (aEvalFunctions[i].function) {
@@ -3614,18 +3747,18 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
+EvalOperator Asm::RPNToken(strref &exp, EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
 {
 	char c = exp.get_first();
 	switch (c) {
 		case '$': ++exp; value = (int)exp.ahextoui_skip(); return EVOP_VAL;
 		case '-': ++exp; return EVOP_SUB;
-		case '+': ++exp;	return EVOP_ADD;
-		case '*': // asterisk means both multiply and current PC, disambiguate!
-			++exp;
+		case '+': ++exp; return EVOP_ADD;
+		case '*': ++exp; // asterisk means both multiply and current PC, disambiguate!
 			if (exp[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
-			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
+			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1);
+			return EVOP_VAL;
 		case '/': ++exp; return EVOP_DIV;
 		case '=': if (exp[1] == '=') { exp += 2; return EVOP_EQU; } return EVOP_STP;
 		case '>': if (exp.get_len() >= 2 && exp[1] == '>') { exp += 2; return EVOP_SHR; }
@@ -3644,6 +3777,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
 				  ++exp;  return EVOP_BAB;
 		case '&': ++exp; return EVOP_AND;
+		case '~': ++exp; return EVOP_NOT;
 		case '(': if (prev_op != EVOP_VAL) { ++exp; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++exp; return EVOP_RPR;
 		case ',':
@@ -3671,7 +3805,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		}
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
-		if (!pLabel) { if (EvalFunction(label, exp, value)) { return EVOP_VAL; } }
+		if (!pLabel) { if (EvalFunction(label, exp, etx, value)) { return EVOP_VAL; } }
 		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 		value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 	}
@@ -3705,7 +3839,7 @@ static int mul_as_shift(int scalar) {
 
 #define MAX_EXPR_STACK 2
 
-StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx, int &result)
+StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 {
 	int numValues = 0;
 	int numOps = 0;
@@ -3714,10 +3848,14 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
-	int16_t section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
-	int16_t section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
-	int16_t num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
+	int16_t section_ids[MAX_EVAL_SECTIONS];			// local index of each referenced section
+	int16_t section_val[MAX_EVAL_VALUES] = { 0 };	// each value can be assigned to one section, or -1 if fixed
+	int16_t num_sections = 0;		// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	bool xrefd = false;
+
+	// don't allow too deep recursion of this function, this should be rare as it takes a user function or variadic macro to recurse.
+	if (etx.recursion > 3) { return ERROR_EXPRESSION_RECURSION; }
+	etx.recursion++;				// increment recursion of EvalExpression body
 	values[0] = 0;					// Initialize RPN if no expression
 	{
 		int sp = 0;
@@ -3737,10 +3875,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			} else {
 				op = RPNToken(expression, etx, prev_op, section, value, subexp);
 			}
-			if (op==EVOP_ERR) { return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
-			else if (op==EVOP_NRY) { return STATUS_NOT_READY; }
+			if (op == EVOP_ERR) { etx.recursion--; return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
+			else if (op==EVOP_NRY) { etx.recursion--; return STATUS_NOT_READY; }
 			else if (op == EVOP_EXP) {
-				if (exp_sp>=MAX_EXPR_STACK) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+				if (exp_sp>=MAX_EXPR_STACK) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 				expression_stack[exp_sp++] = expression;
 				expression = subexp;
 				op = EVOP_LPR;
@@ -3755,7 +3893,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				if (index_section<0) {
 					if (num_sections<=MAX_EVAL_SECTIONS) {
 						section_ids[index_section = num_sections++] = section;
-					} else { return STATUS_NOT_READY; }
+					} else { etx.recursion--; return STATUS_NOT_READY; }
 				}
 			}
 
@@ -3772,7 +3910,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ops[numOps++] = op_stack[sp];
 				}
 				// check that there actually was a left parenthesis
-				if (!sp||op_stack[sp-1]!=EVOP_LPR) { return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
+				if (!sp||op_stack[sp-1]!=EVOP_LPR) { etx.recursion--; return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
 				sp--; // skip open paren
 			} else if (op == EVOP_STP) {
 				break;
@@ -3795,8 +3933,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				}
 			}
 			// check for out of bounds or unexpected input
-			if (numValues==MAX_EVAL_VALUES) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+			if (numValues==MAX_EVAL_VALUES) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 			else if (numOps==MAX_EVAL_OPER||sp==MAX_EVAL_OPER) {
+				etx.recursion--;
 				return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
 			}
 			prev_op = op;
@@ -3807,9 +3946,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			ops[numOps++] = op_stack[sp];
 		}
 	}
+	etx.recursion--; // recursion only occurs in loop above
 
 	// Check if dependent on XREF'd symbol
-	if (xrefd) { return STATUS_XREF_DEPENDENT; }
+	if (xrefd) {
+		return STATUS_XREF_DEPENDENT;
+	}
 
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
@@ -3824,7 +3966,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			EvalOperator op = (EvalOperator)ops[o];
 			shift_bits = 0;
 			prev_val = ri ? values[ri-1] : prev_val;
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2) {
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && op!=EVOP_NOT && ri<2) {
 				break; // ignore suffix operations that are lacking values
 			}
 			switch (op) {
@@ -3916,6 +4058,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					shift_bits = -values[ri];
 					prev_val = values[ri - 1];
 					values[ri - 1] >>= values[ri]; break;
+				case EVOP_NOT:
+					if (ri) { values[ri - 1] = ~values[ri - 1]; }
+					break;
 				case EVOP_LOB:	// low byte
 					if (ri) { values[ri-1] &= 0xff; }
 					break;
@@ -4925,6 +5070,25 @@ StatusCode Asm::Directive_String(strref line)
 	return STATUS_OK;
 }
 
+StatusCode Asm::Directive_Function(strref line)
+{
+	line.skip_whitespace();
+	strref function_name = line.split_label(), params;
+
+	line.skip_whitespace();
+	if (line.get_first() == '(') {
+		params = line.scoped_block_comment_skip();
+		params.trim_whitespace();
+	}
+
+	line.skip_whitespace();
+	userFunctions.Add(function_name, params, line);
+
+	return STATUS_OK;
+}
+
+
+
 StatusCode Asm::Directive_Undef(strref line)
 {
 	strref name = line.split_range_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
@@ -5602,6 +5766,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_STRING:
 			return Directive_String(line);
+
+		case AD_FUNCTION:
+			return Directive_Function(line);
 			
 		case AD_UNDEF:
 			return Directive_Undef(line);
@@ -7954,3 +8121,4 @@ int main(int argc, char **argv) {
 	}
 	return return_value;
 }
+
