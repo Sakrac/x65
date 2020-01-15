@@ -81,6 +81,15 @@ Create a macro. When used with the command line option -endm the macro ends with
 	ENDM
 
 
+### FUNCTION
+
+A user function is a pre-defined one-line expression that can be used in a similar way as a macro, but instead of generating binary data it returns a single integer value.
+
+	; user defined function
+	FUNCTION alignto(address, alignment) (address + alignment-1) & (~alignment)
+
+Note that functions must evaluate at the time of reference, if any symbol is not evaluated it will fail. This differs from in-place expressions that can have references that will be evaluated at a later time in assembly or at link time.
+
 ### EVAL, PRINT, ECHO
 
 Print expression to stdout during assemble. The syntax is:

@@ -58,3 +58,7 @@ See [Eval Functions](eval_functions.md)
 Some info about the included example x65macro.i file.
 
 See [Macro Samples](macro_samples.md)
+
+## List of Errors
+
+See [Error List](errors.md)
