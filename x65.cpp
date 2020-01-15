@@ -1661,10 +1661,13 @@ struct EvalContext {
 	int relative_section;	// return can be relative to this section
 	int file_ref;			// can access private label from this file or -1
 	int rept_cnt;			// current repeat counter
-	EvalContext() {}
+	int recursion;			// track recursion depth
+	EvalContext() : pc(0), scope_pc(0), scope_end_pc(0), scope_depth(0), relative_section(-1),
+	file_ref(-1), rept_cnt(0), recursion(0) {}
 	EvalContext(int _pc, int _scope, int _close, int _sect, int _rept_cnt) :
 		pc(_pc), scope_pc(_scope), scope_end_pc(_close), scope_depth(-1),
-		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt) {}
+		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt),
+		recursion(0) {}
 };
 
 // Source context is current file (include file, etc.) or current macro.
@@ -1872,15 +1875,18 @@ public:
 	StatusCode EvalStruct(strref name, int &value);
 	StatusCode BuildEnum(strref name, strref declaration);
 
+	// determine a value from a user function with given parameters
+	int EvalUserFunction(UserFunction* user, strref params, EvalContext& etx);
+
 	// Check if function is a valid function and if so evaluate the expression
-	bool EvalFunction(strref function, strref &expression, int &value);
+	bool EvalFunction(strref function, strref &expression, EvalContext& etx, int &value);
 
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
 								 EvalOperator prev_op, int16_t &section, int &value);
-	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
+	EvalOperator RPNToken(strref &expression, EvalContext &etx,
 		EvalOperator prev_op, int16_t &section, int &value, strref &subexp);
-	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
+	StatusCode EvalExpression(strref expression, struct EvalContext &etx, int &result);
 	char* PartialEval( strref expression );
 	void SetEvalCtxDefaults( struct EvalContext &etx );
 	int ReptCnt() const;
@@ -3529,13 +3535,60 @@ StatusCode Asm::EvalStruct(strref name, int &value) {
 	return STATUS_OK;
 }
 
+
+//
+// 
+// USER FUNCTION EVAL
+//
+//
+
+int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
+{
+	strref expression(user->expression);
+	strref orig_param(user->params);
+	strref paraiter = orig_param;
+	strref in_params = params;
+	int newSize = expression.get_len();
+	while (strref param = paraiter.next_token(',')) {
+		strref replace = in_params.next_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+		paraiter.skip_whitespace();
+		in_params.skip_whitespace();
+
+
+		if (param.get_len() < replace.get_len()) {
+			int count = expression.substr_count(param);
+			newSize += count * (replace.get_len() - param.get_len());
+		}
+	}
+
+	char* subst = (char*)malloc(newSize);
+	strovl subststr(subst, newSize);
+	subststr.copy(expression);
+	while (strref param = paraiter.next_token(',')) {
+		strref replace = in_params.next_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+		paraiter.skip_whitespace();
+		in_params.skip_whitespace();
+
+		// subststr.replace_bookend(param, a, macro_arg_bookend);
+	}
+
+
+
+
+	return 0;
+}
+
 //
 // 
 // EVAL FUNCTIONS
 //
 //
 
-bool Asm::EvalFunction(strref function, strref& expression, int &value)
+bool Asm::EvalFunction(strref function, strref& expression, EvalContext& etx, int &value)
 {
 	// all eval functions take a parenthesis with arguments
 	if (expression.get_first() != '(') { return false; }
@@ -3547,7 +3600,8 @@ bool Asm::EvalFunction(strref function, strref& expression, int &value)
 
 	// look up user defined function
 	if (UserFunction* user = userFunctions.Get(function)) {
-		value = 0;
+		expression = expRet;
+		value = EvalUserFunction(user, params, etx);
 		return true;
 	}
 
@@ -3687,18 +3741,18 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
+EvalOperator Asm::RPNToken(strref &exp, EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
 {
 	char c = exp.get_first();
 	switch (c) {
 		case '$': ++exp; value = (int)exp.ahextoui_skip(); return EVOP_VAL;
 		case '-': ++exp; return EVOP_SUB;
-		case '+': ++exp;	return EVOP_ADD;
-		case '*': // asterisk means both multiply and current PC, disambiguate!
-			++exp;
+		case '+': ++exp; return EVOP_ADD;
+		case '*': ++exp; // asterisk means both multiply and current PC, disambiguate!
 			if (exp[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
-			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
+			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1);
+			return EVOP_VAL;
 		case '/': ++exp; return EVOP_DIV;
 		case '=': if (exp[1] == '=') { exp += 2; return EVOP_EQU; } return EVOP_STP;
 		case '>': if (exp.get_len() >= 2 && exp[1] == '>') { exp += 2; return EVOP_SHR; }
@@ -3744,7 +3798,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		}
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
-		if (!pLabel) { if (EvalFunction(label, exp, value)) { return EVOP_VAL; } }
+		if (!pLabel) { if (EvalFunction(label, exp, etx, value)) { return EVOP_VAL; } }
 		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 		value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 	}
@@ -3778,7 +3832,7 @@ static int mul_as_shift(int scalar) {
 
 #define MAX_EXPR_STACK 2
 
-StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx, int &result)
+StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 {
 	int numValues = 0;
 	int numOps = 0;
@@ -3787,10 +3841,11 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
-	int16_t section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
-	int16_t section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
-	int16_t num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
+	int16_t section_ids[MAX_EVAL_SECTIONS];			// local index of each referenced section
+	int16_t section_val[MAX_EVAL_VALUES] = { 0 };	// each value can be assigned to one section, or -1 if fixed
+	int16_t num_sections = 0;		// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	bool xrefd = false;
+	etx.recursion++;				// increment recursion of EvalExpression body
 	values[0] = 0;					// Initialize RPN if no expression
 	{
 		int sp = 0;
@@ -3810,10 +3865,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			} else {
 				op = RPNToken(expression, etx, prev_op, section, value, subexp);
 			}
-			if (op==EVOP_ERR) { return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
-			else if (op==EVOP_NRY) { return STATUS_NOT_READY; }
+			if (op == EVOP_ERR) { etx.recursion--; return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
+			else if (op==EVOP_NRY) { etx.recursion--; return STATUS_NOT_READY; }
 			else if (op == EVOP_EXP) {
-				if (exp_sp>=MAX_EXPR_STACK) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+				if (exp_sp>=MAX_EXPR_STACK) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 				expression_stack[exp_sp++] = expression;
 				expression = subexp;
 				op = EVOP_LPR;
@@ -3828,7 +3883,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				if (index_section<0) {
 					if (num_sections<=MAX_EVAL_SECTIONS) {
 						section_ids[index_section = num_sections++] = section;
-					} else { return STATUS_NOT_READY; }
+					} else { etx.recursion--; return STATUS_NOT_READY; }
 				}
 			}
 
@@ -3845,7 +3900,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ops[numOps++] = op_stack[sp];
 				}
 				// check that there actually was a left parenthesis
-				if (!sp||op_stack[sp-1]!=EVOP_LPR) { return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
+				if (!sp||op_stack[sp-1]!=EVOP_LPR) { etx.recursion--; return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
 				sp--; // skip open paren
 			} else if (op == EVOP_STP) {
 				break;
@@ -3868,8 +3923,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				}
 			}
 			// check for out of bounds or unexpected input
-			if (numValues==MAX_EVAL_VALUES) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+			if (numValues==MAX_EVAL_VALUES) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 			else if (numOps==MAX_EVAL_OPER||sp==MAX_EVAL_OPER) {
+				etx.recursion--;
 				return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
 			}
 			prev_op = op;
@@ -3880,9 +3936,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			ops[numOps++] = op_stack[sp];
 		}
 	}
+	etx.recursion--; // recursion only occurs in loop above
 
 	// Check if dependent on XREF'd symbol
-	if (xrefd) { return STATUS_XREF_DEPENDENT; }
+	if (xrefd) {
+		return STATUS_XREF_DEPENDENT;
+	}
 
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
