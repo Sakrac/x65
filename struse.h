@@ -35,7 +35,7 @@ Add this #define to *one* C++ file before #include "struse.h" to create the impl
 #ifndef __STRUSE_H__
 #define __STRUSE_H__
 
-#include <inttypes.h> // uint8_t etc.
+#include <inttypes.h> // uint32_t etc.
 #include <string.h> // memcpy, memmove
 #include <stdio.h> // printf, vsnprintf
 #include <stdarg.h> // va_list
@@ -128,11 +128,14 @@ public:
 	// convert hexadecimal string to unsigned integer
 	size_t ahextoui() const;
 	uint64_t ahextou64() const;
-	uint64_t ahextoui_skip();
+	size_t ahextoui_skip();
 	size_t abinarytoui_skip();
 
 	// output string with newline (printf)
 	void writeln();
+
+	// single digit number
+	static char num_to_char(uint8_t num) { return num<10 ? (num+'0'):(num+'a'-10); }
 
 	// is character empty such as space, tab, linefeed etc.?
 	static bool is_ws(uint8_t c) { return c <= ' '; }
@@ -238,6 +241,9 @@ public:
 	// check if string is a valid floating point number
 	bool is_float_number() const { return valid() && len_float_number() == length; }
 
+	// check if matching first char and skip if match
+	bool grab_char( char c ) { if(length && string[0]==c) {	length--; string++; return true; } return false; }
+
 	// wildcard search
 	strref find_wildcard(const strref wild, strl_t pos = 0, bool case_sensitive = true) const;
 	strref next_wildcard(const strref wild, strref prev, bool case_sensitive = true) const {
@@ -282,6 +288,7 @@ public:
 			(str.get_len()==length || !is_alphanumeric((uint8_t)str[length])); }
 	bool is_prefix_case_of(const strref str) const { return prefix_len_case(str)==get_len(); }
 	bool is_prefix_float_number() const { return len_float_number() > 0; }
+	bool grab_prefix( const char* str ) { strl_t p = prefix_len( str ); if( !str[ p ] ) { skip( p ); return true; } return false; }
 
 	// suffix compare
 	strl_t suffix_len(const strref str) const;
@@ -363,6 +370,9 @@ public:
 
 	// find any char from str or char range or char - with backslash prefix
 	int find_range_char_within_range(const strref range_find, const strref range_within, strl_t pos = 0) const;
+
+	// find but not within parenthesis
+	int find_skip_parens(char token) const;
 
 	// counts
 	int substr_count(const strref str) const; // count the occurrences of the argument in this string
@@ -521,6 +531,10 @@ public:
 	strref before_or_full(char c) const {
 		int o = find(c); if (o>=0) return strref(string, o); return *this; }
 
+	strref before_or_full_track_parens(char c) const {
+		int o = find_skip_parens(c); if (o >= 0) return strref(string, o); return *this;
+	}
+
 	strref before_last(char c) const {
 		int o = find_last(c); if (o>=0) return strref(string, o); return strref(); }
 
@@ -575,20 +589,29 @@ public:
 	strref split_token_any(const strref chars);
 	strref split_token_trim(char c);
 	strref split_token_any_trim(const strref chars);
+	strref split_token_track_parens(char c);
+	strref split_token_trim_track_parens(char c);
 	strref split_range(const strref range, strl_t pos=0);
 	strref split_range_trim(const strref range, strl_t pos=0);
 	strref split_label();
 	strref split_lang();
+	strref split_num();
 
 	// get a snippet, previous and full current line around a position
 	strref get_snippet( strl_t pos );
 
 	// grab a block of text starting with (, [ or { and end with the corresponding number of ), ] or }
-	strref scoped_block_skip();
+	strref scoped_block_skip( bool quotes = false );
 
 	// scoped_block_skip with C style comments
 	strl_t scoped_block_comment_len();
+	strl_t scoped_block_utf8_comment_len();
 	strref scoped_block_comment_skip(bool include = false) { strref ret = split(scoped_block_comment_len()); if (!include) { ++ret; ret.clip(1); } return ret; }
+	strref scoped_block_utf8_comment_skip( bool include = false ) {
+		strref ret = split( scoped_block_utf8_comment_len() );
+		if( !include ) { ++ret; ret.clip( 1 ); }
+		return ret;
+	}
 
 	// check matching characters that are terminated by any character in term or ends
 	strl_t match_chars_str(const strref match, const strref term = strref());
@@ -610,6 +633,7 @@ public:
 		int l = strref(string+f, length-f).find(b); if (l<0) l = 0; return strref(string+f, l); }
 
 	strref get_quote_xml() const;
+	strref skip_quote_xml();
 	int find_quoted_xml(char d) const; // returns length up to the delimiter d with xml quotation rules, or -1 if delimiter not found
 	int find_quoted(char d) const; // returns length up to the delimiter d with c/c++ quotation rules, or -1 if delimiter not found
 
@@ -628,10 +652,12 @@ strl_t _strmod_append(char *string, strl_t length, strl_t cap, const char *str);
 strl_t _strmod_append(char *string, strl_t length, strl_t cap, strref str);
 strl_t _strmod_insert(char *string, strl_t length, strl_t cap, const strref sub, strl_t pos);
 strl_t _strmod_utf8_tolower(char *string, strl_t length, strl_t cap);
+strl_t _strmod_write_utf8( char *string, strl_t cap, size_t code, strl_t pos );
 void _strmod_substrcopy(char *string, strl_t length, strl_t cap, strl_t src, strl_t dst, strl_t chars);
 void _strmod_tolower(char *string, strl_t length);
 void _strmod_toupper(char *string, strl_t length);
 strl_t _strmod_format_insert(char *string, strl_t length, strl_t cap, strl_t pos, strref format, const strref *args);
+strl_t _strmod_append_num(char* str, strl_t left, uint32_t num, strl_t size, uint32_t radix);
 strl_t _strmod_remove(char *string, strl_t length, char a);
 strl_t _strmod_remove(char *string, strl_t length, strl_t start, strl_t len);
 strl_t _strmod_exchange(char *string, strl_t length, strl_t cap, strl_t start, strl_t size, const strref insert);
@@ -721,6 +747,7 @@ public:
 	bool is_prefix_word(const strref str) const { return get_strref().is_prefix_word(str); }
 	bool is_prefix_case_of(const strref str) const { return get_strref().is_prefix_case_of(str); }
 	bool is_prefix_float_number() const { return get_strref().is_prefix_float_number(); }
+	bool grab_prefix( const char* str ) { return get_strref().grab_prefix( str ); }
 
 	// whole word compare (prefix match + next char is whitespace or end of string)
 	bool is_word(const strref str) const { return get_strref().is_word(str); }
@@ -907,6 +934,11 @@ public:
 	// insert a formatted string
 	void format_insert(const strref format, const strref *args, strl_t pos) {
 		set_len_int(_strmod_format_insert(charstr(), len(), cap(), pos, format, args)); }
+
+	strmod& append_num(uint32_t num, strl_t size, strl_t radix) {
+		add_len_int( _strmod_append_num( charstr() + len(), cap() - len(), num, size, radix ) );
+		return *this;
+	}
 
 	// c style sprintf (work around windows _s preference)
 #ifdef _WIN32
@@ -1567,7 +1599,7 @@ size_t strref::ahextoui() const
 {
 	const char *scan = string;
 	strl_t left = length;
-	while (*scan<=0x20 && left) {
+	while (left && *scan<=0x20) {
 		scan++;
 		left--;
 	}
@@ -1624,7 +1656,7 @@ uint64_t strref::ahextou64() const
 	return hex;
 }
 // convert a hexadecimal string to an unsigned integer
-uint64_t strref::ahextoui_skip()
+size_t strref::ahextoui_skip()
 {
 	const char *scan = string;
 	strl_t left = length;
@@ -1638,8 +1670,8 @@ uint64_t strref::ahextoui_skip()
 		scan += 2;
 		left -= 2;
 	}
-	if( left > 16 ) { left = 16; }
-	uint64_t hex = 0;
+	if (left > 16) { left = 16; }
+	size_t hex = 0;
 	while (left) {
 		char c = *scan;
 		if (c>='0' && c<='9')
@@ -1733,9 +1765,8 @@ int strref::count_char(char c) const
 strref strref::skip_bom()
 {
 	const uint8_t* buf = get_u();
-	if( length >= 3 && buf && buf[ 0 ] == 0xef && buf[ 1 ] == 0xbb && buf[ 2 ] == 0xbf )
-	{
-		return strref( string + 3, length - 3 );
+	if (length >= 3 && buf && buf[0] == 0xef && buf[1] == 0xbb && buf[2] == 0xbf) {
+		return strref(string + 3, length - 3);
 	}
 	return *this;
 }
@@ -1860,6 +1891,20 @@ int strref::find_last(char c, char d) const
 			left--;
 		}
 	}
+	return -1;
+}
+
+int strref::find_skip_parens(char token) const
+{
+	int parens = 0;
+	const char* scan = string;
+	strl_t left = length;
+	while (left && (parens || *scan != token)) {
+		if (*scan == '(') { ++parens; } else if (*scan == ')' && parens) { --parens; }
+		--left;
+		++scan;
+	}
+	if (left) { return length - left; }
 	return -1;
 }
 
@@ -4046,6 +4091,28 @@ strref strref::get_quote_xml() const
 	return strref();
 }
 
+// if this string begins as an xml quote return that.
+strref strref::skip_quote_xml()
+{
+	char quote_char = get_first();
+	if( quote_char != '"' && quote_char != '\'' )
+		return strref();
+
+	const char *scan = string + 1;
+	strl_t left = length - 1;
+	while( left ) {
+		char c = *scan++;
+		if( c == quote_char ) {
+			strref ret( string + 1, length - left - 1 );
+			string = scan+1;
+			length = left-2;
+			return ret;
+		}
+		--left;
+	}
+	return strref();
+}
+
 // find the character d outside of a quote
 int strref::find_quoted(char d) const
 {
@@ -4086,6 +4153,15 @@ strref strref::split_token( char c ) {
 	return r;
 }
 
+strref strref::split_token_track_parens(char c)
+{
+	int t = find_skip_parens(c);
+	if (t < 0) t = (int)length;
+	strref r = strref(string, strl_t(t));
+	*this += t + 1;
+	return r;
+}
+
 strref strref::split_token_any( const strref chars )
 {
 	strref r; int t = find_any_char_of( chars );
@@ -4096,6 +4172,13 @@ strref strref::split_token_any( const strref chars )
 	return r;
 }
 
+strref strref::split_token_trim_track_parens(char c)
+{
+	strref r = split_token_track_parens(c);
+	skip_whitespace();
+	r.trim_whitespace();
+	return r;
+}
 strref strref::split_token_trim( char c ) {
 	strref r = split_token( c );
 	skip_whitespace();
@@ -4140,6 +4223,19 @@ strref strref::split_label() {
 	return r;
 }
 
+strref strref::split_num() {
+	skip_whitespace();
+	strref r( string, 0 );
+	while( length && *string >= '0' && *string <= '9' ) {
+		r.length++;
+		string++;
+		length--;
+	}
+	skip_whitespace();
+	return r;
+}
+
+
 // split string based on common programming tokens (words, quotes, scopes, numbers)
 strref strref::split_lang()
 {
@@ -4177,18 +4273,22 @@ strref strref::get_snippet( strl_t pos )
 }
 
 // grab a block of text starting with (, [ or { and end with the corresponding number of ), ] or }
-strref strref::scoped_block_skip()
+strref strref::scoped_block_skip(bool quotes)
 {
 	char scope = get_first();
 	if (length && (scope == '(' || scope == '[' || scope == '{')) {
 		char close = scope=='(' ? ')' : (scope=='[' ? ']' : '}');
 		const char *scan = string;
+		bool inQuote = false;
 		strl_t depth = 0;
 		strl_t left = length;
 		do {
 			char c = *scan++;
 			left--;
-			if (c==scope)
+			if( inQuote ) {
+				if( c == '"' ) { inQuote = false;  }
+			} else if( quotes && c=='"' ) { inQuote = true; }
+			else  if( c == scope )
 				depth++;
 			else if (c==close)
 				depth--;
@@ -4236,6 +4336,31 @@ strl_t strref::scoped_block_comment_len()
 	return 0;
 }
 
+strl_t strref::scoped_block_utf8_comment_len()
+{
+	strref str = *this;
+	size_t scope = str.pop_utf8();
+	if( length && ( scope == '(' || scope == '[' || scope == '{' || scope == '<' ) )
+	{
+		char close = scope == '<' ? '>' : ( scope == '(' ? ')' : ( scope == '[' ? ']' : '}' ) );
+		strl_t depth = 1;
+		do {
+			size_t c = str.pop_utf8();
+			if( c == '/' && str.get_len() && ( str[0] == '/' || str[1] == '*' ) ) {
+				c = str.pop_utf8();
+				strl_t skip = c == '/' ? str.len_next_line() : str.find_or_full( "*/" );
+				str += skip;
+			}
+			else if( c == scope )
+				depth++;
+			else if( c == close )
+				depth--;
+		} while( depth && str.valid() );
+		if( !depth )
+			return strl_t( str.string - string );
+	}
+	return 0;
+}
 
 
 // return the current line of text and move this string ahead to the next.
@@ -4511,6 +4636,25 @@ strl_t _strmod_format_insert(char *string, strl_t length, strl_t cap, strl_t pos
 		}
 	}
 	return length;
+}
+
+strl_t _strmod_append_num( char* str, strl_t left, uint32_t num, strl_t size, uint32_t radix )
+{
+	strl_t div = 1;
+	if( !size ) {
+		uint32_t mul = 1;
+		do { ++size; mul *= radix; } while( mul <= num );
+	}
+	for( strl_t n = 1; n<size; ++n ) { div *= radix; }
+	strl_t added = 0;
+	for( strl_t a = 0; a<size && left; ++a ) {
+		char v = (num / div) % radix + '0';
+		div /= radix;
+		*str++ = v <= '9' ? v : (v + 'a' - '0' - 10);
+		--left;
+		++added;
+	}
+	return added;
 }
 
 // remove all instances of a character from a string
