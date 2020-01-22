@@ -5200,7 +5200,7 @@ StatusCode Asm::Directive_Import(strref line)
 			if (param) {
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
-				EvalExpression(param.split_token_trim(','), etx, skip);
+				EvalExpression(param.split_token_trim_track_parens(','), etx, skip);
 				if (param) { EvalExpression(param, etx, len); }
 			}
 		}
@@ -5390,7 +5390,7 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	line.trim_whitespace();
-	while (strref exp_dc = line.split_token_trim(',')) {
+	while (strref exp_dc = line.split_token_trim_track_parens(',')) {
 		int value = 0;
 		if (!CurrSection().IsDummySection()) {
 			if (Merlin() && exp_dc.get_first() == '#')	// MERLIN allows for an immediate declaration on data
@@ -5431,7 +5431,7 @@ StatusCode Asm::Directive_DS(strref line)
 	}
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
-	strref size = line.split_token_trim(',');
+	strref size = line.split_token_trim_track_parens(',');
 	if (STATUS_OK != EvalExpression(size, etx, value))
 		return ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
 	int fill = 0;
@@ -6015,7 +6015,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			else { suffix.clear(); }
 			++block_suffix; block_suffix.clip(1); block_suffix.trim_whitespace();
 			++line; line.skip_whitespace();
-			strref block = block_suffix.split_token_trim( ',' );
+			strref block = block_suffix.split_token_trim_track_parens( ',' );
 			validModes &= AMM_ZP_REL_X | AMM_ZP_Y_REL | AMM_REL | AMM_ZP_REL | AMM_REL_X | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_STK_REL_Y | AMM_REL_L;
 			if( line.get_first() == '>' ) { // [>$aaaa]
 				if( c == '[' ) { addrMode = AMB_REL_L; validModes &= AMM_REL_L; expression = block+1; }
@@ -6154,7 +6154,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 					addrMode = AMB_ACC;
 				} else {	// absolute (zp, offs x, offs y)
 					addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
-					expression = line.split_token_trim(',');
+					expression = line.split_token_trim_track_parens(',');
 					if( force_abs ) { validModes &= AMM_ABS | AMM_ABS_X | AMM_ABS_Y | AMM_REL | AMM_REL_X; }
 					if( force_zp ) { validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
 						AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY; }
@@ -6193,7 +6193,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 	switch (validModes) {
 		case AMC_BBR:
 			addrMode = AMB_ZP_ABS;
-			expression = line.split_token_trim(',');
+			expression = line.split_token_trim_track_parens(',');
 			if (!expression || !line)
 				return ERROR_INVALID_ADDRESSING_MODE;
 			break;
@@ -6208,7 +6208,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 			break;
 		case AMM_BLK_MOV:
 			addrMode = AMB_BLK_MOV;
-			expression = line.before_or_full(',');
+			expression = line.before_or_full_track_parens(',');
 			break;
 		default:
 			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), validModes, addrMode, op_param, expression);
@@ -6393,7 +6393,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
 				etx.pc = CurrSection().GetPC()-2;
-				line.split_token_trim(',');
+				line.split_token_trim_track_parens(',');
 				error = EvalExpression(line, etx, value);
 				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
