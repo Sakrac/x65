@@ -39,6 +39,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <assert.h>
+
+// Command line arguments
+static const strref cmdarg_listing("lst");		// -lst / -lst=(file.lst) : generate disassembly text from result(file or stdout)
+static const strref cmdarg_tass_listing("tsl");	// -tsl=(file) : generate listing file in TASS style
+static const strref cmdarg_tass_labels("tl");	// -tl=(file) : generate labels in TASS style
+static const strref cmdarg_allinstr("opcodes");	// -opcodes / -opcodes=(file.s) : dump all available opcodes(file or stdout)
+static const strref cmdarg_endmacro("endm");	// -endm : macros end with endm or endmacro instead of scoped('{' - '}')
+static const strref cmdarg_cpu("cpu");			// declare CPU type, use with argument: -cpu=6502/65c02/65c02wdc/65816
+static const strref cmdarg_acc("acc");			// [65816] -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
+static const strref cmdarg_xy("xy");			// [65816] -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
+static const strref cmdarg_org("org");			// -org = $2000 or - org = 4096: force fixed address code at address
+static const strref cmdarg_kickasm("kickasm");	// -kickasm: use Kick Assembler syntax
+static const strref cmdarg_merlin("merlin");	// -merlin: use Merlin syntax
+static const strref cmdarg_c64("c64");			// -c64 : Include load address(default)
+static const strref cmdarg_a2b("a2b");			// -a2b : Apple II Dos 3.3 Binary
+static const strref cmdarg_bin("bin");			// -bin : Produce raw binary\n"
+static const strref cmdarg_a2p("a2p");			// -a2p : Apple II ProDos Binary
+static const strref cmdarg_a2o("a2o");			// -a2o : Apple II GS OS executable (relocatable)
+static const strref cmdarg_mrg("mrg");			// -mrg : Force merge all sections (use with -a2o)
+static const strref cmdarg_sect("sect");		// -sect: display sections loaded and built
+static const strref cmdarg_sym("sym");			// -sym (file.sym) : generate symbol file
+static const strref cmdarg_obj("obj");			// -obj (file.x65) : generate object file for later linking
+static const strref cmdarg_vice("vice");		// -vice (file.vs) : export a vice symbol file
+static const strref cmdarg_xrefimp("xrefimp");	// -xrefimp : import directive means xref, not include/incbin
 
 // if the number of resolved labels exceed this in one late eval then skip
 //	checking for relevance and just eval all unresolved expressions.
@@ -114,11 +139,15 @@ enum StatusCode {
 	ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_NOT_AN_X65_OBJECT_FILE,
 	ERROR_COULD_NOT_INCLUDE_FILE,
+	ERROR_PULL_WITHOUT_PUSH,
 	ERROR_USER,
 
 	ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
 	ERROR_BRANCH_OUT_OF_RANGE,
+	ERROR_INCOMPLETE_FUNCTION,
+	ERROR_FUNCTION_DID_NOT_RESOLVE,
+	ERROR_EXPRESSION_RECURSION,
 	ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
 	ERROR_TOO_DEEP_SCOPE,
 	ERROR_UNBALANCED_SCOPE_CLOSURE,
@@ -153,72 +182,76 @@ enum StatusCode {
 
 // The following strings are in the same order as StatusCode
 const char *aStatusStrings[STATUSCODE_COUNT] = {
-	"ok",
-	"relative section",
-	"not ready",
-	"XREF dependent result",
-	"name is not a struct",
-	"Exporting binary without code or data section",
-	"Undefined code",
-	"Unexpected character in expression",
-	"Too many values in expression",
-	"Too many operators in expression",
-	"Unbalanced right parenthesis in expression",
-	"Expression operation",
-	"Expression missing values",
-	"Instruction can not be zero page",
-	"Invalid addressing mode for instruction",
-	"Branch out of range",
-	"Internal label organization mishap",
-	"Bad addressing mode",
-	"Unexpected character in addressing mode",
-	"Unexpected label assignment format",
-	"Changing value of label that is constant",
-	"Out of labels in pool",
-	"Internal label pool release confusion",
-	"Label pool range evaluation failed",
-	"Label pool was redeclared within its scope",
-	"Pool label already defined",
-	"Struct already defined",
-	"Referenced struct not found",
-	"Declare constant type not recognized (dc.?)",
-	"rept count expression could not be evaluated",
-	"hex must be followed by an even number of hex numbers",
-	"DS directive failed to evaluate immediately",
-	"File is not a valid x65 object file",
-	"Failed to read include file",
-	"User invoked error",
+	"ok",														// STATUS_OK,			// everything is fine
+	"relative section",											// STATUS_RELATIVE_SECTION, // value is relative to a single section
+	"not ready",												// STATUS_NOT_READY,	// label could not be evaluated at this time
+	"XREF dependent result",									// STATUS_XREF_DEPENDENT,	// evaluated but relied on an XREF label to do so
+	"name is not a struct",										// STATUS_NOT_STRUCT,	// return is not a struct.
+	"Exporting binary without code or data section",			// STATUS_EXPORT_NO_CODE_OR_DATA_SECTION,
+	"Undefined code",											// ERROR_UNDEFINED_CODE = FIRST_ERROR,
+	"Unexpected character in expression",						// ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION,
+	"Too many values in expression",							// ERROR_TOO_MANY_VALUES_IN_EXPRESSION,
+	"Too many operators in expression",							// ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION,
+	"Unbalanced right parenthesis in expression",				// ERROR_UNBALANCED_RIGHT_PARENTHESIS,
+	"Expression operation",										// ERROR_EXPRESSION_OPERATION,
+	"Expression missing values",								// ERROR_EXPRESSION_MISSING_VALUES,
+	"Instruction can not be zero page",							// ERROR_INSTRUCTION_NOT_ZP,
+	"Invalid addressing mode for instruction",					// ERROR_INVALID_ADDRESSING_MODE,
+	"Internal label organization mishap",						// ERROR_LABEL_MISPLACED_INTERNAL,
+	"Bad addressing mode",										// ERROR_BAD_ADDRESSING_MODE,
+	"Unexpected character in addressing mode",					// ERROR_UNEXPECTED_CHARACTER_IN_ADDRESSING_MODE,
+	"Unexpected label assignment format",						// ERROR_UNEXPECTED_LABEL_ASSIGMENT_FORMAT,
+	"Changing value of label that is constant",					// ERROR_MODIFYING_CONST_LABEL,
+	"Out of labels in pool",									// ERROR_OUT_OF_LABELS_IN_POOL,
+	"Internal label pool release confusion",					// ERROR_INTERNAL_LABEL_POOL_ERROR,
+	"Label pool range evaluation failed",						// ERROR_POOL_RANGE_EXPRESSION_EVAL,
+	"Label pool was redeclared within its scope",				// ERROR_LABEL_POOL_REDECLARATION,
+	"Pool label already defined",								// ERROR_POOL_LABEL_ALREADY_DEFINED,
+	"Struct already defined",									// ERROR_STRUCT_ALREADY_DEFINED,
+	"Referenced struct not found",								// ERROR_REFERENCED_STRUCT_NOT_FOUND,
+	"Declare constant type not recognized (dc.?)",				// ERROR_BAD_TYPE_FOR_DECLARE_CONSTANT,
+	"rept count expression could not be evaluated",				// ERROR_REPT_COUNT_EXPRESSION,
+	"hex must be followed by an even number of hex numbers",	// ERROR_HEX_WITH_ODD_NIBBLE_COUNT,
+	"DS directive failed to evaluate immediately",				// ERROR_DS_MUST_EVALUATE_IMMEDIATELY,
+	"File is not a valid x65 object file",						// ERROR_NOT_AN_X65_OBJECT_FILE,
+	"Failed to read include file",								// ERROR_COULD_NOT_INCLUDE_FILE,
+	"Using symbol PULL without first using a PUSH",				// ERROR_PULL_WITHOUT_PUSH
+	"User invoked error",										// ERROR_USER,
 
-	"Errors after this point will stop execution",
+	"Errors after this point will stop execution",				// ERROR_STOP_PROCESSING_ON_HIGHER,	// errors greater than this will stop execution
 
-	"Target address must evaluate immediately for this operation",
-	"Scoping is too deep",
-	"Unbalanced scope closure",
-	"Unexpected macro formatting",
-	"Align must evaluate immediately",
-	"Out of memory for macro expansion",
-	"Problem with macro argument",
-	"Conditional could not be resolved",
-	"#endif encountered outside conditional block",
-	"#else or #elif outside conditional block",
-	"Struct can not be assembled as is",
-	"Enum can not be assembled as is",
-	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",
-	"rept is missing a scope ('{ ... }')",
-	"Link can only be used in a fixed address section",
-	"Link can not be used in dummy sections",
-	"Can not process this line",
-	"Unexpected target offset for reloc or late evaluation",
-	"CPU is not supported",
-	"Can't append sections",
-	"Zero page / Direct page section out of range",
-	"Attempting to assign an address to a non-existent section",
-	"Attempting to assign an address to a fixed address section",
-	"Can not link a zero page section with a non-zp section",
-	"Out of memory while building",
-	"Can not write to file",
-	"Assembly aborted",
-	"Condition too deeply nested",
+	"Branch is out of range",													// ERROR_BRANCH_OUT_OF_RANGE,
+	"Function declaration is missing name or expression",						// ERROR_INCOMPLETE_FUNCTION,
+	"Function could not resolve the expression",								// ERROR_FUNCTION_DID_NOT_RESOLVE
+	"Expression evaluateion recursion too deep",								// ERROR_EXPRESSION_RECURSION
+	"Target address must evaluate immediately for this operation",				// ERROR_TARGET_ADDRESS_MUST_EVALUATE_IMMEDIATELY,
+	"Scoping is too deep",														// ERROR_TOO_DEEP_SCOPE,
+	"Unbalanced scope closure",													// ERROR_UNBALANCED_SCOPE_CLOSURE,
+	"Unexpected macro formatting",												// ERROR_BAD_MACRO_FORMAT,
+	"Align must evaluate immediately",											// ERROR_ALIGN_MUST_EVALUATE_IMMEDIATELY,
+	"Out of memory for macro expansion",										// ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION,
+	"Problem with macro argument",												// ERROR_MACRO_ARGUMENT,
+	"Conditional could not be resolved",										// ERROR_CONDITION_COULD_NOT_BE_RESOLVED,
+	"#endif encountered outside conditional block",								// ERROR_ENDIF_WITHOUT_CONDITION,
+	"#else or #elif outside conditional block",									// ERROR_ELSE_WITHOUT_IF,
+	"Struct can not be assembled as is",										// ERROR_STRUCT_CANT_BE_ASSEMBLED,
+	"Enum can not be assembled as is",											// ERROR_ENUM_CANT_BE_ASSEMBLED,
+	"Conditional assembly (#if/#ifdef) was not terminated in file or macro",	// ERROR_UNTERMINATED_CONDITION,
+	"rept is missing a scope ('{ ... }')",										// ERROR_REPT_MISSING_SCOPE,
+	"Link can only be used in a fixed address section",							// ERROR_LINKER_MUST_BE_IN_FIXED_ADDRESS_SECTION,
+	"Link can not be used in dummy sections",									// ERROR_LINKER_CANT_LINK_TO_DUMMY_SECTION,
+	"Can not process this line",												// ERROR_UNABLE_TO_PROCESS,
+	"Unexpected target offset for reloc or late evaluation",					// ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE,
+	"CPU is not supported",														// ERROR_CPU_NOT_SUPPORTED,
+	"Can't append sections",													// ERROR_CANT_APPEND_SECTION_TO_TARGET,
+	"Zero page / Direct page section out of range",								// ERROR_ZEROPAGE_SECTION_OUT_OF_RANGE,
+	"Attempting to assign an address to a non-existent section",				// ERROR_NOT_A_SECTION,
+	"Attempting to assign an address to a fixed address section",				// ERROR_CANT_REASSIGN_FIXED_SECTION,
+	"Can not link a zero page section with a non-zp section",					// ERROR_CANT_LINK_ZP_AND_NON_ZP,
+	"Out of memory while building",												// ERROR_OUT_OF_MEMORY,
+	"Can not write to file",													// ERROR_CANT_WRITE_TO_FILE,
+	"Assembly aborted",															// ERROR_ABORTED,
+	"Condition too deeply nested",												// ERROR_CONDITION_TOO_NESTED,
 };
 
 // Assembler directives
@@ -246,11 +279,16 @@ enum AssemblerDirective {
 	AD_CONST,		// CONST: Prevent a label from mutating during assemble
 	AD_LABEL,		// LABEL: Create a mutable label (optional)
 	AD_STRING,		// STRING: Declare a string symbol
+	AD_FUNCTION,	// FUNCTION: Declare a user defined function
 	AD_UNDEF,		// UNDEF: remove a string or a label
 	AD_INCSYM,		// INCSYM: Reference labels from another assemble
 	AD_LABPOOL,		// POOL: Create a pool of addresses to assign as labels dynamically
 	AD_IF,			// #IF: Conditional assembly follows based on expression
 	AD_IFDEF,		// #IFDEF: Conditional assembly follows based on label defined or not
+	AD_IFNDEF,		// #IFNDEF: Conditional assembly inverted from IFDEF
+	AD_IFCONST,		// #IFCONST: Conditional assembly follows based on label being const
+	AD_IFBLANK,		// #IFBLANK: Conditional assembly follows based on rest of line empty
+	AD_IFNBLANK,	// #IFNBLANK: Conditional assembly follows based on rest of line not empty
 	AD_ELSE,		// #ELSE: Otherwise assembly
 	AD_ELIF,		// #ELIF: Otherwise conditional assembly follows
 	AD_ENDIF,		// #ENDIF: End a block of #IF/#IFDEF
@@ -268,6 +306,10 @@ enum AssemblerDirective {
 	AD_LST,			// LST: Controls symbol listing
 	AD_DUMMY,		// DUM: Start a dummy section (increment address but don't write anything???)
 	AD_DUMMY_END,	// DEND: End a dummy section
+	AD_SCOPE,		// SCOPE: Begin ca65 style scope
+	AD_ENDSCOPE,	// ENDSCOPR: End ca65 style scope
+	AD_PUSH,		// PUSH: Push the value of a variable symbol on a stack
+	AD_PULL,		// PULL: Pull the value of a variable symbol from its stack, must be pushed first
 	AD_DS,			// DS: Define section, zero out # bytes or rewind the address if negative
 	AD_USR,			// USR: MERLIN user defined pseudo op, runs some code at a hard coded address on apple II, on PC does nothing.
 	AD_SAV,			// SAV: MERLIN version of export but contains full filename, not an appendable name
@@ -280,6 +322,16 @@ enum AssemblerDirective {
 	AD_EXT,			// EXT: MERLIN reference this address label from a different file
 	AD_CYC,			// CYC: MERLIN start / stop cycle timer
 	AD_ERROR,
+};
+
+// evaluation functions
+enum EvalFuncs {
+	EF_DEFINED,		// DEFINED(label) 1 if label is defined
+	EF_REFERENCED,	// REFERENCED(label) 1 if label has been referenced in this file
+	EF_BLANK,		// BLANK() 1 if the contents within the parenthesis is empty
+	EF_CONST,		// CONST(label) 1 if label is a const label
+	EF_SIZEOF,		// SIZEOF(struct) returns size of structs
+	EF_SIN,			// SIN(index, period, amplitude)
 };
 
 // Operators are either instructions or directives
@@ -312,12 +364,13 @@ enum EvalOperator {
 	EVOP_EOR,		// r, ^
 	EVOP_SHL,		// s, <<
 	EVOP_SHR,		// t, >>
-	EVOP_NEG,		// u, negate value
-	EVOP_STP,		// v, Unexpected input, should stop and evaluate what we have
-	EVOP_NRY,		// w, Not ready yet
-	EVOP_XRF,		// x, value from XREF label
-	EVOP_EXP,		// y, sub expression
-	EVOP_ERR,		// z, Error
+	EVOP_NOT,		// u, ~
+	EVOP_NEG,		// v, negate value
+	EVOP_STP,		// w, Unexpected input, should stop and evaluate what we have
+	EVOP_NRY,		// x, Not ready yet
+	EVOP_XRF,		// y, value from XREF label
+	EVOP_EXP,		// z, sub expression
+	EVOP_ERR,		// z+1, Error
 };
 
 // Opcode encoding
@@ -958,12 +1011,17 @@ DirectiveName aDirectiveNames[] {
 	{ "CONST", AD_CONST },
 	{ "LABEL", AD_LABEL },
 	{ "STRING", AD_STRING },
+	{ "FUNCTION", AD_FUNCTION },
 	{ "UNDEF", AD_UNDEF },
 	{ "INCSYM", AD_INCSYM },
 	{ "LABPOOL", AD_LABPOOL },
 	{ "POOL", AD_LABPOOL },
 	{ "IF", AD_IF },
 	{ "IFDEF", AD_IFDEF },
+	{ "IFNDEF", AD_IFNDEF },
+	{ "IFCONST", AD_IFCONST },
+	{ "IFBLANK", AD_IFBLANK },		// #IFBLANK: Conditional assembly follows based on rest of line empty
+	{ "IFNBLANK", AD_IFNBLANK },	// #IFDEF: Conditional assembly follows based on rest of line not empty
 	{ "ELSE", AD_ELSE },
 	{ "ELIF", AD_ELIF },
 	{ "ENDIF", AD_ENDIF },
@@ -981,6 +1039,11 @@ DirectiveName aDirectiveNames[] {
 	{ "DUMMY", AD_DUMMY },
 	{ "DUMMY_END", AD_DUMMY_END },
 	{ "DS", AD_DS },			// Define space
+	{ "RES", AD_DS },			// Reserve space
+	{ "SCOPE", AD_SCOPE },		// SCOPE: Begin ca65 style scope
+	{ "ENDSCOPE", AD_ENDSCOPE },// ENDSCOPR: End ca65 style scope
+	{ "PUSH", AD_PUSH },
+	{ "PULL", AD_PULL },
 	{ "ABORT", AD_ABORT },
 	{ "ERR", AD_ABORT },		// DASM version of ABORT
 };
@@ -1021,8 +1084,24 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "CYC", AD_CYC },			// MERLIN: Start and stop cycle counter
 };
 
+struct EvalFuncNames {
+	const char* name;
+	EvalFuncs function;
+};
+
+EvalFuncNames aEvalFunctions[] = {
+	{ "DEFINED", EF_DEFINED },			// DEFINED(label) 1 if label is defined
+	{ "DEF", EF_DEFINED },				// DEFINED(label) 1 if label is defined
+	{ "REFERENCED", EF_REFERENCED },	// REFERENCED(label) 1 if label has been referenced in this file
+	{ "BLANK", EF_BLANK },				// BLANK() 1 if the contents within the parenthesis is empty
+	{ "CONST", EF_CONST },				// CONST(label) 1 if label is a const label
+	{ "SIZEOF", EF_SIZEOF},				// SIZEOF(struct) returns size of structs
+	{ "TRIGSIN", EF_SIN },				// TRIGSIN(index, period, amplitude)
+};
+
 static const int nDirectiveNames = sizeof(aDirectiveNames) / sizeof(aDirectiveNames[0]);
 static const int nDirectiveNamesMerlin = sizeof(aDirectiveNamesMerlin) / sizeof(aDirectiveNamesMerlin[0]);
+static const int nEvalFuncs = sizeof(aEvalFunctions) / sizeof(aEvalFunctions[0]);
 
 // Binary search over an array of unsigned integers, may contain multiple instances of same key
 uint32_t FindLabelIndex(uint32_t hash, uint32_t *table, uint32_t count)
@@ -1129,6 +1208,176 @@ public:
 	}
 };
 
+
+
+template< class KeyType, class ValueType, class CountType = size_t > struct HashTable {
+	CountType size, maxSteps, used;
+	KeyType* keys;
+	ValueType* values;
+
+	static CountType HashFunction(KeyType v) { return CountType(((v + (v >> 27) + (v << 29)) + 14695981039346656037) * 1099511628211); }
+	static CountType HashIndex(KeyType hash, CountType tableSize) { return hash & (tableSize - 1); }
+	static CountType GetNextIndex(KeyType hash, CountType tableSize) { return (hash + 1) & (tableSize - 1); }
+	static CountType KeyToIndex(KeyType key, CountType tableSize) { return HashIndex(HashFunction(key), tableSize); }
+	static CountType FindKeyIndex(KeyType hash, CountType hashTableSize, KeyType* hashKeys, CountType maxKeySteps) {
+		CountType index = KeyToIndex(hash, hashTableSize);
+		while (hashKeys) {
+			KeyType key = hashKeys[index];
+			if (!key || key == hash) { return index; }
+			index = GetNextIndex(index, hashTableSize);
+			if (!maxKeySteps--) { break; }
+		}
+		return index;
+	}
+
+	CountType KeyToIndex(KeyType key) { return KeyToIndex(key, size); }
+
+	CountType InsertKey(KeyType key, CountType index) {
+		const KeyType* hashKeys = keys;
+		CountType currSize = size;
+		CountType insertSteps = 0;
+		while (KeyType k = hashKeys[index]) {
+			if (k == key) { return index; }  // key already exists
+			CountType kfirst = KeyToIndex(k, currSize);
+			CountType ksteps = kfirst > index ? (currSize + index - kfirst) : (index - kfirst);
+			if (insertSteps > ksteps) { return index; }
+			index = GetNextIndex(index, size);
+			++insertSteps;
+		}
+		return index;
+	}
+
+	CountType FindKeyIndex(KeyType hash) const { return FindKeyIndex(hash, size, keys, maxSteps); }
+
+	CountType Steps(KeyType hash) {
+		CountType slot = KeyToIndex(hash, size);
+		CountType numSteps = 0;
+		while (keys[slot] && keys[slot] != hash) {
+			++numSteps;
+			slot = GetNextIndex(slot, size);
+		}
+		return numSteps;
+	}
+
+	void UpdateSteps(CountType first, CountType slot) {
+		CountType steps = slot > first ? (slot - first) : (size + slot - first);
+		if (steps > maxSteps) { maxSteps = steps; }
+	}
+
+	ValueType* InsertFitted(KeyType key) {
+		assert(key); // key may not be 0
+		CountType first = KeyToIndex(key);
+		CountType slot = InsertKey(key, first);
+		UpdateSteps(first, slot);
+		if (keys[slot]) {
+			if (keys[slot] == key) { return &values[slot]; } else {
+				KeyType prvKey = keys[slot];
+				ValueType prev_value = values[slot];
+				keys[slot] = key;
+				for (;; ) {
+					CountType prev_first = KeyToIndex(prvKey);
+					CountType slotRH = InsertKey(prvKey, prev_first);
+					UpdateSteps(prev_first, slotRH);
+					if (keys[slotRH] && keys[slotRH] != prvKey) {
+						KeyType tmpKey = keys[slotRH];
+						keys[slotRH] = prvKey;
+						prvKey = tmpKey;
+						ValueType temp_value = values[slotRH];
+						values[slotRH] = prev_value;
+						prev_value = temp_value;
+					} else {
+						keys[slotRH] = prvKey;
+						values[slotRH] = prev_value;
+						++used;
+						return &values[slot];
+					}
+				}
+			}
+		}
+		keys[slot] = key;
+		++used;
+		return &values[slot];
+	}
+
+	HashTable() { Reset(); }
+
+	void Reset() {
+		used = 0;
+		size = 0;
+		maxSteps = 0;
+		keys = nullptr;
+		values = nullptr;
+	}
+
+	~HashTable() { Clear(); }
+
+	void Clear() {
+		if (values) {
+			for (CountType i = 0, n = size; i < n; ++i) {
+				values[i].~ValueType();
+			}
+			free(values);
+		}
+		if (keys) { free(keys); }
+		Reset();
+	}
+
+	CountType GetUsed() const { return used; }
+	bool TableMax() const { return used && (used << 4) >= (size * 13); }
+
+	void Grow() {
+		KeyType *prevKeys = keys;
+		ValueType *prevValues = values;
+		CountType prevSize = size, newSize = prevSize ? (prevSize << 1) : 64;
+		size = newSize;
+		keys = (KeyType*)calloc(1, newSize * sizeof(KeyType));
+		values = (ValueType*)calloc(1, newSize * sizeof(ValueType));
+		maxSteps = 0;
+		for (CountType i = 0; i < newSize; ++i) { new (values + i) ValueType; }
+		if (used) {
+			used = 0;
+			for (CountType i = 0; i < prevSize; i++) {
+				if (KeyType key = prevKeys[i]) { *InsertFitted(key) = prevValues[i]; }
+			}
+		}
+		if (prevKeys) { free(prevKeys); }
+		if (prevValues) {
+			for (CountType i = 0; i != prevSize; ++i) { prevValues[i].~ValueType(); }
+			free(prevValues);
+		}
+	}
+
+	ValueType* InsertKey(KeyType key)
+	{
+		if (!size || TableMax()) { Grow(); }
+		return InsertFitted(key);
+	}
+
+	ValueType* InsertKeyValue(KeyType key, ValueType& value)
+	{
+		ValueType* value_ptr = InsertKey(key);
+		*value_ptr = value;
+		return value_ptr;
+	}
+
+	bool KeyExists(KeyType key)
+	{
+		return size && key && keys[FindKeyIndex(key)] == key;
+	}
+
+	ValueType* GetValue(KeyType key)
+	{
+		if (size && key) {
+			CountType slot = FindKeyIndex(key);
+			if (keys[slot] == key) {
+				return &values[slot];
+			}
+		}
+		return nullptr;
+	}
+};
+
+
 // relocs are cheaper than full expressions and work with
 // local labels for relative sections which would otherwise
 // be out of scope at link time.
@@ -1195,7 +1444,6 @@ public:
 	strovl string_value;	// string contents if modified, initialized to null string
 
 	StatusCode Append(strref append);
-	StatusCode ParseLine(strref line);
 
 	strref get() { return string_value.valid() ? string_value.get_strref() : string_const; }
 	void clear() {
@@ -1327,6 +1575,7 @@ public:
 	bool constant;			// the value of this label can not change
 	bool external;			// this label is globally accessible
 	bool reference;			// this label is accessed from external and can't be used for evaluation locally
+	bool referenced;		// this label has been found via GetLabel and can be assumed to be referenced for some purpose
 } Label;
 
 
@@ -1380,10 +1629,10 @@ typedef struct sLabelPool {
 	strref pool_name;
 	int16_t numRanges;		// normally 1 range, support multiple for ease of use
 	int16_t depth;			// Required for scope closure cleanup
-	uint16_t start;
-	uint16_t end;
-	uint16_t scopeUsed[MAX_SCOPE_DEPTH][2]; // last address assigned + scope depth
-	StatusCode Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope);
+	uint32_t start;
+	uint32_t end;
+	uint32_t scopeUsed[MAX_SCOPE_DEPTH][2]; // last address assigned + scope depth
+	StatusCode Reserve(uint32_t numBytes, uint32_t &ret_addr, uint16_t scope);
 	void ExitScope(uint16_t scope);
 } LabelPool;
 
@@ -1417,10 +1666,14 @@ struct EvalContext {
 	int relative_section;	// return can be relative to this section
 	int file_ref;			// can access private label from this file or -1
 	int rept_cnt;			// current repeat counter
-	EvalContext() {}
+	int recursion;			// track recursion depth
+	StatusCode internalErr;	// if an error occured during an internal stage of evaluation
+	EvalContext() : pc(0), scope_pc(0), scope_end_pc(0), scope_depth(0), relative_section(-1),
+	file_ref(-1), rept_cnt(0), recursion(0), internalErr(STATUS_OK) {}
 	EvalContext(int _pc, int _scope, int _close, int _sect, int _rept_cnt) :
 		pc(_pc), scope_pc(_scope), scope_end_pc(_close), scope_depth(-1),
-		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt) {}
+		relative_section(_sect), file_ref(-1), rept_cnt(_rept_cnt),
+		recursion(0), internalErr(STATUS_OK) {}
 };
 
 // Source context is current file (include file, etc.) or current macro.
@@ -1465,6 +1718,31 @@ public:
 	bool empty() const { return stack.size() == 0; }
 };
 
+// Support for the PULL and PUSH directives
+typedef union { int value; char* string; } ValueOrString;
+typedef std::vector < ValueOrString > SymbolStack;
+class SymbolStackTable : public HashTable< uint64_t, SymbolStack* > {
+public:
+	void PushSymbol(Label* symbol);
+	StatusCode PullSymbol(Label* symbol);
+	void PushSymbol(StringSymbol* string);
+	StatusCode PullSymbol(StringSymbol* string);
+	~SymbolStackTable();
+};
+
+// user declared functions
+struct UserFunction {
+	const char* name;
+	const char* params;
+	const char* expression;
+};
+class UserFunctionMap : public HashTable<uint64_t, UserFunction*> {
+public:
+	UserFunction *Get(strref name);
+	StatusCode Add(strref name, strref params, strref expresion);
+	~UserFunctionMap();
+};
+
 // The state of the assembler
 class Asm {
 public:
@@ -1484,6 +1762,9 @@ public:
 	std::vector<Section> allSections;
 	std::vector<ExtLabels> externals;		// external labels organized by object file
 	MapSymbolArray map;
+
+	SymbolStackTable symbolStacks;			// enable push/pull of symbols
+	UserFunctionMap	userFunctions;			// user defined expression functions
 
 	// CPU target
 	struct mnem *opcode_table;
@@ -1513,13 +1794,17 @@ public:
 	int scope_depth;
 	int brace_depth;			// scope depth defined only by braces, not files
 
+	strref export_base_name;	// binary output name if available
+	strref last_label;			// most recently defined label for Merlin macro
+	
+	// ca65 style scope (for now treat global symbols as local symbols, no outside name lookup)
+	int directive_scope_depth;
+
 	// Eval relative result (only valid if EvalExpression returns STATUS_RELATIVE_SECTION)
 	int lastEvalSection;
 	int lastEvalValue;
 	int8_t lastEvalShift;
 
-	strref export_base_name;	// binary output name if available
-	strref last_label;			// most recently defined label for Merlin macro
 	int8_t list_flags;			// listing flags accumulating for each line
 	bool accumulator_16bit;		// 65816 specific software dependent immediate mode
 	bool index_reg_16bit;		// -"-
@@ -1527,6 +1812,7 @@ public:
 	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
+	bool import_means_xref;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -1595,18 +1881,24 @@ public:
 	StatusCode EvalStruct(strref name, int &value);
 	StatusCode BuildEnum(strref name, strref declaration);
 
+	// determine a value from a user function with given parameters
+	int EvalUserFunction(UserFunction* user, strref params, EvalContext& etx);
+
+	// Check if function is a valid function and if so evaluate the expression
+	bool EvalFunction(strref function, strref &expression, EvalContext& etx, int &value);
+
 	// Calculate a value based on an expression.
 	EvalOperator RPNToken_Merlin(strref &expression, const struct EvalContext &etx,
 								 EvalOperator prev_op, int16_t &section, int &value);
-	EvalOperator RPNToken(strref &expression, const struct EvalContext &etx,
+	EvalOperator RPNToken(strref &expression, EvalContext &etx,
 		EvalOperator prev_op, int16_t &section, int &value, strref &subexp);
-	StatusCode EvalExpression(strref expression, const struct EvalContext &etx, int &result);
+	StatusCode EvalExpression(strref expression, struct EvalContext &etx, int &result);
 	char* PartialEval( strref expression );
 	void SetEvalCtxDefaults( struct EvalContext &etx );
 	int ReptCnt() const;
 
 	// Access labels
-	Label* GetLabel(strref label);
+	Label * GetLabel(strref label, bool reference_check = false);
 	Label* GetLabel(strref label, int file_ref);
 	Label* AddLabel(uint32_t hash);
 	bool MatchXDEF(strref label);
@@ -1642,6 +1934,7 @@ public:
 	StatusCode Directive_Rept(strref line);
 	StatusCode Directive_Macro(strref line);
 	StatusCode Directive_String(strref line);
+	StatusCode Directive_Function(strref line);
 	StatusCode Directive_Undef(strref line);
 	StatusCode Directive_Include(strref line);
 	StatusCode Directive_Incbin(strref line, int skip=0, int len=0);
@@ -1702,6 +1995,122 @@ public:
 		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
 
+
+void SymbolStackTable::PushSymbol(Label* symbol)
+{
+	uint64_t key = symbol->label_name.fnv1a_64(symbol->pool_name.fnv1a_64());
+	SymbolStack** ppStack = InsertKey(key);	// ppStack will exist but contains a pointer that may not exist
+	if (!*ppStack) { *ppStack = new SymbolStack; }
+	ValueOrString val;
+	val.value = symbol->value;
+	(*ppStack)->push_back(val);
+}
+
+StatusCode SymbolStackTable::PullSymbol(Label* symbol)
+{
+	uint64_t key = symbol->label_name.fnv1a_64(symbol->pool_name.fnv1a_64());
+	SymbolStack** ppStack = GetValue(key);
+	if (!ppStack || !(*ppStack)->size()) { return ERROR_PULL_WITHOUT_PUSH; }
+	symbol->value = (**ppStack)[(*ppStack)->size() - 1].value;
+	(*ppStack)->pop_back();
+	return STATUS_OK;
+}
+
+void SymbolStackTable::PushSymbol(StringSymbol* string)
+{
+	uint64_t key = string->string_name.fnv1a_64();
+	SymbolStack** ppStack = InsertKey(key);	// ppStack will exist but contains a pointer that may not exist
+	if (!*ppStack) { *ppStack = new SymbolStack; }
+	ValueOrString val;
+	val.string = nullptr;
+	if (string->string_value) {
+		val.string = (char*)malloc(string->string_value.get_len() + 1);
+		memcpy(val.string, string->string_value.get(), string->string_value.get_len());
+		val.string[string->string_value.get_len()] = 0;
+	}
+	(*ppStack)->push_back(val);
+}
+
+StatusCode SymbolStackTable::PullSymbol(StringSymbol* string)
+{
+	uint64_t key = string->string_name.fnv1a_64();
+	SymbolStack** ppStack = GetValue(key);
+	if (!ppStack || !(*ppStack)->size()) { return ERROR_PULL_WITHOUT_PUSH; }
+	char* str = (**ppStack)[(*ppStack)->size() - 1].string;
+	if (!str && string->string_value) {
+		free(string->string_value.charstr());
+		string->string_value.invalidate();
+	} else {
+		if (string->string_value.empty() || string->string_value.cap() < (strlen(str) + 1)) {
+			if (string->string_value.charstr()) { free(string->string_value.charstr()); }
+			string->string_value.set_overlay((char*)malloc(strlen(str) + 1), (strl_t)strlen(str) + 1);
+		}
+		string->string_value.copy(str);
+		free(str);
+	}
+	(*ppStack)->pop_back();
+	return STATUS_OK;
+}
+
+SymbolStackTable::~SymbolStackTable()
+{
+	for (size_t i = 0; i < size; ++i) {
+		if (keys[i] && values[i]) {
+			delete values[i];
+			values[i] = nullptr;
+			keys[i] = 0;
+		}
+	}
+}
+
+
+UserFunction* UserFunctionMap::Get(strref name)
+{
+	UserFunction** ret = GetValue(name.fnv1a_64());
+	if (ret) { return *ret; }
+	return nullptr;
+}
+
+StatusCode UserFunctionMap::Add(strref name, strref params, strref expresion)
+{
+	if (!name || !expresion) { return ERROR_INCOMPLETE_FUNCTION; }
+	strl_t stringlen = name.get_len() + 1 + (params ? (params.get_len() + 1) : 0) + expresion.get_len() + 1;
+	UserFunction *func = (UserFunction*)calloc(1, sizeof(UserFunction) + stringlen);
+	char* strings = (char*)(func + 1);
+	func->name = strings;
+	memcpy(strings, name.get(), name.get_len());
+	strings[name.get_len()] = 0;
+	strings += name.get_len() + 1;
+	if (params) {
+		func->params = strings;
+		memcpy(strings, params.get(), params.get_len());
+		strings[params.get_len()] = 0;
+		strings += params.get_len() + 1;
+	}
+	func->expression = strings;
+	memcpy(strings, expresion.get(), expresion.get_len());
+
+	if (UserFunction** existing = GetValue(name.fnv1a_64())) {
+		free(*existing);
+		*existing = func;
+	} else {
+		InsertKeyValue(name.fnv1a_64(), func);
+	}
+	return STATUS_OK;
+}
+
+UserFunctionMap::~UserFunctionMap()
+{
+	for (size_t i = 0; i < size; ++i) {
+		if (keys[i] && values[i]) {
+			free(values[i]);
+			values[i] = nullptr;
+			keys[i] = 0;
+		}
+	}
+}
+
+
 // Clean up work allocations
 void Asm::Cleanup() {
 	for (std::vector<char*>::iterator i = loadedData.begin(); i != loadedData.end(); ++i) {
@@ -1737,9 +2146,11 @@ void Asm::Cleanup() {
 	conditional_depth = 0;
 	conditional_nesting[0] = 0;
 	conditional_consumed[0] = false;
+	directive_scope_depth = 0;
 	error_encountered = false;
 	list_assembly = false;
 	end_macro_directive = false;
+	import_means_xref = false;
 	accumulator_16bit = false;	// default 65816 8 bit immediate mode
 	index_reg_16bit = false;	// other CPUs won't be affected.
 	cycle_counter_level = 0;
@@ -1865,7 +2276,7 @@ char* Asm::LoadBinary(strref filename, size_t &size) {
 		if (file.get_last()!='/' && file.get_last()!='\\')
 			file.append('/');
 		file.append(filename);
-#ifdef WIN32
+#ifdef _WIN32
 		file.replace('/', '\\');
 #endif
 		++i;
@@ -2792,8 +3203,9 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		} else { return ERROR_BAD_MACRO_FORMAT; }
 	} else {
 		name = macro.split_range(label_end_char_range);
-		macro.skip_whitespace();
+		while (macro.get_first() == ' ' || macro.get_first() == '\t') { ++macro; }
 		strref left_line = macro.get_line();
+		if (left_line.get_first() == ';' || left_line.has_prefix("//")) { left_line.clear(); }
 		left_line.skip_whitespace();
 		left_line = left_line.before_or_full(';').before_or_full(c_comment);
 		if (left_line && left_line[0]!='(' && left_line[0]!='{') {
@@ -2837,7 +3249,10 @@ StatusCode Asm::AddMacro(strref macro, strref source_name, strref source_file, s
 		for (;;) {
 			f = macro.find(endm, f+1);
 			if (f<0) { return ERROR_BAD_MACRO_FORMAT; }
-			if (f==0||strref::is_ws(macro[f-1])) { break; }
+			if (f == 0 || strref::is_ws(macro[f - 1]) || macro[f - 1] == '.') {
+				if (f && macro[f - 1] == '.') { --f; }
+				break;
+			}
 		}
 		pMacro->macro = macro.get_substr(0, f);
 		macro += f;
@@ -3126,6 +3541,128 @@ StatusCode Asm::EvalStruct(strref name, int &value) {
 	return STATUS_OK;
 }
 
+
+//
+// 
+// USER FUNCTION EVAL
+//
+//
+
+int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
+{
+	strref expression(user->expression);
+	strref orig_param(user->params);
+	strref paraiter = orig_param;
+	strref in_params = params;
+	int newSize = expression.get_len();
+	while (strref param = paraiter.split_token(',')) {
+		strref replace = in_params.split_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+
+		if (param.get_len() < replace.get_len()) {
+			int count = expression.substr_count(param);
+			newSize += count * (replace.get_len() - param.get_len());
+		}
+	}
+
+	char* subst = (char*)malloc(newSize);
+	strovl subststr(subst, newSize);
+	subststr.copy(expression);
+	while (strref param = orig_param.split_token(',')) {
+		strref replace = params.split_token(',');
+		param.trim_whitespace();
+		replace.trim_whitespace();
+
+		subststr.replace_bookend(param, replace, macro_arg_bookend);
+	}
+
+	int value = 0;
+	etx.internalErr = EvalExpression(subststr.get_strref(), etx, value);
+	if (etx.internalErr != STATUS_OK && etx.internalErr < FIRST_ERROR) {
+		etx.internalErr = ERROR_FUNCTION_DID_NOT_RESOLVE;
+	}
+
+	free(subst);
+
+	return value;
+}
+
+//
+// 
+// EVAL FUNCTIONS
+//
+//
+
+bool Asm::EvalFunction(strref function, strref& expression, EvalContext& etx, int &value)
+{
+	// all eval functions take a parenthesis with arguments
+	if (expression.get_first() != '(') { return false; }
+
+	strref expRet = expression;
+	strref params = expRet.scoped_block_comment_skip();
+	params.trim_whitespace();
+	if (function.get_first() == '.') { ++function; }
+
+	// look up user defined function
+	if (UserFunction* user = userFunctions.Get(function)) {
+		expression = expRet;
+		value = EvalUserFunction(user, params, etx);
+		return true;
+	}
+
+	// built-in function
+	for (int i = 0; i < nEvalFuncs; ++i) {
+		if (function.same_str(aEvalFunctions[i].name)) {
+			switch (aEvalFunctions[i].function) {
+				case EF_DEFINED:
+					expression = expRet;
+					value = GetLabel(params, true) != nullptr ? 1 : 0;
+					return true;
+				case EF_REFERENCED:
+					expression = expRet;
+					if (Label* label = GetLabel(params, true)) { value = label->referenced; return true; }
+					return true;
+				case EF_BLANK:
+					expression = expRet;
+					if (params.get_first() == '{') { params = params.scoped_block_comment_skip(); }
+					params.trim_whitespace();
+					value = params.is_empty();
+					return true;
+				case EF_CONST:
+					expression = expRet;
+					if (Label* label = GetLabel(params, true)) {
+						value = label->constant ? 1 : 0;
+					}
+					return true;
+				case EF_SIZEOF:
+				{
+					expression = expRet;
+					uint32_t hash = params.fnv1a();
+					uint32_t index = FindLabelIndex(hash, labelStructs.getKeys(), labelStructs.count());
+					value = 0;
+					while (index < labelStructs.count() && labelStructs.getKey(index) == hash) {
+						if (params.same_str_case(labelStructs.getValue(index).name)) {
+							value = (labelStructs.getValues() + index)->size;
+							break;
+						}
+						++index;
+					}
+					return true;
+				}
+
+				case EF_SIN:
+					expression = expRet;
+					value = 0; // TODO: implement trigsin
+					return true;
+			}
+			return false;
+		}
+	}
+	return false;
+}
+
+
 //
 //
 // EXPRESSIONS AND LATE EVALUATION
@@ -3210,18 +3747,18 @@ EvalOperator Asm::RPNToken_Merlin(strref &expression, const struct EvalContext &
 }
 
 // Get a single token from most non-apple II assemblers
-EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
+EvalOperator Asm::RPNToken(strref &exp, EvalContext &etx, EvalOperator prev_op, int16_t &section, int &value, strref &subexp)
 {
 	char c = exp.get_first();
 	switch (c) {
 		case '$': ++exp; value = (int)exp.ahextoui_skip(); return EVOP_VAL;
 		case '-': ++exp; return EVOP_SUB;
-		case '+': ++exp;	return EVOP_ADD;
-		case '*': // asterisk means both multiply and current PC, disambiguate!
-			++exp;
+		case '+': ++exp; return EVOP_ADD;
+		case '*': ++exp; // asterisk means both multiply and current PC, disambiguate!
 			if (exp[0] == '*') return EVOP_STP; // double asterisks indicates comment
 			else if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) return EVOP_MUL;
-			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1); return EVOP_VAL;
+			value = etx.pc; section = int16_t(CurrSection().IsRelativeSection() ? SectionId() : -1);
+			return EVOP_VAL;
 		case '/': ++exp; return EVOP_DIV;
 		case '=': if (exp[1] == '=') { exp += 2; return EVOP_EQU; } return EVOP_STP;
 		case '>': if (exp.get_len() >= 2 && exp[1] == '>') { exp += 2; return EVOP_SHR; }
@@ -3240,6 +3777,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		case '^': if (prev_op == EVOP_VAL || prev_op == EVOP_RPR) { ++exp; return EVOP_EOR; }
 				  ++exp;  return EVOP_BAB;
 		case '&': ++exp; return EVOP_AND;
+		case '~': ++exp; return EVOP_NOT;
 		case '(': if (prev_op != EVOP_VAL) { ++exp; return EVOP_LPR; } return EVOP_STP;
 		case ')': ++exp; return EVOP_RPR;
 		case ',':
@@ -3267,6 +3805,7 @@ EvalOperator Asm::RPNToken(strref &exp, const struct EvalContext &etx, EvalOpera
 		}
 		if (!pLabel && label.same_str("rept")) { value = etx.rept_cnt; return EVOP_VAL; }
 		if (!pLabel) { if (StringSymbol *pStr = GetString(label)) { subexp = pStr->get(); return EVOP_EXP; } }
+		if (!pLabel) { if (EvalFunction(label, exp, etx, value)) { return EVOP_VAL; } }
 		if (!pLabel || !pLabel->evaluated) return EVOP_NRY;	// this label could not be found (yet)
 		value = pLabel->value; section = int16_t(pLabel->section); return pLabel->reference ? EVOP_XRF : EVOP_VAL;
 	}
@@ -3300,7 +3839,7 @@ static int mul_as_shift(int scalar) {
 
 #define MAX_EXPR_STACK 2
 
-StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx, int &result)
+StatusCode Asm::EvalExpression(strref expression, EvalContext &etx, int &result)
 {
 	int numValues = 0;
 	int numOps = 0;
@@ -3309,10 +3848,14 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 
 	char ops[MAX_EVAL_OPER];		// RPN expression
 	int values[MAX_EVAL_VALUES];	// RPN values (in order of RPN EVOP_VAL operations)
-	int16_t section_ids[MAX_EVAL_SECTIONS];	// local index of each referenced section
-	int16_t section_val[MAX_EVAL_VALUES] = { 0 };		// each value can be assigned to one section, or -1 if fixed
-	int16_t num_sections = 0;			// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
+	int16_t section_ids[MAX_EVAL_SECTIONS];			// local index of each referenced section
+	int16_t section_val[MAX_EVAL_VALUES] = { 0 };	// each value can be assigned to one section, or -1 if fixed
+	int16_t num_sections = 0;		// number of sections in section_ids (normally 0 or 1, can be up to MAX_EVAL_SECTIONS)
 	bool xrefd = false;
+
+	// don't allow too deep recursion of this function, this should be rare as it takes a user function or variadic macro to recurse.
+	if (etx.recursion > 3) { return ERROR_EXPRESSION_RECURSION; }
+	etx.recursion++;				// increment recursion of EvalExpression body
 	values[0] = 0;					// Initialize RPN if no expression
 	{
 		int sp = 0;
@@ -3332,10 +3875,10 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			} else {
 				op = RPNToken(expression, etx, prev_op, section, value, subexp);
 			}
-			if (op==EVOP_ERR) { return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
-			else if (op==EVOP_NRY) { return STATUS_NOT_READY; }
+			if (op == EVOP_ERR) { etx.recursion--; return ERROR_UNEXPECTED_CHARACTER_IN_EXPRESSION; }
+			else if (op==EVOP_NRY) { etx.recursion--; return STATUS_NOT_READY; }
 			else if (op == EVOP_EXP) {
-				if (exp_sp>=MAX_EXPR_STACK) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+				if (exp_sp>=MAX_EXPR_STACK) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 				expression_stack[exp_sp++] = expression;
 				expression = subexp;
 				op = EVOP_LPR;
@@ -3350,7 +3893,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				if (index_section<0) {
 					if (num_sections<=MAX_EVAL_SECTIONS) {
 						section_ids[index_section = num_sections++] = section;
-					} else { return STATUS_NOT_READY; }
+					} else { etx.recursion--; return STATUS_NOT_READY; }
 				}
 			}
 
@@ -3367,7 +3910,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					ops[numOps++] = op_stack[sp];
 				}
 				// check that there actually was a left parenthesis
-				if (!sp||op_stack[sp-1]!=EVOP_LPR) { return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
+				if (!sp||op_stack[sp-1]!=EVOP_LPR) { etx.recursion--; return ERROR_UNBALANCED_RIGHT_PARENTHESIS; }
 				sp--; // skip open paren
 			} else if (op == EVOP_STP) {
 				break;
@@ -3390,8 +3933,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 				}
 			}
 			// check for out of bounds or unexpected input
-			if (numValues==MAX_EVAL_VALUES) { return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
+			if (numValues==MAX_EVAL_VALUES) { etx.recursion--; return ERROR_TOO_MANY_VALUES_IN_EXPRESSION; }
 			else if (numOps==MAX_EVAL_OPER||sp==MAX_EVAL_OPER) {
+				etx.recursion--;
 				return ERROR_TOO_MANY_OPERATORS_IN_EXPRESSION;
 			}
 			prev_op = op;
@@ -3402,9 +3946,12 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			ops[numOps++] = op_stack[sp];
 		}
 	}
+	etx.recursion--; // recursion only occurs in loop above
 
 	// Check if dependent on XREF'd symbol
-	if (xrefd) { return STATUS_XREF_DEPENDENT; }
+	if (xrefd) {
+		return STATUS_XREF_DEPENDENT;
+	}
 
 	// processing the result RPN will put the completed expression into values[0].
 	// values is used as both the queue and the stack of values since reads/writes won't
@@ -3419,7 +3966,7 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 			EvalOperator op = (EvalOperator)ops[o];
 			shift_bits = 0;
 			prev_val = ri ? values[ri-1] : prev_val;
-			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && ri<2) {
+			if (op!=EVOP_VAL && op!=EVOP_LOB && op!=EVOP_HIB && op!=EVOP_BAB && op!=EVOP_SUB && op!=EVOP_NOT && ri<2) {
 				break; // ignore suffix operations that are lacking values
 			}
 			switch (op) {
@@ -3511,6 +4058,9 @@ StatusCode Asm::EvalExpression(strref expression, const struct EvalContext &etx,
 					shift_bits = -values[ri];
 					prev_val = values[ri - 1];
 					values[ri - 1] >>= values[ri]; break;
+				case EVOP_NOT:
+					if (ri) { values[ri - 1] = ~values[ri - 1]; }
+					break;
 				case EVOP_LOB:	// low byte
 					if (ri) { values[ri-1] &= 0xff; }
 					break;
@@ -3808,12 +4358,14 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 //
 
 // Get a label record if it exists
-Label *Asm::GetLabel(strref label) {
+Label *Asm::GetLabel(strref label, bool reference_check) {
 	uint32_t label_hash = label.fnv1a();
 	uint32_t index = FindLabelIndex(label_hash, labels.getKeys(), labels.count());
 	while (index < labels.count() && label_hash == labels.getKey(index)) {
 		if (label.same_str(labels.getValue(index).label_name)) {
-			return labels.getValues()+index;
+			Label *label = labels.getValues() + index;
+			if (!reference_check) { label->referenced = true; }
+			return label;
 		}
 		index++;
 	}
@@ -3828,7 +4380,9 @@ Label *Asm::GetLabel(strref label, int file_ref) {
 		uint32_t index = FindLabelIndex(label_hash, labs.labels.getKeys(), labs.labels.count());
 		while (index < labs.labels.count() && label_hash == labs.labels.getKey(index)) {
 			if (label.same_str(labs.labels.getValue(index).label_name)) {
-				return labs.labels.getValues()+index;
+				Label *label = labs.labels.getValues()+index;
+				label->referenced = true;
+				return label;
 			}
 			index++;
 		}
@@ -3921,7 +4475,7 @@ StatusCode Asm::AddLabelPool(strref name, strref args) {
 	// check that there is at least one valid address
 	int ranges = 0;
 	int num32 = 0;
-	uint16_t aRng[256];
+	uint32_t aRng[256];
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	while (strref arg = args.split_token_trim(',')) {
@@ -3936,8 +4490,8 @@ StatusCode Asm::AddLabelPool(strref name, strref args) {
 		if (addr1<=addr0||addr0<0) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 		}
-		aRng[ranges++] = (uint16_t)addr0;
-		aRng[ranges++] = (uint16_t)addr1;
+		aRng[ranges++] = (uint32_t)addr0;
+		aRng[ranges++] = (uint32_t)addr1;
 		num32 += (addr1-addr0+15)>>4;
 		if (ranges>2||num32>((MAX_POOL_BYTES+15)>>4)) {
 			return ERROR_POOL_RANGE_EXPRESSION_EVAL;
@@ -3967,10 +4521,10 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		strref size = label;
 		label = size.split_label();
 		if (strref::is_number(size.get_first())) {
-			uint16_t bytes = (uint16_t)size.atoi();
+			uint32_t bytes = (uint32_t)size.atoi();
 			if (!bytes) { return ERROR_POOL_RANGE_EXPRESSION_EVAL; }
 			if (!GetLabelPool(label)) {
-				uint16_t addr;
+				uint32_t addr;
 				StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
 				if( error == STATUS_OK ) {
 					// permanently remove this chunk from the parent pool
@@ -3992,13 +4546,13 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		return ERROR_POOL_RANGE_EXPRESSION_EVAL;
 	}
 	strref type = label;
-	uint16_t bytes = 1;
+	uint32_t bytes = 1;
 	int sz = label.find_at( '.', 1 );
 	if (sz > 0) {
 		label = type.split( sz );
 		++type;
 		if (strref::is_number(type.get_first())) {
-			bytes = (uint16_t)type.atoi();
+			bytes = (uint32_t)type.atoi();
 		} else {
 			switch (strref::tolower(type.get_first())) {
 				case 'l': bytes = 4; break;
@@ -4009,7 +4563,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 		}
 	}
 	if (GetLabel(label)) { return ERROR_POOL_LABEL_ALREADY_DEFINED; }
-	uint16_t addr;
+	uint32_t addr;
 	StatusCode error = pool.Reserve(bytes, addr, (uint16_t)brace_depth);
 	if (error!=STATUS_OK) { return error; }
 	Label *pLabel = AddLabel(label.fnv1a());
@@ -4022,6 +4576,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 	pLabel->constant = true;
 	pLabel->external = false;
 	pLabel->reference = false;
+	pLabel->referenced = false;
 	bool local = false;
 
 	if (label[ 0 ] == '.' || label[ 0 ] == '@' || label[ 0 ] == '!' || label[ 0 ] == ':' || label.get_last() == '$') {
@@ -4033,7 +4588,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 }
 
 // Request a label from a pool
-StatusCode sLabelPool::Reserve(uint16_t numBytes, uint16_t &ret_addr, uint16_t scope) {
+StatusCode sLabelPool::Reserve(uint32_t numBytes, uint32_t &ret_addr, uint16_t scope) {
 	if (numBytes>(end-start)||depth==MAX_SCOPE_DEPTH) { return ERROR_OUT_OF_LABELS_IN_POOL; }
 	if (!depth||scope!=scopeUsed[depth-1][1]) {
 		scopeUsed[depth][0] = end;
@@ -4078,7 +4633,7 @@ StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant)
 		if (pLabel->constant && pLabel->evaluated && val!=pLabel->value) {
 			return (status==STATUS_NOT_READY) ? STATUS_OK : ERROR_MODIFYING_CONST_LABEL;
 		}
-	} else { pLabel = AddLabel(label.fnv1a()); }
+	} else { pLabel = AddLabel(label.fnv1a()); pLabel->referenced = false; }
 
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
@@ -4110,6 +4665,7 @@ StatusCode Asm::AddressLabel(strref label)
 	bool constLabel = false;
 	if (!pLabel) {
 		pLabel = AddLabel(label.fnv1a());
+		pLabel->referenced = false;	// if this label already exists but is changed then it may already have been referenced
 	} else if (pLabel->constant && pLabel->value!=CurrSection().GetPC()) {
 		return ERROR_MODIFYING_CONST_LABEL;
 	} else { constLabel = pLabel->constant; }
@@ -4125,7 +4681,8 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->constant = constLabel;
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
-	LabelAdded(pLabel, local);
+	if (directive_scope_depth > 0) { local = true; }
+	LabelAdded(pLabel, local);	// TODO: in named scopes the label can still be referenced outside the scope directive
 	if (local) { MarkLabelLocal(label); }
 	status = CheckLateEval(label);
 	if (!local && label[0]!=']') { // MERLIN: Variable label does not invalidate local labels
@@ -4214,7 +4771,7 @@ StringSymbol *Asm::AddString(strref string_name, strref string_value)
 }
 
 // append a string to another string
-StatusCode StringSymbol::Append(strref append)
+StatusCode sStringSymbols::Append(strref append)
 {
 	if (!append)
 		return STATUS_OK;
@@ -4513,6 +5070,25 @@ StatusCode Asm::Directive_String(strref line)
 	return STATUS_OK;
 }
 
+StatusCode Asm::Directive_Function(strref line)
+{
+	line.skip_whitespace();
+	strref function_name = line.split_label(), params;
+
+	line.skip_whitespace();
+	if (line.get_first() == '(') {
+		params = line.scoped_block_comment_skip();
+		params.trim_whitespace();
+	}
+
+	line.skip_whitespace();
+	userFunctions.Add(function_name, params, line);
+
+	return STATUS_OK;
+}
+
+
+
 StatusCode Asm::Directive_Undef(strref line)
 {
 	strref name = line.split_range_trim(Merlin() ? label_end_char_range_merlin : label_end_char_range);
@@ -4609,7 +5185,7 @@ StatusCode Asm::Directive_Incbin(strref line, int skip, int len)
 StatusCode Asm::Directive_Import(strref line)
 {
 	line.skip_whitespace();
-	
+
 	int skip = 0;	// binary import skip this amount
 	int len = 0;	// binary import load up to this amount
 	strref param;	// read out skip & max len parameters
@@ -4624,7 +5200,7 @@ StatusCode Asm::Directive_Import(strref line)
 			if (param) {
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
-				EvalExpression(param.split_token_trim(','), etx, skip);
+				EvalExpression(param.split_token_trim_track_parens(','), etx, skip);
 				if (param) { EvalExpression(param, etx, len); }
 			}
 		}
@@ -4803,6 +5379,7 @@ StatusCode Asm::Directive_XREF(strref label)
 		pLabelXREF->external = true;
 		pLabelXREF->constant = false;
 		pLabelXREF->reference = true;
+		pLabelXREF->referenced = false;	// referenced is only within the current object file
 	}
 	return STATUS_OK;
 }
@@ -4813,7 +5390,7 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
 	line.trim_whitespace();
-	while (strref exp_dc = line.split_token_trim(',')) {
+	while (strref exp_dc = line.split_token_trim_track_parens(',')) {
 		int value = 0;
 		if (!CurrSection().IsDummySection()) {
 			if (Merlin() && exp_dc.get_first() == '#')	// MERLIN allows for an immediate declaration on data
@@ -4854,7 +5431,7 @@ StatusCode Asm::Directive_DS(strref line)
 	}
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
-	strref size = line.split_token_trim(',');
+	strref size = line.split_token_trim_track_parens(',');
 	if (STATUS_OK != EvalExpression(size, etx, value))
 		return ERROR_DS_MUST_EVALUATE_IMMEDIATELY;
 	int fill = 0;
@@ -5014,6 +5591,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return ERROR_CPU_NOT_SUPPORTED;
 
 		case AD_EXPORT:
+			if (import_means_xref) { return Directive_XDEF(line); }
 			line.trim_whitespace();
 			CurrSection().export_append = line.split_label();
 			break;
@@ -5171,6 +5749,7 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			return Directive_Incbin(line);
 			
 		case AD_IMPORT:
+			if (import_means_xref) { return Directive_XREF(line); }
 			return Directive_Import(line);
 
 		case AD_LABEL:
@@ -5187,6 +5766,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_STRING:
 			return Directive_String(line);
+
+		case AD_FUNCTION:
+			return Directive_Function(line);
 			
 		case AD_UNDEF:
 			return Directive_Undef(line);
@@ -5215,16 +5797,62 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 		case AD_IFDEF:
 			if (NewConditional()) {			// Start new conditional block
 				CheckConditionalDepth();	// Check if nesting
-				bool conditional_result;
-				error = EvalStatement(line, conditional_result);
-				strref name = line.get_trimmed_ws();
-				if (GetLabel(name) != nullptr || GetString(name) != nullptr)
+				// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label = line.split_range_trim(label_end_char_range);
+				if( GetLabel(label, etx.file_ref) )
 					ConsumeConditional();
 				else
 					SetConditional();
 			}
 			break;
 			
+		case AD_IFNDEF:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label = line.split_range_trim(label_end_char_range);
+				if (!GetLabel(label, etx.file_ref))
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+
+		case AD_IFCONST:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+											// ifdef doesn't need to evaluate the value, just determine if it exists or not
+				strref label_name = line.split_range_trim(label_end_char_range);
+				if (Label* label = GetLabel(label_name, etx.file_ref)) {
+					if (label->constant) { ConsumeConditional(); }
+					else { SetConditional(); }
+				}
+				else { SetConditional(); }
+			}
+			break;
+
+		case AD_IFBLANK:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				line.trim_whitespace();
+				if (line.is_empty())
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+			
+		case AD_IFNBLANK:
+			if (NewConditional()) {			// Start new conditional block
+				CheckConditionalDepth();	// Check if nesting
+				line.trim_whitespace();
+				if (!line.is_empty())
+					ConsumeConditional();
+				else
+					SetConditional();
+			}
+			break;
+
 		case AD_ELSE:
 			if (ConditionalAsm()) {
 				if (ConditionalConsumed())
@@ -5327,9 +5955,38 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 					break;
 			}
 			break;
-			
+
 		case AD_DS:
 			return Directive_DS(line);
+
+		case AD_SCOPE:
+			directive_scope_depth++;
+			return EnterScope();
+			
+		case AD_ENDSCOPE:
+			directive_scope_depth--;
+			return ExitScope();
+
+		case AD_PUSH:
+			line.trim_whitespace();
+			if (Label *label = GetLabel(line)) {
+				symbolStacks.PushSymbol(label);
+				return STATUS_OK;
+			} else if( StringSymbol* string = GetString(line)) {
+				symbolStacks.PushSymbol(string);
+				return STATUS_OK;
+			}
+			return ERROR_UNABLE_TO_PROCESS;
+
+		case AD_PULL:
+			line.trim_whitespace();
+			if (Label *label = GetLabel(line)) {
+				return symbolStacks.PullSymbol(label);
+			} else if (StringSymbol* string = GetString(line)) {
+				return symbolStacks.PullSymbol(string);
+			}
+			return ERROR_UNABLE_TO_PROCESS;
+
 	}
 	return error;
 }
@@ -5358,7 +6015,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			else { suffix.clear(); }
 			++block_suffix; block_suffix.clip(1); block_suffix.trim_whitespace();
 			++line; line.skip_whitespace();
-			strref block = block_suffix.split_token_trim( ',' );
+			strref block = block_suffix.split_token_trim_track_parens( ',' );
 			validModes &= AMM_ZP_REL_X | AMM_ZP_Y_REL | AMM_REL | AMM_ZP_REL | AMM_REL_X | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_STK_REL_Y | AMM_REL_L;
 			if( line.get_first() == '>' ) { // [>$aaaa]
 				if( c == '[' ) { addrMode = AMB_REL_L; validModes &= AMM_REL_L; expression = block+1; }
@@ -5497,7 +6154,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 					addrMode = AMB_ACC;
 				} else {	// absolute (zp, offs x, offs y)
 					addrMode = force_24 ? AMB_ABS_L : (force_zp ? AMB_ZP : AMB_ABS);
-					expression = line.split_token_trim(',');
+					expression = line.split_token_trim_track_parens(',');
 					if( force_abs ) { validModes &= AMM_ABS | AMM_ABS_X | AMM_ABS_Y | AMM_REL | AMM_REL_X; }
 					if( force_zp ) { validModes &= AMM_ZP | AMM_ZP_X | AMM_ZP_REL_X | AMM_ZP_Y_REL |
 						AMM_ZP_REL | AMM_ZP_ABS | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_FLIPXY; }
@@ -5536,7 +6193,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 	switch (validModes) {
 		case AMC_BBR:
 			addrMode = AMB_ZP_ABS;
-			expression = line.split_token_trim(',');
+			expression = line.split_token_trim_track_parens(',');
 			if (!expression || !line)
 				return ERROR_INVALID_ADDRESSING_MODE;
 			break;
@@ -5551,7 +6208,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 			break;
 		case AMM_BLK_MOV:
 			addrMode = AMB_BLK_MOV;
-			expression = line.before_or_full(',');
+			expression = line.before_or_full_track_parens(',');
 			break;
 		default:
 			error = GetAddressMode(line, !!(validModes & AMM_FLIPXY), validModes, addrMode, op_param, expression);
@@ -5736,7 +6393,7 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 				struct EvalContext etx;
 				SetEvalCtxDefaults(etx);
 				etx.pc = CurrSection().GetPC()-2;
-				line.split_token_trim(',');
+				line.split_token_trim_track_parens(',');
 				error = EvalExpression(line, etx, value);
 				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
@@ -5893,15 +6550,13 @@ StatusCode Asm::BuildLine(strref line) {
 				error = AssignLabel(label, line);
 				line.clear();
 				list_flags |= ListLine::KEYWORD;
-			}
-			else if (keyword_equ.is_prefix_word(line)) {
+			} else if (keyword_equ.is_prefix_word(line)) {
 				line += keyword_equ.get_len();
 				line.skip_whitespace();
 				error = AssignLabel(label, line);
 				line.clear();
 				list_flags |= ListLine::KEYWORD;
-			}
-			else {
+			} else {
 				uint32_t nameHash = label.fnv1a();
 				uint32_t macro = FindLabelIndex(nameHash, macros.getKeys(), macros.count());
 				bool gotConstruct = false;
@@ -6864,7 +7519,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				int16_t f = (int16_t)l.flags;
 				int external = f & ObjFileLabel::OFL_XDEF;
 				if (external == ObjFileLabel::OFL_XDEF) {
-					if (!lbl) { lbl = AddLabel(name.fnv1a()); }	// insert shared label
+					if (!lbl) { lbl = AddLabel(name.fnv1a()); lbl->referenced = false; }	// insert shared label
 					else if (!lbl->reference) { continue; }
 				} else {								// insert protected label
 					while ((file_index + external) >= (int)externals.size()) {
@@ -7187,15 +7842,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse) {
 }
 
 int main(int argc, char **argv) {
-	const strref listing("lst");
-	const strref tass_listing( "tsl" );
-	const strref tass_labels( "tl" );
-	const strref allinstr("opcodes");
-	const strref endmacro("endm");
-	const strref cpu("cpu");
-	const strref acc("acc");
-	const strref xy("xy");
-	const strref org("org");
+
 	int return_value = 0;
 	bool load_header = true;
 	bool size_header = false;
@@ -7210,15 +7857,15 @@ int main(int argc, char **argv) {
 
 	const char *source_filename = nullptr, *obj_out_file = nullptr;
 	const char *binary_out_name = nullptr;
-	const char *sym_file = nullptr, *vs_file = nullptr, *tass_labels_file = nullptr;
+	const char *sym_file = nullptr, *vs_file = nullptr, *cmdarg_tass_labels_file = nullptr;
 	strref list_file, allinstr_file;
 	strref tass_list_file;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
 			if (arg.get_first()=='i') { assembler.AddIncludeFolder(arg+1); }
-			else if (arg.same_str("kickasm") ) { assembler.syntax = SYNTAX_KICKASM; }
-			else if (arg.same_str("merlin")) { assembler.syntax = SYNTAX_MERLIN; }
+			else if (arg.same_str(cmdarg_kickasm) ) { assembler.syntax = SYNTAX_KICKASM; }
+			else if (arg.same_str(cmdarg_merlin)) { assembler.syntax = SYNTAX_MERLIN; }
 			else if (arg.get_first()=='D'||arg.get_first()=='d') {
 				++arg;
 				if (arg.find('=')>0) {
@@ -7226,51 +7873,53 @@ int main(int argc, char **argv) {
 				} else {
 					assembler.AssignLabel(arg, "1");
 				}
-			} else if (arg.same_str("c64")) {
+			} else if (arg.same_str(cmdarg_c64)) {
 				load_header = true;
 				size_header = false;
-			} else if (arg.same_str("a2b")) {
+			} else if (arg.same_str(cmdarg_a2b)) {
 				assembler.default_org = 0x0803;
 				load_header = true;
 				size_header = true;
-			} else if (arg.same_str("bin")) {
+			} else if (arg.same_str(cmdarg_bin)) {
 				load_header = false;
 				size_header = false;
-			} else if (arg.same_str("a2p")) {
+			} else if (arg.same_str(cmdarg_a2p)) {
 				assembler.default_org = 0x2000;
 				load_header = false;
 				size_header = false;
-			} else if (arg.same_str("a2o")) {
+			} else if (arg.same_str(cmdarg_a2o)) {
 				gs_os_reloc = true;
-			} else if (arg.same_str("mrg")) {
+			} else if (arg.same_str(cmdarg_mrg)) {
 				force_merge_sections = true;
-			} else if (arg.same_str("sect")) {
+			} else if (arg.same_str(cmdarg_sect)) {
 				info = true;
-			} else if (arg.same_str(endmacro)) {
+			} else if (arg.same_str(cmdarg_endmacro)) {
 				assembler.end_macro_directive = true;
-			} else if (arg.has_prefix(listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
+			} else if (arg.same_str(cmdarg_xrefimp)) {
+				assembler.import_means_xref = true;
+			} else if (arg.has_prefix(cmdarg_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				list_output = true;
 				list_file = arg.after( '=' );
-			} else if (arg.has_prefix(tass_listing)&&(arg.get_len()==listing.get_len()||arg[listing.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_tass_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				tass_list_output = true;
 				tass_list_file = arg.after( '=' );
-			} else if (arg.has_prefix(allinstr)&&(arg.get_len()==allinstr.get_len()||arg[allinstr.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_allinstr)&&(arg.get_len()==cmdarg_allinstr.get_len()||arg[cmdarg_allinstr.get_len()]=='=')) {
 				gen_allinstr = true;
 				allinstr_file = arg.after('=');
-			} else if (arg.has_prefix(org)) {
+			} else if (arg.has_prefix(cmdarg_org)) {
 				arg = arg.after('=');
 				if (arg && arg.get_first()=='$' && arg.get_len()>1) {
 					assembler.default_org = (int)(arg+1).ahextoui();
 				} else if (arg.is_number()) { assembler.default_org = (int)arg.atoi(); }
 				// force the current section to be org'd
 				assembler.AssignAddressToSection(assembler.SectionId(), assembler.default_org);
-			} else if (arg.has_prefix(acc)&&arg[acc.get_len()]=='=') {
+			} else if (arg.has_prefix(cmdarg_acc)&&arg[cmdarg_acc.get_len()]=='=') {
 				assembler.accumulator_16bit = arg.after('=').atoi()==16;
-			} else if (arg.has_prefix(xy)&&arg[xy.get_len()]=='=') {
+			} else if (arg.has_prefix(cmdarg_xy)&&arg[cmdarg_xy.get_len()]=='=') {
 				assembler.index_reg_16bit = arg.after('=').atoi()==16;
-			} else if (arg.has_prefix(cpu)&&(arg.get_len()==cpu.get_len()||arg[cpu.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_cpu)&&(arg.get_len()==cmdarg_cpu.get_len()||arg[cmdarg_cpu.get_len()]=='=')) {
 				arg.split_token_trim('=');
 				bool found = false;
 				for (int c = 0; c<nCPUs; c++) {
@@ -7287,14 +7936,14 @@ int main(int argc, char **argv) {
 					return 1;
 				}
 				if (!arg) { return 0; }
-			} else if (arg.same_str("sym")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_sym)&&(a+1)<argc) {
 				sym_file = argv[++a];
-			} else if (arg.same_str("obj")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_obj)&&(a+1)<argc) {
 				obj_out_file = argv[++a];
-			} else if (arg.same_str("vice")&&(a+1)<argc) {
+			} else if (arg.same_str(cmdarg_vice)&&(a+1)<argc) {
 				vs_file = argv[++a];
-			} else if (arg.same_str(tass_labels)&&(a+1)<argc) {
-				tass_labels_file = argv[++a];
+			} else if (arg.same_str(cmdarg_tass_labels)&&(a+1)<argc) {
+				cmdarg_tass_labels_file = argv[++a];
 			} else { printf("Unexpected option " STRREF_FMT "\n", STRREF_ARG(arg)); }
 		} else if (!source_filename) { source_filename = argv[a]; }
 		else if (!binary_out_name) { binary_out_name = argv[a]; }
@@ -7446,8 +8095,8 @@ int main(int argc, char **argv) {
 					}
 				}
 				// export tass labels
-				if( tass_labels_file && !srcname.same_str( tass_labels_file ) && !assembler.map.empty() ) {
-					if( FILE *f = fopen( tass_labels_file, "w" ) ) {
+				if( cmdarg_tass_labels_file && !srcname.same_str( cmdarg_tass_labels_file ) && !assembler.map.empty() ) {
+					if( FILE *f = fopen( cmdarg_tass_labels_file, "w" ) ) {
 						for( MapSymbolArray::iterator i = assembler.map.begin(); i != assembler.map.end(); ++i ) {
 							uint32_t value = ( uint32_t )i->value;
 							if( size_t( i->section ) < assembler.allSections.size() ) { value += assembler.allSections[ i->section ].start_address; }
@@ -7472,3 +8121,4 @@ int main(int argc, char **argv) {
 	}
 	return return_value;
 }
+
