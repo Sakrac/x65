@@ -7737,7 +7737,7 @@ StatusCode Asm::WriteA2GS_OMF(strref filename, bool full_collapse) {
 			// insert all SUPER_RELOC2 / SUPER_RELOC3
 			for (int b = 0; b <= 1; b++) {
 				int count_offs = -1;
-				int prev_page = 0;
+				int prev_page = -1;
 				int inst_curr = instruction_offs;
 				instructions[inst_curr++] = OMFR_SUPER;
 				int len_offs = inst_curr;
