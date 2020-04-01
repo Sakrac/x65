@@ -64,6 +64,7 @@ static const strref cmdarg_sym("sym");			// -sym (file.sym) : generate symbol fi
 static const strref cmdarg_obj("obj");			// -obj (file.x65) : generate object file for later linking
 static const strref cmdarg_vice("vice");		// -vice (file.vs) : export a vice symbol file
 static const strref cmdarg_xrefimp("xrefimp");	// -xrefimp : import directive means xref, not include/incbin
+static const strref cmdarg_references("refs");	// -refs: show label dependencies before linking
 
 // if the number of resolved labels exceed this in one late eval then skip
 //	checking for relevance and just eval all unresolved expressions.
@@ -1860,6 +1861,8 @@ public:
 	void AddWord(int w) { CurrSection().AddWord(w); }
 	void AddTriple(int l) { CurrSection().AddTriple(l); }
 	void AddBin(const uint8_t *p, int size) { CurrSection().AddBin(p, size); }
+
+	void ShowReferences();
 
 	// Object file handling
 	StatusCode WriteObjectFile(strref filename);	// write x65 object file
@@ -7224,6 +7227,23 @@ static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char
 	return strOffs;
 }
 
+void Asm::ShowReferences()
+{
+	size_t num = labels.count();
+	const Label* lbl = labels.getValues();
+	printf("LABEL REFERENCE SUMMARY:\n");
+	for (size_t l = 0; l < num; ++l) {
+		if (lbl[l].external) {
+			printf(" * >" STRREF_FMT " Sect: " STRREF_FMT " Offs: $%0x\n",
+				   STRREF_ARG(lbl[l].label_name), STRREF_ARG(lbl[l].section >= 0 ? allSections[lbl[l].section].name : strref("fixed")), lbl[l].value);
+		}
+		if (lbl[l].reference) {
+			printf(" * <" STRREF_FMT " Sect: " STRREF_FMT " Offs: $%0x\n",
+				   STRREF_ARG(lbl[l].label_name), STRREF_ARG(lbl[l].section >= 0 ? allSections[lbl[l].section].name : strref("fixed")), lbl[l].value);
+		}
+	}
+}
+
 StatusCode Asm::WriteObjectFile(strref filename) {
 	if (allSections.size()==0)
 		return ERROR_NOT_A_SECTION;
@@ -7852,6 +7872,7 @@ int main(int argc, char **argv) {
 	bool force_merge_sections = false;
 	bool list_output = false;
 	bool tass_list_output = false;
+	bool show_refs_before_link = false;
 
 	Asm assembler;
 
@@ -7897,6 +7918,8 @@ int main(int argc, char **argv) {
 				assembler.end_macro_directive = true;
 			} else if (arg.same_str(cmdarg_xrefimp)) {
 				assembler.import_means_xref = true;
+			} else if (arg.same_str(cmdarg_references)) {
+				show_refs_before_link = true;
 			} else if (arg.has_prefix(cmdarg_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				list_output = true;
@@ -7991,6 +8014,9 @@ int main(int argc, char **argv) {
 			// if source_filename contains a path add that as a search path for include files
 			assembler.AddIncludeFolder(srcname.before_last('/', '\\'));
 			assembler.Assemble(strref(buffer, strl_t(size)), srcname, obj_out_file != nullptr);
+			if (show_refs_before_link) {
+				assembler.ShowReferences();
+			}
 			if (assembler.error_encountered) {
 				return_value = 1;
 			} else {
