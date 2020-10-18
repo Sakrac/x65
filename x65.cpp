@@ -322,6 +322,7 @@ enum AssemblerDirective {
 	AD_ENT,			// ENT: MERLIN extern this address label
 	AD_EXT,			// EXT: MERLIN reference this address label from a different file
 	AD_CYC,			// CYC: MERLIN start / stop cycle timer
+	AD_DBL_BYTES,	// DDB: MERLIN Store 2 bytes, big endian format.
 	AD_ERROR,
 };
 
@@ -1057,7 +1058,7 @@ DirectiveName aDirectiveNamesMerlin[] {
 	{ "DW", AD_WORDS },			// MERLIN
 	{ "ASC", AD_TEXT },			// MERLIN
 	{ "PUT", AD_INCLUDE },		// MERLIN
-	{ "DDB", AD_WORDS },		// MERLIN
+	{ "DDB", AD_DBL_BYTES },		// MERLIN
 	{ "DB", AD_BYTES },			// MERLIN
 	{ "DFB", AD_BYTES },		// MERLIN
 	{ "HEX", AD_HEX },			// MERLIN
@@ -1591,6 +1592,7 @@ typedef struct sLateEval {
 		LET_BRANCH,			// calculate a branch offset and store at this address
 		LET_BRANCH_16,		// calculate a branch offset of 16 bits and store at this address
 		LET_BYTE,			// calculate a byte and store at this address
+		LET_DBL_BYTE,		// calculate a 16-bit, big endian number.
 	};
 	int target;				// offset into output buffer
 	int address;			// current pc
@@ -1948,7 +1950,7 @@ public:
 	StatusCode Directive_LNK(strref line);
 	StatusCode Directive_XDEF(strref line);
 	StatusCode Directive_XREF(strref label);
-	StatusCode Directive_DC(strref line, int width, strref source_file);
+	StatusCode Directive_DC(strref line, int width, strref source_file, bool little_endian = true);
 	StatusCode Directive_DS(strref line);
 	StatusCode Directive_ALIGN(strref line);
 	StatusCode Directive_EVAL(strref line);
@@ -4257,6 +4259,23 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 							allSections[sec].SetByte(trg, value);
 							break;
 
+						case LateEval::LET_DBL_BYTE:
+							if (ret==STATUS_RELATIVE_SECTION) {
+								if (i->section<0) {
+									resolved = false;
+								} else {
+									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift-8);
+									allSections[sec].AddReloc(lastEvalValue, trg+1, lastEvalSection, 1, lastEvalShift);
+									value = 0;
+								}
+							}
+							if ((trg+1)>=allSections[sec].size()) {
+								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
+							}
+							allSections[sec].SetByte(trg, value>>8);
+							allSections[sec].SetByte(trg+1, value);
+							break;
+
 						case LateEval::LET_ABS_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
@@ -5388,7 +5407,7 @@ StatusCode Asm::Directive_XREF(strref label)
 }
 
 // dc.b, dc.w, dc.t, dc.l, ADR, ADRL, bytes, words, long
-StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
+StatusCode Asm::Directive_DC(strref line, int width, strref source_file, bool little_endian)
 {
 	struct EvalContext etx;
 	SetEvalCtxDefaults(etx);
@@ -5401,18 +5420,43 @@ StatusCode Asm::Directive_DC(strref line, int width, strref source_file)
 			StatusCode error = EvalExpression(exp_dc, etx, value);
 			if (error > STATUS_XREF_DEPENDENT)
 				break;
-			else if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-				AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file,
-				width == 1 ? LateEval::LET_BYTE : (width == 2 ? LateEval::LET_ABS_REF : (width == 3 ? LateEval::LET_ABS_L_REF : LateEval::LET_ABS_4_REF)));
-			else if (error == STATUS_RELATIVE_SECTION) {
+			else if (error == STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT) {
+				static LateEval::Type sizes[] = {
+					LateEval::LET_BYTE,
+					LateEval::LET_ABS_REF,
+					LateEval::LET_ABS_L_REF,
+					LateEval::LET_ABS_4_REF
+				};
+				LateEval::Type type = sizes[width - 1];
+				if (!little_endian && width == 2) {
+					type = LateEval::LET_DBL_BYTE;
+				}
+
+				AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], exp_dc, source_file, type);	
+			} else if (error == STATUS_RELATIVE_SECTION) {
 				value = 0;
-				CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, (int8_t)width, (int8_t)lastEvalShift);
+				if (little_endian || width == 1) {
+					CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset(), lastEvalSection, (int8_t)width, (int8_t)lastEvalShift);
+				} else {
+					// big endian needs 1 reloc for each byte 
+					int shift = lastEvalShift + 8 - width * 8;
+					for (int i = 0; i < width; ++i, shift += 8) {
+						CurrSection().AddReloc(lastEvalValue, CurrSection().DataOffset() + i, lastEvalSection, 1, (int8_t)shift);
+					}
+				}
 			}
 		}
-		uint8_t bytes[4] = {
-			(uint8_t)value, (uint8_t)(value >> 8),
-			(uint8_t)(value >> 16), (uint8_t)(value >> 24) };
-		AddBin(bytes, width);
+		if (little_endian) {
+			uint8_t bytes[4] = {
+				(uint8_t)value, (uint8_t)(value >> 8),
+				(uint8_t)(value >> 16), (uint8_t)(value >> 24) };
+			AddBin(bytes, width);
+		} else {
+			uint8_t bytes[4] = {
+				(uint8_t)(value >> 24), (uint8_t)(value >> 16),
+				(uint8_t)(value >> 8), (uint8_t)value };
+			AddBin(bytes + 4 - width, width);
+		}
 	}
 	return STATUS_OK;
 }
@@ -5654,6 +5698,9 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 
 		case AD_WORDS:		// words: add words (16 bit values) by comma separated values
 			return Directive_DC(line, 2, source_file);
+
+		case AD_DBL_BYTES:	// DDB: Merlin store 2-byte word, big endian format.
+			return Directive_DC(line, 2, source_file, false);
 			
 		case AD_ADR:		// ADR: MERLIN store 3 byte word
 			return Directive_DC(line, 3, source_file);
