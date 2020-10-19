@@ -41,6 +41,10 @@
 #include <inttypes.h>
 #include <assert.h>
 
+#ifndef _WIN32
+#define _strdup strdup
+#endif
+
 // Command line arguments
 static const strref cmdarg_listing("lst");		// -lst / -lst=(file.lst) : generate disassembly text from result(file or stdout)
 static const strref cmdarg_tass_listing("tsl");	// -tsl=(file) : generate listing file in TASS style
@@ -1216,7 +1220,7 @@ template< class KeyType, class ValueType, class CountType = size_t > struct Hash
 	KeyType* keys;
 	ValueType* values;
 
-	static CountType HashFunction(KeyType v) { return CountType(((v + (v >> 27) + (v << 29)) + 14695981039346656037) * 1099511628211); }
+	static CountType HashFunction(KeyType v) { return CountType(((v + (v >> 27) + (v << 29)) + 14695981039346656037UL) * 1099511628211UL); }
 	static CountType HashIndex(KeyType hash, CountType tableSize) { return hash & (tableSize - 1); }
 	static CountType GetNextIndex(KeyType hash, CountType tableSize) { return (hash + 1) & (tableSize - 1); }
 	static CountType KeyToIndex(KeyType key, CountType tableSize) { return HashIndex(HashFunction(key), tableSize); }
@@ -6022,7 +6026,7 @@ StatusCode Asm::GetAddressMode(strref line, bool flipXY, uint32_t &validModes, A
 			validModes &= AMM_ZP_REL_X | AMM_ZP_Y_REL | AMM_REL | AMM_ZP_REL | AMM_REL_X | AMM_ZP_REL_L | AMM_ZP_REL_Y_L | AMM_STK_REL_Y | AMM_REL_L;
 			if( line.get_first() == '>' ) { // [>$aaaa]
 				if( c == '[' ) { addrMode = AMB_REL_L; validModes &= AMM_REL_L; expression = block+1; }
-			} else if( line.get_first() == '|' || line.get_first() == '!' && c == '(' ) { // (|$aaaa) or (|$aaaa,x)
+			} else if( line.get_first() == '|' || (line.get_first() == '!' && c == '(' )) { // (|$aaaa) or (|$aaaa,x)
 				strref arg = block.after( ',' ); arg.skip_whitespace();
 				if( arg && ( arg.get_first() == 'x' || arg.get_first() == 'X' ) ) {
 					addrMode = AMB_REL_X; validModes &= AMM_REL_X; expression = block.before( ',' ); }
@@ -7109,7 +7113,7 @@ void Asm::Assemble(strref source, strref filename, bool obj_target) {
 			}
 		}
 	} else {
-		PrintError(&contextStack.curr() ?
+		PrintError(contextStack.has_work() ?
 				   contextStack.curr().read_source.get_line() : strref(), error);
 	}
 }
@@ -8131,7 +8135,7 @@ int main(int argc, char **argv) {
 								strown<256> line;
 								line.append( i->name );
 								line.sprintf_append( "\t= $%04x\n", value);
-								fprintf(f, line.c_str());
+								fputs(line.c_str(), f);
 							}
 						}
 						fclose( f );
