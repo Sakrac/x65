@@ -6391,22 +6391,32 @@ StatusCode Asm::AddOpcode(strref line, int index, strref source_file) {
 				break;
 
 			case CA_TWO_ARG_BYTES: {
+					// second operand stored first.
+					StatusCode error = STATUS_OK;
+					int value = 0;
+
+					struct EvalContext etx;
+					SetEvalCtxDefaults(etx);
+					etx.pc = CurrSection().GetPC()-1;
+					line.split_token_trim_track_parens(',');
+					error = EvalExpression(line, etx, value);
+					if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
+						AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC()-1, scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
+					else if (error == STATUS_RELATIVE_SECTION) {
+						CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), lastEvalSection, 1, lastEvalShift);
+					}
+
+					AddByte(value);
+				}
+
 				if (evalLater)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
+					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC()-2, scope_address[scope_depth], expression, source_file, LateEval::LET_BYTE);
 				else if (error == STATUS_RELATIVE_SECTION) {
 					CurrSection().AddReloc(target_section_offs, CurrSection().DataOffset(), target_section, 1, target_section_shift);
 				}
 				AddByte(value);
-				struct EvalContext etx;
-				SetEvalCtxDefaults(etx);
-				etx.pc = CurrSection().GetPC()-2;
-				line.split_token_trim_track_parens(',');
-				error = EvalExpression(line, etx, value);
-				if (error==STATUS_NOT_READY || error == STATUS_XREF_DEPENDENT)
-					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], line, source_file, LateEval::LET_BYTE);
-				AddByte(value);
 				break;
-			}
+
 			case CA_BRANCH:
 				if (evalLater)
 					AddLateEval(CurrSection().DataOffset(), CurrSection().GetPC(), scope_address[scope_depth], expression, source_file, LateEval::LET_BRANCH);
@@ -6787,7 +6797,7 @@ bool Asm::ListTassStyle( strref filename ) {
 						} else if (am==AMB_ABS_L||am==AMB_ABS_L_X) {
 							out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8)|(buf[3]<<16));
 						} else if (am==AMB_BLK_MOV) {
-							out.sprintf_append(fmt, opcode_table[op].instr, buf[1], buf[2]);
+							out.sprintf_append(fmt, opcode_table[op].instr, buf[2], buf[1]);
 						} else if (am==AMB_IMM && lst.size==3) {
 							out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1]|(buf[2]<<8));
 						} else {
@@ -6984,7 +6994,7 @@ bool Asm::List(strref filename) {
 					} else if (am==AMB_ABS_L||am==AMB_ABS_L_X) {
 						out.sprintf_append(fmt, opcode_table[op].instr, buf[1]|(buf[2]<<8)|(buf[3]<<16));
 					} else if (am==AMB_BLK_MOV) {
-						out.sprintf_append(fmt, opcode_table[op].instr, buf[1], buf[2]);
+						out.sprintf_append(fmt, opcode_table[op].instr, buf[2], buf[1]);
 					} else if (am==AMB_IMM && lst.size==3) {
 						out.sprintf_append("%s #$%04x", opcode_table[op].instr, buf[1]|(buf[2]<<8));
 					} else {
