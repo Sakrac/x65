@@ -770,7 +770,7 @@ public:
 	int find_after_last(char a, char b) const { return get_strref().find_after_last(a, b); }
 	int find_after_last(char a1, char a2, char b) const { return get_strref().find_after_last(a1, a2, b); }
 	int find(const strref str) const { return get_strref().find(str); }
-	int find(const strref str, strl_t pos) const { get_strref().find(str, pos); }
+	int find(const strref str, strl_t pos) const { return get_strref().find(str, pos); }
 	int find(const char *str, strl_t pos = 0) const { return get_strref().find(str, pos); }
 	int find_case(const strref str) const { return get_strref().find_case(str); }
 	int find_case(const char *str) const { return get_strref().find_case(str); }
