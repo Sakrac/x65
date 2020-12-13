@@ -2487,7 +2487,7 @@ uint8_t* Asm::BuildExport(strref append, int &file_size, int &addr) {
 							(!i->include_from && allSections[first_link_section].include_from)))))
 							first_link_section = SectionId(*i);
 						has_relative_section = true;
-					} else if (i->start_address >= 0x100 && ( i->size() > 0 || i->addr_size() > 0 ) ) {
+					} else if (i->size() > 0 || i->addr_size() > 0) {
 						has_fixed_section = true;
 						bool inserted = false;
 						for (std::vector<Section*>::iterator f = FixedExport.begin(); f != FixedExport.end(); ++f) {
