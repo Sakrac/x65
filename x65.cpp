@@ -3073,6 +3073,16 @@ void Section::AddText(strref line, strref text_prefix) {
 	if (CheckOutputCapacity((uint32_t)line.get_len()) == STATUS_OK) {
 		if (!text_prefix || text_prefix.same_str("ascii")) {
 			AddBin((const uint8_t*)line.get(), (int)line.get_len());
+		} else if (text_prefix.same_str("c64screen")) {
+			while (line) {
+				char c = line.get_first(), o = c;
+				if (c >= 'a' && c <= 'z') { o = c - 'a' + 1; }
+				else if (c == '@') { o = 0; }
+				else if (c == '[') { o = 27; }
+				else if (c == ']') { o = 29; }
+				AddByte(o >= 0x60 ? ' ' : o);
+				++line;
+			}
 		} else if (text_prefix.same_str("petscii")) {
 			while (line) {
 				char c = line[0];
@@ -5778,7 +5788,8 @@ StatusCode Asm::ApplyDirective(AssemblerDirective dir, strref line, strref sourc
 			}
 			while (line[0] != '"') {
 				strref word = line.get_word_ws();
-				if (word.same_str("petscii") || word.same_str("petscii_shifted")) {
+				if (word.same_str("petscii") || word.same_str("petscii_shifted") ||
+					word.same_str("c64screen")) {
 					text_prefix = line.get_word_ws();
 					line += text_prefix.get_len();
 					line.skip_whitespace();
