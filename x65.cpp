@@ -1411,6 +1411,7 @@ struct ListLine {
 	};
 	strref source_name;		// source file index name
 	strref code;			// line of code this represents
+	int column;				// column of line
 	int address;			// start address of this line
 	int size;				// number of bytes generated for this line
 	int line_offs;			// offset into code
@@ -6543,6 +6544,7 @@ StatusCode Asm::BuildLine(strref line) {
 	int start_section = SectionId();
 	int start_address = CurrSection().address;
 	strref code_line = line;
+	const char* data_line = line.get();	// code_line is current line, data_line is where data is generated
 	list_flags = 0;
 
 	while (line && error == STATUS_OK) {
@@ -6611,9 +6613,11 @@ StatusCode Asm::BuildLine(strref line) {
 					line.skip_whitespace();
 				}
 				if (aInstructions[op_idx].type==OT_DIRECTIVE) {
+					data_line = operation.get();
 					error = ApplyDirective((AssemblerDirective)aInstructions[op_idx].index, line, contextStack.curr().source_file);
 					list_flags |= ListLine::KEYWORD;
 				} else if (ConditionalAsm() && aInstructions[op_idx].type == OT_MNEMONIC) {
+					data_line = operation.get();
 					error = AddOpcode(line, aInstructions[op_idx].index, contextStack.curr().source_file);
 					list_flags |= ListLine::MNEMONIC;
 				}
@@ -6716,6 +6720,7 @@ StatusCode Asm::BuildLine(strref line) {
 				lst.address = start_address - curr.start_address;
 				lst.size = curr.address - start_address;
 				lst.code = contextStack.curr().source_file;
+				lst.column = (uint16_t)(data_line - code_line.get());
 				lst.source_name = contextStack.curr().source_name;
 				lst.line_offs = int(code_line.get() - lst.code.get());
 				lst.flags = list_flags;
@@ -7219,11 +7224,16 @@ struct ObjFileSection {
 	int end_address;		// address size
 	int output_size;		// assembled binary size
 	int align_address;
+	int list_count;			// how many addresses included in debugger listing
 	int16_t next_group;		// next section of group
 	int16_t first_group;	// first section of group
 	int16_t relocs;
 	SectionType type;
 	int8_t flags;
+};
+
+struct ObjFileSource {
+	struct ObjFileStr file;
 };
 
 struct ObjFileReloc {
@@ -7265,6 +7275,21 @@ struct ObjFileMapSymbol {
 	int16_t section;
 	bool local;					// local labels are probably needed
 };
+
+// this struct is follwed by numSources x ObjFileStr
+struct ObjFileSourceList {
+	uint32_t numSources;
+};
+
+// after that one long array of all sections worth of source references
+struct ObjFileSrcRef {
+	uint16_t addr;		// relative to section
+	uint16_t src_idx;
+	uint16_t size;
+	uint16_t _pad;
+	uint32_t file_offs;	// byte offset into file to row/column where op starts1
+};
+
 
 // Simple string pool, converts strref strings to zero terminated strings and returns the offset to the string in the pool.
 static int _AddStrPool(const strref str, pairArray<uint32_t, int> *pLookup, char **strPool, uint32_t &strPoolSize, uint32_t &strPoolCap) {
@@ -7530,7 +7555,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 			int prevSection = SectionId();
 			int16_t *aSctRmp = (int16_t*)malloc(hdr.sections * sizeof(int16_t));
 			int last_linked_section = link_to_section;
-			while (last_linked_section>=0&&allSections[last_linked_section].next_group>=0) {
+			while (last_linked_section>=0 && allSections[last_linked_section].next_group>=0) {
 				last_linked_section = allSections[last_linked_section].next_group;
 			}
 
