@@ -47,6 +47,7 @@
 
 // Command line arguments
 static const strref cmdarg_listing("lst");		// -lst / -lst=(file.lst) : generate disassembly text from result(file or stdout)
+static const strref cmdarg_srcdebug("srcdbg");	// -srcdbg : generate debug, -srcdbg=(file) : save debug file
 static const strref cmdarg_tass_listing("tsl");	// -tsl=(file) : generate listing file in TASS style
 static const strref cmdarg_tass_labels("tl");	// -tl=(file) : generate labels in TASS style
 static const strref cmdarg_allinstr("opcodes");	// -opcodes / -opcodes=(file.s) : dump all available opcodes(file or stdout)
@@ -1431,7 +1432,7 @@ struct SourceDebugEntry {
 	int size;
 	int source_file_offset;	// can be converted into line/column while linking
 };
-typedef std::vector<struct SLDEntry> SourceDebug;
+typedef std::vector<struct SourceDebugEntry> SourceDebug;
 
 
 enum SectionType : int8_t {	// enum order indicates fixed address linking priority
@@ -1513,6 +1514,8 @@ typedef struct Section {
 		pRelocs = nullptr;
 		if (pListing) delete pListing;
 		pListing = nullptr;
+		if (pSrcDbg) delete pSrcDbg;
+		pSrcDbg = nullptr;
 	}
 
 	void Cleanup() { if (output) free(output); reset(); }
@@ -1536,11 +1539,11 @@ typedef struct Section {
 	void AddReloc(int base, int offset, int section, int8_t bytes, int8_t shift);
 
 	Section() : pRelocs(nullptr), pListing(nullptr) { reset(); }
-	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr) {
+	Section(strref _name, int _address) : pRelocs(nullptr), pListing(nullptr), pSrcDbg(nullptr) {
 		reset(); name = _name; start_address = load_address = address = _address;
 		address_assigned = true;
 	}
-	Section(strref _name) : pRelocs(nullptr), pListing(nullptr) {
+	Section(strref _name) : pRelocs(nullptr), pListing(nullptr), pSrcDbg(nullptr) {
 		reset(); name = _name;
 		start_address = load_address = address = 0; address_assigned = false;
 	}
@@ -1819,6 +1822,7 @@ public:
 	int8_t cycle_counter_level;	// merlin toggles the cycle counter rather than hierarchically evals
 	bool error_encountered;		// if any error encountered, don't export binary
 	bool list_assembly;			// generate assembler listing
+	bool src_debug;				// generate source debug info
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
 	bool import_means_xref;
 
@@ -2143,8 +2147,12 @@ void Asm::Cleanup() {
 			free(str.string_value.charstr());
 	}
 	strings.clear();
-	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti !=externals.end(); ++exti)
+	for (std::vector<ExtLabels>::iterator exti = externals.begin(); exti != externals.end(); ++exti) {
 		exti->labels.clear();
+	}
+	for (std::vector<char*>::iterator src = source_files.begin(); src != source_files.end(); ++src) {
+		free(*src);
+	}
 	externals.clear();
 	// this section is relocatable but is assigned address $1000 if exporting without directives
 	SetSection(strref("default,code"));
@@ -2159,6 +2167,7 @@ void Asm::Cleanup() {
 	directive_scope_depth = 0;
 	error_encountered = false;
 	list_assembly = false;
+	src_debug = false;
 	end_macro_directive = false;
 	import_means_xref = false;
 	accumulator_16bit = false;	// default 65816 8 bit immediate mode
@@ -2920,6 +2929,20 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 		}
 		delete m.pListing;
 		m.pListing = nullptr;
+	}
+	// go through source debug
+	if (m.pSrcDbg) {
+		if (!s.pSrcDbg) { s.pSrcDbg = new SourceDebug; }
+		if (s.pSrcDbg->capacity() < (m.pSrcDbg->size() + s.pSrcDbg->size())) {
+			s.pSrcDbg->reserve((m.pSrcDbg->size() + s.pSrcDbg->size()));
+		}
+		for (SourceDebug::iterator i = m.pSrcDbg->begin(); i != m.pSrcDbg->end(); ++i) {
+			SourceDebugEntry l = *i;
+			l.address += addr_start;
+			s.pSrcDbg->push_back(l);
+		}
+		delete m.pSrcDbg;
+		m.pSrcDbg = nullptr;
 	}
 	m.type = ST_REMOVED;
 	return STATUS_OK;
@@ -6707,24 +6730,45 @@ StatusCode Asm::BuildLine(strref line) {
 		}
 	}
 	// update listing
-	if (error == STATUS_OK && list_assembly) {
+	if (error == STATUS_OK) {
 		if (SectionId() == start_section) {
 			Section &curr = CurrSection();
-			if (!curr.pListing) { curr.pListing = new Listing; }
-			if (curr.pListing && curr.pListing->size()==curr.pListing->capacity()) {
-				curr.pListing->reserve(curr.pListing->size()+256);
-			}
-			if (((list_flags&(ListLine::KEYWORD|ListLine::CYCLES_START|ListLine::CYCLES_STOP)) ||
+			if (list_assembly) {
+				if (!curr.pListing) { curr.pListing = new Listing; }
+				if (((list_flags & (ListLine::KEYWORD | ListLine::CYCLES_START | ListLine::CYCLES_STOP)) ||
 					(curr.address != start_address && curr.size())) && !curr.IsDummySection()) {
-				struct ListLine lst;
-				lst.address = start_address - curr.start_address;
-				lst.size = curr.address - start_address;
-				lst.code = contextStack.curr().source_file;
-				lst.column = (uint16_t)(data_line - code_line.get());
-				lst.source_name = contextStack.curr().source_name;
-				lst.line_offs = int(code_line.get() - lst.code.get());
-				lst.flags = list_flags;
-				curr.pListing->push_back(lst);
+					struct ListLine lst;
+					lst.address = start_address - curr.start_address;
+					lst.size = curr.address - start_address;
+					lst.code = contextStack.curr().source_file;
+					lst.column = (uint16_t)(data_line - code_line.get());
+					lst.source_name = contextStack.curr().source_name;
+					lst.line_offs = int(code_line.get() - lst.code.get());
+					lst.flags = list_flags;
+					curr.pListing->push_back(lst);
+				}
+			}
+			if (src_debug) {
+				if (!curr.pSrcDbg) { curr.pSrcDbg = new SourceDebug; }
+				if (curr.address != start_address && curr.size()) {
+					SourceDebugEntry entry;
+					entry.address = start_address - curr.start_address;
+					entry.size = curr.address - start_address;
+
+					size_t sf = 0, nsf = source_files.size();
+					strref src = contextStack.curr().source_name;
+					for (; sf < nsf; ++sf) {
+						if (src.same_str_case(source_files[sf])) { break; }
+					}
+					if (sf == nsf) {
+						char* path = (char*)calloc(1, src.get_len()+1);
+						memcpy(path, src.get(), src.get_len());
+						source_files.push_back(path);
+					}
+					entry.source_file_index = (int)sf;
+					entry.source_file_offset = (int)(data_line - contextStack.curr().source_file.get());
+					curr.pSrcDbg->push_back(entry);
+				}
 			}
 		}
 	}
@@ -7205,6 +7249,7 @@ struct ObjFileHeader {
 	int16_t late_evals;
 	int16_t map_symbols;
 	uint32_t stringdata;
+	uint32_t srcdebug;
 	int bindata;
 };
 
@@ -7224,7 +7269,7 @@ struct ObjFileSection {
 	int end_address;		// address size
 	int output_size;		// assembled binary size
 	int align_address;
-	int list_count;			// how many addresses included in debugger listing
+	int srcdebug_count;		// how many addresses included in debugger listing
 	int16_t next_group;		// next section of group
 	int16_t first_group;	// first section of group
 	int16_t relocs;
@@ -7279,6 +7324,7 @@ struct ObjFileMapSymbol {
 // this struct is follwed by numSources x ObjFileStr
 struct ObjFileSourceList {
 	uint32_t numSources;
+	ObjFileStr sourceFile[1];
 };
 
 // after that one long array of all sections worth of source references
@@ -7360,6 +7406,7 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 		hdr.late_evals = (int16_t)lateEval.size();
 		hdr.map_symbols = (int16_t)map.size();
 		hdr.stringdata = 0;
+		hdr.srcdebug = 0;
 
 		// labels don't include XREF labels
 		hdr.labels = 0;
@@ -7380,7 +7427,7 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 		char *stringPool = nullptr;
 		uint32_t stringPoolCap = 0;
 		pairArray<uint32_t, int> stringArray;
-		stringArray.reserve(hdr.labels * 2 + hdr.sections + hdr.late_evals*2);
+		stringArray.reserve(hdr.labels * 2 + hdr.sections + hdr.late_evals*2 + (uint32_t)source_files.size());
 
 		struct ObjFileSection *aSects = hdr.sections ? (struct ObjFileSection*)calloc(hdr.sections, sizeof(struct ObjFileSection)) : nullptr;
 		struct ObjFileReloc *aRelocs = hdr.relocs ? (struct ObjFileReloc*)calloc(hdr.relocs, sizeof(struct ObjFileReloc)) : nullptr;
@@ -7398,11 +7445,11 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 		}
 		
 		sect = 0;
+		uint32_t srcDbgEntries = 0;
 		// write out sections and relocs
 		if (hdr.sections) {
 			for (std::vector<Section>::iterator si = allSections.begin(); si!=allSections.end(); ++si) {
-				if (si->type == ST_REMOVED)
-					continue;
+				if (si->type == ST_REMOVED) { continue; }
 				struct ObjFileSection &s = aSects[sect++];
 				s.name.offs = _AddStrPool(si->name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 				s.exp_app.offs = _AddStrPool(si->export_append, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
@@ -7411,6 +7458,8 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 				s.next_group = si->next_group >= 0 ? aRemapSects[si->next_group] : -1;
 				s.first_group = si->first_group >= 0 ? aRemapSects[si->first_group] : -1;
 				s.relocs = si->pRelocs ? (int16_t)(si->pRelocs->size()) : 0;
+				s.srcdebug_count = si->pSrcDbg ? (int)si->pSrcDbg->size() : 0;
+				srcDbgEntries += s.srcdebug_count;
 				s.start_address = si->start_address;
 				s.end_address = si->address;
 				s.type = si->type;
@@ -7431,6 +7480,25 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 			}
 		}
 		hdr.sections = (int16_t)sect;
+
+		struct ObjFileSrcRef* srcLines = srcDbgEntries ? (ObjFileSrcRef*)calloc(1, sizeof(ObjFileSrcRef) * srcDbgEntries) : nullptr;
+		if (srcLines) {
+			size_t srcDbgIdx = 0;
+			for (std::vector<Section>::iterator si = allSections.begin(); si != allSections.end(); ++si) {
+				if (si->type == ST_REMOVED) { continue; }
+				if (si->pSrcDbg && si->pSrcDbg->size()) {
+					for (size_t src = 0, nsrc = si->pSrcDbg->size(); src < nsrc; ++src) {
+						SourceDebugEntry& entry = si->pSrcDbg->at(src);
+						ObjFileSrcRef& ref = srcLines[srcDbgIdx++];
+						ref.addr = entry.address;
+						ref.src_idx = entry.source_file_index;
+						ref.size = entry.size;
+						ref.file_offs = entry.source_file_offset;
+					}
+				}
+			}
+			assert(srcDbgIdx == srcDbgEntries);
+		}
 
 		// write out labels
 		if (hdr.labels) {
@@ -7498,6 +7566,17 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 			}
 		}
 
+		struct ObjFileSourceList* sourceList = nullptr;
+		if (source_files.size() && srcLines) {
+			sourceList = (struct ObjFileSourceList*)calloc(1, sizeof(ObjFileSourceList) + sizeof(ObjFileStr) * (source_files.size() - 1));
+			sourceList->numSources = (uint32_t)source_files.size();
+			for (size_t src = 0, nsrc = source_files.size(); src < nsrc; ++src) {
+				sourceList->sourceFile[src].offs = _AddStrPool(strref(source_files[src]), &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+			}
+		}
+
+		hdr.srcdebug = srcDbgEntries;
+
 		// write out the file
 		fwrite(&hdr, sizeof(hdr), 1, f);
 		fwrite(aSects, sizeof(aSects[0]), sect, f);
@@ -7511,6 +7590,12 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 				fwrite(si->output, si->size(), 1, f);
 			}
 		}
+		if (sourceList) {
+			fwrite(sourceList, sizeof(ObjFileSourceList) + sizeof(ObjFileStr) * (source_files.size() - 1), 1, f);
+			fwrite(srcLines, sizeof(ObjFileSrcRef) * srcDbgEntries, 1, f);
+		}
+
+
 		// done with I/O
 		fclose(f);
 		if (aRemapSects) { free(aRemapSects); }
@@ -7978,6 +8063,7 @@ int main(int argc, char **argv) {
 	const char *sym_file = nullptr, *vs_file = nullptr, *cmdarg_tass_labels_file = nullptr;
 	strref list_file, allinstr_file;
 	strref tass_list_file;
+	strref srcdebug_file;
 	for (int a = 1; a<argc; a++) {
 		if (argv[a][0]=='-') {
 			strref arg(argv[a]+1);
@@ -8017,11 +8103,14 @@ int main(int argc, char **argv) {
 				assembler.import_means_xref = true;
 			} else if (arg.same_str(cmdarg_references)) {
 				show_refs_before_link = true;
-			} else if (arg.has_prefix(cmdarg_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
+			} else if (arg.has_prefix(cmdarg_listing) && (arg.get_len() == cmdarg_listing.get_len() || arg[cmdarg_listing.get_len()] == '=')) {
 				assembler.list_assembly = true;
 				list_output = true;
-				list_file = arg.after( '=' );
-			} else if (arg.has_prefix(cmdarg_tass_listing)&&(arg.get_len()==cmdarg_listing.get_len()||arg[cmdarg_listing.get_len()]=='=')) {
+				list_file = arg.after('=');
+			} else if (arg.has_prefix(cmdarg_srcdebug) && (arg.get_len() == cmdarg_srcdebug.get_len() || arg[cmdarg_srcdebug.get_len()] == '=')) {
+				assembler.src_debug = true;
+				srcdebug_file = arg.after('=');
+			} else if (arg.has_prefix(cmdarg_tass_listing)&&(arg.get_len()== cmdarg_tass_listing.get_len()||arg[cmdarg_tass_listing.get_len()]=='=')) {
 				assembler.list_assembly = true;
 				tass_list_output = true;
 				tass_list_file = arg.after( '=' );
@@ -8179,11 +8268,11 @@ int main(int argc, char **argv) {
 				}
 
 				// listing after export since addresses are now resolved
-				if ( list_output )
-					assembler.List(list_file);
+				if (list_output) { assembler.List(list_file); }
 
-				if( tass_list_output )
-					assembler.ListTassStyle(tass_list_file);
+				if (srcdebug_file) { }
+
+				if (tass_list_output) { assembler.ListTassStyle(tass_list_file); }
 
 				// export .sym file
 				if (sym_file && !srcname.same_str(sym_file) && !assembler.map.empty()) {
@@ -8234,9 +8323,6 @@ int main(int argc, char **argv) {
 						fclose( f );
 					}
 				}
-
-				
-
 			}
 			// free some memory
 			assembler.Cleanup();
