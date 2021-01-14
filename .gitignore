@@ -19,4 +19,5 @@
 *.obj.enc
 *.user
 *.db*
+*.recipe
 test/results/*
