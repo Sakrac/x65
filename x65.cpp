@@ -1134,6 +1134,13 @@ uint32_t FindLabelIndex(uint32_t hash, uint32_t *table, uint32_t count)
 	return count;
 }
 
+char* StringCopy(strref str)
+{
+	char* buf = (char*)calloc(1, (size_t)str.get_len() + 1);
+	if (buf && str.get_len()) { memcpy(buf, str.get(), str.get_len()); }
+	return buf;
+}
+
 
 
 //
@@ -1839,6 +1846,7 @@ public:
 	// Mimic TASS listing
 	bool ListTassStyle( strref filename );
 
+	// Export C64Debugger dbg xml file
 	bool SourceDebugExport(strref filename);
 
 	// Generate source for all valid instructions and addressing modes for current CPU
@@ -2040,9 +2048,7 @@ void SymbolStackTable::PushSymbol(StringSymbol* string)
 	ValueOrString val;
 	val.string = nullptr;
 	if (string->string_value) {
-		val.string = (char*)malloc(string->string_value.get_len() + 1);
-		memcpy(val.string, string->string_value.get(), string->string_value.get_len());
-		val.string[string->string_value.get_len()] = 0;
+		val.string = StringCopy(string->string_value.get_strref());
 	}
 	(*ppStack)->push_back(val);
 }
@@ -6763,9 +6769,7 @@ StatusCode Asm::BuildLine(strref line) {
 						if (src.same_str_case(source_files[sf])) { break; }
 					}
 					if (sf == nsf) {
-						char* path = (char*)calloc(1, src.get_len()+1);
-						memcpy(path, src.get(), src.get_len());
-						source_files.push_back(path);
+						source_files.push_back(StringCopy(src));
 					}
 					entry.source_file_index = (int)sf;
 					entry.source_file_offset = (int)(data_line - contextStack.curr().source_file.get());
@@ -6945,7 +6949,7 @@ bool Asm::SourceDebugExport(strref filename) {
 		return false;
 	}
 
-	std::vector<strref> source_code; source_code.reserve(source_files.size());
+	std::vector<strovl> source_code;  source_code.reserve(source_files.size());
 
 	fprintf(f, "<C64debugger version=\"1.0\">\n\t<Sources values=\"INDEX,FILE\">\n");
 	for (size_t i = 0, n = source_files.size(); i < n; ++i) {
@@ -6953,7 +6957,7 @@ bool Asm::SourceDebugExport(strref filename) {
 
 		size_t size = 0;
 		char* src = LoadText(source_files[i], size);
-		source_code.push_back(strref(src, (strl_t)size));
+		source_code.push_back(strovl(src, (strl_t)size, (strl_t)size));
 	}
 	fprintf(f, "\t</Sources>\n\n");
 
@@ -6965,8 +6969,8 @@ bool Asm::SourceDebugExport(strref filename) {
 			for (size_t d = 0, nd = s.pSrcDbg->size(); d < nd; ++d) {
 				SourceDebugEntry& e = s.pSrcDbg->at(d);
 				int line = 0, col0 = 0, col1 = 0;
-				if (e.source_file_index < source_code.size()) {
-					strref src = source_code[e.source_file_index];
+				if ((e.source_file_index) < source_code.size()) {
+					strref src = source_code[e.source_file_index].get_strref();
 					if (src.get_len() > strl_t(e.source_file_offset)) {
 						line = strref(src.get(), e.source_file_offset).count_lines();
 						strl_t offs = e.source_file_offset;
@@ -6985,8 +6989,8 @@ bool Asm::SourceDebugExport(strref filename) {
 	}
 
 	fprintf(f, "\t<Labels values=\"SEGMENT,ADDRESS,NAME,START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n");
-
 	for (MapSymbolArray::iterator i = map.begin(); i != map.end(); ++i) {
+		if (i->name.same_str("debugbreak")) { continue; }
 		uint32_t value = (uint32_t)i->value;
 		strref sectName;
 		if (size_t(i->section) < allSections.size()) {
@@ -6995,11 +6999,31 @@ bool Asm::SourceDebugExport(strref filename) {
 		}
 		fprintf(f, "\t\t" STRREF_FMT ",$%04x," STRREF_FMT ",0,0,0,0,0\n", STRREF_ARG(sectName), value, STRREF_ARG(i->name));
 	}
-	fprintf(f, "\t</Labels>\n");
+	fprintf(f, "\t</Labels>\n\n");
+
+	fprintf(f, "\t<Breakpoints values=\"SEGMENT,ADDRESS,ARGUMENT\">\n");
+	for (MapSymbolArray::iterator i = map.begin(); i != map.end(); ++i) {
+		uint32_t value = (uint32_t)i->value;
+		strref sectName;
+		if (size_t(i->section) < allSections.size()) {
+			value += allSections[i->section].start_address;
+			sectName = allSections[i->section].name;
+		}
+		if (i->name.same_str("debugbreak")) {
+			fprintf(f, "\t\t" STRREF_FMT ",$%04x,\n", STRREF_ARG(sectName), value);
+		}
+	}
+	fprintf(f, "\t</Breakpoints>\n\n");
+
+	fprintf(f, "\t<Watchpoints values=\"SEGMENT,ADDRESS1,ADDRESS2,ARGUMENT\">\n");
+	fprintf(f, "\t</Watchpoints>\n\n");
 
 	fprintf(f, "</C64debugger>\n");
 	fclose(f);
 
+	for (size_t i = 0, n = source_code.size(); i < n; ++i) {
+		if (source_code[i].get()) { free(source_code[i].charstr()); }
+	}
 	return true;
 }
 
@@ -7727,9 +7751,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 						if (source_file.same_str(source_files[i])) { break; }
 					}
 					if (i == sz) {
-						char* path = (char*)calloc(1, (size_t)source_file.get_len() + 1);
-						memcpy(path, source_file.get(), source_file.get_len());
-						source_files.push_back(path);
+						source_files.push_back(StringCopy(source_file));
 					}
 					source_file_remap.push_back(i);
 				}
