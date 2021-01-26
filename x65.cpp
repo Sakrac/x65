@@ -1436,9 +1436,16 @@ typedef std::vector<struct ListLine> Listing;
 struct SourceDebugEntry {
 	int source_file_index;	// index into Assembler::source_file vector
 	int address;			// local address in section
-	int size;
 	int source_file_offset;	// can be converted into line/column while linking
+	int size:24;
+	int type : 8;
 };
+enum class SourceDebugType {
+	Code,
+	Label,
+	Breakpoint
+};
+
 typedef std::vector<struct SourceDebugEntry> SourceDebug;
 
 
@@ -1586,6 +1593,7 @@ public:
 	strref pool_name;		// name of the pool that this label is related to
 	int value;
 	int section;			// rel section address labels belong to a section, -1 if fixed address or assigned
+	int orig_section;		// original section where the label was defined
 	int mapIndex;           // index into map symbols in case of late resolve
 	bool evaluated;			// a value may not yet be evaluated
 	bool pc_relative;		// this is an inline label describing a point in the code
@@ -1940,6 +1948,9 @@ public:
 	// Manage locals
 	void MarkLabelLocal(strref label, bool scope_label = false);
 	StatusCode FlushLocalLabels(int scope_exit = -1);
+
+	// Source debug
+	void AddSrcDbg(int address, SourceDebugType type, const char* text);
 
 	// Label pools
 	LabelPool* GetLabelPool(strref pool_name);
@@ -4391,7 +4402,8 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 							if (!label) { return ERROR_LABEL_MISPLACED_INTERNAL; }
 							label->value = value;
 							label->evaluated = true;
-							label->section = ret==STATUS_RELATIVE_SECTION ? i->section : -1;
+							label->section = ret == STATUS_RELATIVE_SECTION ? i->section : -1;
+							label->orig_section = i->section;
 							if (num_new_labels<MAX_LABELS_EVAL_ALL) {
 								new_labels[num_new_labels++] = label->label_name;
 							}
@@ -4466,7 +4478,7 @@ void Asm::LabelAdded(Label *pLabel, bool local) {
 		}
 		MapSymbol sym;
 		sym.name = pLabel->label_name;
-		sym.section = (int16_t)(pLabel->section);
+		sym.section = (int16_t)(pLabel->section == -1 ? pLabel->orig_section : pLabel->section);
 		sym.value = pLabel->value;
 		sym.local = local;
 		pLabel->mapIndex = pLabel->evaluated ? -1 : (int)map.size();
@@ -4639,6 +4651,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 	pLabel->pool_name = pool.pool_name;
 	pLabel->evaluated = true;
 	pLabel->section = -1;	// pool labels are section-less
+	pLabel->orig_section = SectionId();
 	pLabel->value = addr;
 	pLabel->pc_relative = true;
 	pLabel->constant = true;
@@ -4646,6 +4659,7 @@ StatusCode Asm::AssignPoolLabel(LabelPool &pool, strref label) {
 	pLabel->reference = false;
 	pLabel->referenced = false;
 	bool local = false;
+
 
 	if (label[ 0 ] == '.' || label[ 0 ] == '@' || label[ 0 ] == '!' || label[ 0 ] == ':' || label.get_last() == '$') {
 		local = true;
@@ -4707,6 +4721,7 @@ StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant)
 	pLabel->pool_name.clear();
 	pLabel->evaluated = status==STATUS_OK || status == STATUS_RELATIVE_SECTION;
 	pLabel->section = status == STATUS_RELATIVE_SECTION ? lastEvalSection : -1;	// assigned labels are section-less
+	pLabel->orig_section = lastEvalSection;
 	pLabel->value = val;
 	pLabel->mapIndex = -1;
 	pLabel->pc_relative = false;
@@ -4741,12 +4756,15 @@ StatusCode Asm::AddressLabel(strref label)
 	pLabel->label_name = label;
 	pLabel->pool_name.clear();
 	pLabel->section = CurrSection().IsRelativeSection() ? SectionId() : -1;	// address labels are based on section
+	pLabel->orig_section = SectionId();
 	pLabel->value = CurrSection().GetPC();
 	pLabel->evaluated = true;
 	pLabel->pc_relative = true;
 	pLabel->external = MatchXDEF(label);
 	pLabel->reference = false;
 	pLabel->constant = constLabel;
+	// Label Source Debug Origin: AddSrcDbg((int)CurrSection().GetPC(), SourceDebugType::Label, label.get());
+
 	last_label = label;
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (directive_scope_depth > 0) { local = true; }
@@ -6757,28 +6775,36 @@ StatusCode Asm::BuildLine(strref line) {
 				}
 			}
 			if (src_debug) {
-				if (!curr.pSrcDbg) { curr.pSrcDbg = new SourceDebug; }
 				if (curr.address != start_address && curr.size()) {
-					SourceDebugEntry entry;
-					entry.address = start_address - curr.start_address;
-					entry.size = curr.address - start_address;
-
-					size_t sf = 0, nsf = source_files.size();
-					strref src = contextStack.curr().source_name;
-					for (; sf < nsf; ++sf) {
-						if (src.same_str_case(source_files[sf])) { break; }
-					}
-					if (sf == nsf) {
-						source_files.push_back(StringCopy(src));
-					}
-					entry.source_file_index = (int)sf;
-					entry.source_file_offset = (int)(data_line - contextStack.curr().source_file.get());
-					curr.pSrcDbg->push_back(entry);
+					AddSrcDbg(start_address, SourceDebugType::Code, data_line);
 				}
 			}
 		}
 	}
 	return error;
+}
+
+void Asm::AddSrcDbg(int address, SourceDebugType type, const char* text)
+{
+	SourceDebugEntry entry;
+	Section& curr = CurrSection();
+	if (!curr.pSrcDbg) { curr.pSrcDbg = new SourceDebug; }
+
+	entry.address = address - curr.start_address;
+	entry.size = curr.address - address;
+	entry.type = (int)type;
+
+	size_t sf = 0, nsf = source_files.size();
+	strref src = contextStack.curr().source_name;
+	for (; sf < nsf; ++sf) {
+		if (src.same_str_case(source_files[sf])) { break; }
+	}
+	if (sf == nsf) {
+		source_files.push_back(StringCopy(src));
+	}
+	entry.source_file_index = (int)sf;
+	entry.source_file_offset = (int)(text - contextStack.curr().source_file.get());
+	curr.pSrcDbg->push_back(entry);
 }
 
 // Build a segment of code (file or macro)
@@ -6993,9 +7019,10 @@ bool Asm::SourceDebugExport(strref filename) {
 		if (i->name.same_str("debugbreak")) { continue; }
 		uint32_t value = (uint32_t)i->value;
 		strref sectName;
-		if (size_t(i->section) < allSections.size()) {
-			value += allSections[i->section].start_address;
-			sectName = allSections[i->section].name;
+		uint16_t section = i->section;
+		if (size_t(section) < allSections.size()) {
+			value += allSections[section].start_address;
+			sectName = allSections[section].name;
 		}
 		fprintf(f, "\t\t" STRREF_FMT ",$%04x," STRREF_FMT ",0,0,0,0,0\n", STRREF_ARG(sectName), value, STRREF_ARG(i->name));
 	}
@@ -7003,13 +7030,14 @@ bool Asm::SourceDebugExport(strref filename) {
 
 	fprintf(f, "\t<Breakpoints values=\"SEGMENT,ADDRESS,ARGUMENT\">\n");
 	for (MapSymbolArray::iterator i = map.begin(); i != map.end(); ++i) {
-		uint32_t value = (uint32_t)i->value;
-		strref sectName;
-		if (size_t(i->section) < allSections.size()) {
-			value += allSections[i->section].start_address;
-			sectName = allSections[i->section].name;
-		}
 		if (i->name.same_str("debugbreak")) {
+			uint32_t value = (uint32_t)i->value;
+			strref sectName;
+			uint16_t section = i->section;
+			if (size_t(section) < allSections.size()) {
+				value += allSections[section].start_address;
+				sectName = allSections[section].name;
+			}
 			fprintf(f, "\t\t" STRREF_FMT ",$%04x,\n", STRREF_ARG(sectName), value);
 		}
 	}
