@@ -1582,6 +1582,7 @@ struct MapSymbol {
 	strref name;    // string name
 	int value;
 	int16_t section;
+	int16_t orig_section;
 	bool local;     // local variables
 };
 typedef std::vector<struct MapSymbol> MapSymbolArray;
@@ -1777,7 +1778,7 @@ public:
 	pairArray<uint32_t, Macro> macros;
 	pairArray<uint32_t, LabelPool> labelPools;
 	pairArray<uint32_t, LabelStruct> labelStructs;
-	pairArray<uint32_t, strref> xdefs;	// labels matching xdef names will be marked as external
+	pairArray<uint32_t, strref> xdefs;		// labels matching xdef names will be marked as external
 
 	std::vector<char*> source_files;		// all source files encountered while assembling. referenced by source level debugging
 	std::vector<LateEval> lateEval;
@@ -2026,7 +2027,7 @@ public:
 
 	// constructor
 	Asm() : opcode_table(opcodes_6502), opcode_count(num_opcodes_6502), num_instructions(0),
-		cpu(CPU_6502), list_cpu(CPU_6502) {
+		cpu(CPU_6502), list_cpu(CPU_6502), lastEvalSection(-1) {
 		Cleanup(); localLabels.reserve(256); loadedData.reserve(16); lateEval.reserve(64); }
 };
 
@@ -2900,7 +2901,9 @@ StatusCode Asm::MergeSections(int section_id, int section_merge) {
 			}
 		}
 	}
-	if(!s.IsRelativeSection()) { LinkLabelsToAddress(section_merge, -1, m.start_address); }
+	if(!s.IsRelativeSection()) { 
+		LinkLabelsToAddress(section_merge, -1, s.start_address);
+	}
 
 	// go through all labels referencing merging section
 	for (uint32_t i = 0; i<labels.count(); i++) {
@@ -4478,7 +4481,8 @@ void Asm::LabelAdded(Label *pLabel, bool local) {
 		}
 		MapSymbol sym;
 		sym.name = pLabel->label_name;
-		sym.section = (int16_t)(pLabel->section == -1 ? pLabel->orig_section : pLabel->section);
+		sym.section = (int16_t)pLabel->section;
+		sym.orig_section = (int16_t)pLabel->orig_section;
 		sym.value = pLabel->value;
 		sym.local = local;
 		pLabel->mapIndex = pLabel->evaluated ? -1 : (int)map.size();
@@ -7019,7 +7023,7 @@ bool Asm::SourceDebugExport(strref filename) {
 		if (i->name.same_str("debugbreak")) { continue; }
 		uint32_t value = (uint32_t)i->value;
 		strref sectName;
-		uint16_t section = i->section;
+		uint16_t section = i->orig_section;
 		if (size_t(section) < allSections.size()) {
 			value += allSections[section].start_address;
 			sectName = allSections[section].name;
@@ -7440,7 +7444,8 @@ struct ObjFileLateEval {
 struct ObjFileMapSymbol {
 	struct ObjFileStr name;		// symbol name
 	int value;
-	int16_t section;
+	int16_t section;			// address relative to this section
+	int16_t orig_section;		// seciton label originated from
 	bool local;					// local labels are probably needed
 };
 
@@ -7686,6 +7691,7 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 				ms.value = mi->value;
 				ms.local = mi->local;
 				ms.section = mi->section >= 0 ? aRemapSects[mi->section] : -1;
+				ms.orig_section = mi->orig_section >= 0 ? aRemapSects[mi->orig_section] : -1;
 			}
 		}
 
@@ -7870,6 +7876,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 				MapSymbol sym;
 				sym.name = m.name.offs>=0 ? strref(str_pool + m.name.offs) : strref();
 				sym.section = m.section >=0 ? aSctRmp[m.section] : m.section;
+				sym.orig_section = m.orig_section >= 0 ? aSctRmp[m.orig_section] : m.orig_section;
 				sym.value = m.value;
 				sym.local = m.local;
 				map.push_back(sym);
@@ -8442,7 +8449,9 @@ int main(int argc, char **argv) {
 						bool wasLocal = false;
 						for (MapSymbolArray::iterator i = assembler.map.begin(); i!=assembler.map.end(); ++i) {
 							uint32_t value = (uint32_t)i->value;
-							if (size_t(i->section) < assembler.allSections.size()) { value += assembler.allSections[i->section].start_address; }
+							if (size_t(i->section) < assembler.allSections.size()) {
+								value += assembler.allSections[i->section].start_address;
+							}
 							fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal==i->local ? "\n" :
 									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
 							wasLocal = i->local;
