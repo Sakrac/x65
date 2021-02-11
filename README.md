@@ -62,8 +62,7 @@ x65.cpp requires struse.h which is a single file text parsing library that can b
 
 ### Download Binaries
 
-* [Windows x64 binaries](../..//raw/master/bin/x65_x64.zip)
-* [Windows x86 binaries](../..//raw/master/bin/x65_win32.zip)
+Please note that releases have moved the Github [releases](https://github.com/Sakrac/x65/releases)
 
 ### x65
 
