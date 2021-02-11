@@ -7023,10 +7023,13 @@ bool Asm::SourceDebugExport(strref filename) {
 		if (i->name.same_str("debugbreak")) { continue; }
 		uint32_t value = (uint32_t)i->value;
 		strref sectName;
-		uint16_t section = i->orig_section;
+		int16_t section = i->section;
+		int16_t orig_section = i->orig_section;
 		if (size_t(section) < allSections.size()) {
 			value += allSections[section].start_address;
-			sectName = allSections[section].name;
+		}
+		if (size_t(orig_section) < allSections.size()) {
+			sectName = allSections[orig_section].name;
 		}
 		fprintf(f, "\t\t" STRREF_FMT ",$%04x," STRREF_FMT ",0,0,0,0,0\n", STRREF_ARG(sectName), value, STRREF_ARG(i->name));
 	}
