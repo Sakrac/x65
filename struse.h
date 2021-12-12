@@ -590,6 +590,7 @@ public:
 	strref split_token_trim(char c);
 	strref split_token_any_trim(const strref chars);
 	strref split_token_track_parens(char c);
+	strref split_token_track_parens_quote(char c);
 	strref split_token_trim_track_parens(char c);
 	strref split_range(const strref range, strl_t pos=0);
 	strref split_range_trim(const strref range, strl_t pos=0);
@@ -4155,6 +4156,24 @@ strref strref::split_token( char c ) {
 
 strref strref::split_token_track_parens(char c)
 {
+	int t = find_skip_parens(c);
+	if (t < 0) t = (int)length;
+	strref r = strref(string, strl_t(t));
+	*this += t + 1;
+	return r;
+}
+
+strref strref::split_token_track_parens_quote(char c)
+{
+	if (length>=2 && string[0] == '"') {
+		strl_t o = 1;
+		while (o < length && string[o] != '"') { ++o; }
+		if (o < length) {
+			strref r = strref(string, o + 1);
+			*this += o + 1;
+			return r;
+		}
+	}
 	int t = find_skip_parens(c);
 	if (t < 0) t = (int)length;
 	strref r = strref(string, strl_t(t));

@@ -3421,8 +3421,8 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 		strref pchk = params;
 		strref arg = arg_list;
 		int dSize = 0;
-		char token = arg_list.find(',')>=0 ? ',' : ' ';
-		char token_macro = m.params_first_line && params.find(',') < 0 ? ' ' : ',';
+		char token = ',';// arg_list.find(',') >= 0 ? ',' : ' ';
+		char token_macro = ',';// m.params_first_line&& params.find(',') < 0 ? ' ' : ',';
 		while (strref param = pchk.split_token_trim(token_macro)) {
 			strref a = arg.split_token_trim(token);
 			if (param.get_len() < a.get_len()) {
@@ -3436,7 +3436,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 			strovl macexp(buffer, mac_size);
 			macexp.copy(macro_src);
 			while (strref param = params.split_token_trim(token_macro)) {
-				strref a = arg_list.split_token_trim(token);
+				strref a = arg_list.split_token_track_parens_quote(token);
 				macexp.replace_bookend(param, a, macro_arg_bookend);
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
