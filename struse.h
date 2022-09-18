@@ -969,8 +969,12 @@ public:
 		set_len(_strmod_inplace_replace_int(charstr(), len(), cap(), a, b)); return get_strref(); }
 
 	// replace strings bookended by a specific string
-	strref replace_bookend(const strref a, const strref b, const strref bookend) { if (len() && get() && a && bookend)
-		set_len(_strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend)); return get_strref(); }
+	bool replace_bookend(const strref a, const strref b, const strref bookend) {
+		if (len() && get() && a && bookend) {
+			int r = _strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend);
+			if (r >= 0) { set_len((strl_t)r); return true; }
+		} return false;
+	}
 
 	// replace a string found within this string with another string
     void exchange(strl_t pos, strl_t size, const strref insert) {
@@ -4200,7 +4204,7 @@ strref strref::split_token_trim_track_parens(char c)
 }
 strref strref::split_token_trim( char c ) {
 	strref r = split_token( c );
-	skip_whitespace();
+	trim_whitespace();
 	r.trim_whitespace();
 	return r;
 }
@@ -4813,32 +4817,29 @@ strl_t _strmod_inplace_replace_int(char *string, strl_t length, strl_t cap, cons
 	return left;
 }
 
-// search and replace occurences of a string within a string
-strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t cap, const strref a, const strref b, const strref bookend)
+// search and replace occurences of a string within a string, return length or -1 if problem
+int _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t cap, const strref orig_str, const strref repl_str, const strref bookend)
 {
 	char *scan = string;
 	strl_t left = length;
-	strl_t c = cap;
-	strl_t len_a = a.get_len(), len_b = b.get_len();
-	if (len_a>left || !len_a)
+	strl_t orig_len = orig_str.get_len(), repl_len = repl_str.get_len();
+	if (orig_len>left || !orig_len)
 		return left;
 
 	char *ps = scan, *pd = scan;
-	if (len_a >= len_b) {
-		int ss = strref(ps, left - strl_t(ps - scan)).find_bookend(a, bookend);
-		if (ss >= 0) {
+	if (orig_len >= repl_len) {
+		int ss = strref(ps, left - strl_t(ps - scan)).find_bookend(orig_str, bookend);
+		if (ss >= 0) { // any occurence?
 			pd += ss;
 			ps += ss;
 			while (ss >= 0 && strl_t(ss)<left) {
-				ps += len_a;
-				int sl = strref(ps, left - ss - len_a).find_bookend(a, bookend);
-				if (sl<0)
-					sl = int(left - ss - len_a);
-				if (len_b && b.get()) {
-					const char *po = b.get();
-					strl_t r = len_b;
-					while (r--)
-						*pd++ = *po++;
+				ps += orig_len;
+				int sl = strref(ps, left - ss - orig_len).find_bookend(orig_str, bookend);
+				if (sl < 0) { sl = int(left - ss - orig_len); }
+				if (repl_len && repl_str.get()) {
+					const char *po = repl_str.get();
+					strl_t r = repl_len;
+					while (r--) { *pd++ = *po++; }
 				}
 				if (sl) {
 					if (ps != pd) {
@@ -4850,31 +4851,27 @@ strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t c
 						ps += sl;
 					}
 				}
-				ss += (int)len_a + sl;
+				ss += (int)orig_len + sl;
 			}
 			return strl_t(pd - scan);
 		}
-	} else if (int cnt = strref(scan, left).substr_count_bookend(a, bookend)) {
-		strl_t nl = cnt * (len_b - len_a) + left;	// new length
-		if (nl>c)
-			return left;	// didn't fit in space
-		int ss = strref(scan, left).find_last_bookend(a, bookend);
+	} else if (int cnt = strref(scan, left).substr_count_bookend(orig_str, bookend)) {
+		strl_t nl = cnt * (repl_len - orig_len) + left;	// new length
+		if (nl > cap) { return left; }	// didn't fit in space
+		int ss = strref(scan, left).find_last_bookend(orig_str, bookend);
 		int se = (int)left;
 		pd += nl;
 		ps += left;
 		while (ss >= 0) {
-			strl_t cp = se - ss - len_a;
-			while (cp--)
-				*--pd = *--ps;
-			ps -= len_a;
-			if (b.get()) {
-				const char *be = b.get() + len_b;
-				cp = len_b;
-				while (cp--)
-					*--pd = *--be;
+			strl_t cp = se - ss - orig_len;
+			while (cp--) { *--pd = *--ps; }
+			ps -= orig_len;
+			if (repl_str.get()) {
+				const char *be = repl_str.get() + repl_len;
+				for(cp = repl_len; cp; cp--) { *--pd = *--be; }
 			}
 			se = ss;
-			ss = strref(scan, se).find_last_bookend(a, bookend);
+			ss = strref(scan, se).find_last_bookend(orig_str, bookend);
 		}
 		return nl;
 	}

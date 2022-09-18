@@ -21,3 +21,4 @@
 *.db*
 *.recipe
 test/results/*
+sln/.vs

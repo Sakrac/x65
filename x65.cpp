@@ -3435,9 +3435,11 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
 			macexp.copy(macro_src);
-			while (strref param = params.split_token_trim(token_macro)) {
-				strref a = arg_list.split_token_track_parens_quote(token);
-				macexp.replace_bookend(param, a, macro_arg_bookend);
+			while (strref orig = params.split_token_trim(token_macro)) {
+				strref replace = arg_list.split_token_track_parens_quote(token);
+				if (!macexp.replace_bookend(orig, replace, macro_arg_bookend)) {
+					return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
+				}
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
 			return STATUS_OK;
@@ -3648,7 +3650,9 @@ int Asm::EvalUserFunction(UserFunction* user, strref params, EvalContext& etx)
 		param.trim_whitespace();
 		replace.trim_whitespace();
 
-		subststr.replace_bookend(param, replace, macro_arg_bookend);
+		if (!subststr.replace_bookend(param, replace, macro_arg_bookend)) {
+			return ERROR_MACRO_ARGUMENT;
+		}
 	}
 
 	int value = 0;
