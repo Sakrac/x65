@@ -3434,11 +3434,30 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 		if (char *buffer = (char*)malloc(mac_size)) {
 			loadedData.push_back(buffer);
 			strovl macexp(buffer, mac_size);
-			macexp.copy(macro_src);
-			while (strref orig = params.split_token_trim(token_macro)) {
-				strref replace = arg_list.split_token_track_parens_quote(token);
-				if (!macexp.replace_bookend(orig, replace, macro_arg_bookend)) {
-					return ERROR_OUT_OF_MEMORY_FOR_MACRO_EXPANSION;
+			// new method:
+			//	copy char by char, if start of valid label compare with all the paramters and do that instead
+			//	if slow, pre-build arrays of params and replacement
+			bool paramStart = true; // firstg char might be a param
+			while (macro_src) {
+				bool expanded = false;
+				char first = macro_src.get_first();
+				if (paramStart && strref::is_valid_label(first)) {
+					strref param_list = params, arg_parse = arg_list;
+					while (strref param = param_list.split_token_trim(token_macro)) {
+						strref replace = arg_parse.split_token_track_parens(token);
+						if (macro_src.prefix_len_case(param) == param.get_len()) {
+							macro_src += param.get_len();
+							macexp.append(replace);
+							expanded = true;
+							paramStart = false;
+							break;
+						}
+					}
+				}
+				if (!expanded) {
+					++macro_src;
+					macexp.append(first);
+					paramStart = !strref::is_valid_label(first);
 				}
 			}
 			PushContext(m.source_name, macexp.get_strref(), macexp.get_strref());
