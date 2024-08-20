@@ -1940,7 +1940,7 @@ public:
 	int ReptCnt() const;
 
 	// Access labels
-	Label * GetLabel(strref label, bool reference_check = false);
+	Label* GetLabel(strref label, bool reference_check = false);
 	Label* GetLabel(strref label, int file_ref);
 	Label* AddLabel(uint32_t hash);
 	bool MatchXDEF(strref label);
@@ -4833,17 +4833,19 @@ StatusCode Asm::IncludeSymbols(strref line) {
 					symdef.clip_trailing_whitespace();
 					strref symtype = symdef.split_token(' ');
 					strref label = symdef.split_token_trim('=');
-					bool constant = symtype.same_str(".const");	// first word is either .label or .const
-					if (symlist) {
-						strref symchk = symlist;
-						while (strref symwant = symchk.split_token_trim(',')) {
-							if (symwant.same_str_case(label)) {
-								AssignLabel(label, symdef, constant);
-								break;
+					if (!GetLabel(label)) {
+						bool constant = symtype.same_str(".const");	// first word is either .label or .const
+						if (symlist) {
+							strref symchk = symlist;
+							while (strref symwant = symchk.split_token_trim(',')) {
+								if (symwant.same_str_case(label)) {
+									AssignLabel(label, symdef, constant);
+									break;
+								}
 							}
-						}
-					} else
-						AssignLabel(label, symdef, constant);
+						} else
+							AssignLabel(label, symdef, constant);
+					}
 				}
 				if (scope_start >= 0) {
 					symfile = symstart + scope_start;
