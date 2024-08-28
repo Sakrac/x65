@@ -1593,6 +1593,7 @@ struct MapSymbol {
 	int16_t section;
 	int16_t orig_section;
 	bool local;     // local variables
+	bool borrowed;	// borrowed
 };
 typedef std::vector<struct MapSymbol> MapSymbolArray;
 
@@ -1611,6 +1612,7 @@ public:
 	bool external;			// this label is globally accessible
 	bool reference;			// this label is accessed from external and can't be used for evaluation locally
 	bool referenced;		// this label has been found via GetLabel and can be assumed to be referenced for some purpose
+	bool borrowed;			// this label has been borrowed and this segment can not define it externally
 } Label;
 
 
@@ -1944,7 +1946,7 @@ public:
 	Label* GetLabel(strref label, int file_ref);
 	Label* AddLabel(uint32_t hash);
 	bool MatchXDEF(strref label);
-	StatusCode AssignLabel(strref label, strref line, bool make_constant = false);
+	StatusCode AssignLabel(strref label, strref line, bool make_constant = false, bool borrowed = false);
 	StatusCode AddressLabel(strref label);
 	void LabelAdded(Label *pLabel, bool local = false);
 	StatusCode IncludeSymbols(strref line);
@@ -4517,6 +4519,7 @@ void Asm::LabelAdded(Label *pLabel, bool local) {
 		sym.orig_section = (int16_t)pLabel->orig_section;
 		sym.value = pLabel->value;
 		sym.local = local;
+		sym.borrowed = pLabel->borrowed;
 		pLabel->mapIndex = pLabel->evaluated ? -1 : (int)map.size();
 		map.push_back(sym);
 	}
@@ -4737,7 +4740,7 @@ bool Asm::MatchXDEF(strref label) {
 }
 
 // assignment of label (<label> = <expression>)
-StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant) {
+StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant, bool borrowed) {
 	expression.trim_whitespace();
 	int val = 0;
 	struct EvalContext etx;
@@ -4764,6 +4767,7 @@ StatusCode Asm::AssignLabel(strref label, strref expression, bool make_constant)
 	pLabel->constant = make_constant;
 	pLabel->external = MatchXDEF(label);
 	pLabel->reference = false;
+	pLabel->borrowed = borrowed;
 
 	bool local = label[0]=='.' || label[0]=='@' || label[0]=='!' || label[0]==':' || label.get_last()=='$';
 	if (!pLabel->evaluated) {
@@ -7576,7 +7580,8 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 		// labels don't include XREF labels
 		hdr.labels = 0;
 		for (uint32_t l = 0; l<labels.count(); l++) {
-			if (!labels.getValue(l).reference) { hdr.labels++; }
+			const Label &lo = labels.getValue(l);
+			if (!lo.reference && !lo.borrowed) { hdr.labels++; }
 		}
 
 		int16_t *aRemapSects = hdr.sections ? (int16_t*)malloc(sizeof(int16_t) * hdr.sections) : nullptr;
@@ -7669,7 +7674,7 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 		if (hdr.labels) {
 			for (uint32_t li = 0; li<labels.count(); li++) {
 				Label &lo = labels.getValue(li);
-				if (!lo.reference) {
+				if (!lo.reference && !lo.borrowed) {
 					struct ObjFileLabel &l = aLabels[labs++];
 					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
 					l.value = lo.value;
@@ -7690,16 +7695,18 @@ StatusCode Asm::WriteObjectFile(strref filename) {
 			for (std::vector<ExtLabels>::iterator el = externals.begin(); el != externals.end(); ++el) {
 				for (uint32_t li = 0; li < el->labels.count(); ++li) {
 					Label &lo = el->labels.getValue(li);
-					struct ObjFileLabel &l = aLabels[labs++];
-					l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
-					l.value = lo.value;
-					l.section = lo.section >= 0 ? aRemapSects[lo.section] : -1;
-					l.mapIndex = (int16_t)lo.mapIndex;
-					l.flags =
-						(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
-						(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
-						(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
-						file_index;
+					if (!lo.borrowed) {
+						struct ObjFileLabel& l = aLabels[labs++];
+						l.name.offs = _AddStrPool(lo.label_name, &stringArray, &stringPool, hdr.stringdata, stringPoolCap);
+						l.value = lo.value;
+						l.section = lo.section >= 0 ? aRemapSects[lo.section] : -1;
+						l.mapIndex = (int16_t)lo.mapIndex;
+						l.flags =
+							(lo.constant ? ObjFileLabel::OFL_CNST : 0) |
+							(lo.pc_relative ? ObjFileLabel::OFL_ADDR : 0) |
+							(lo.evaluated ? ObjFileLabel::OFL_EVAL : 0) |
+							file_index;
+					}
 				}
 				file_index++;
 			}
@@ -8489,9 +8496,11 @@ int main(int argc, char **argv) {
 							if (size_t(i->section) < assembler.allSections.size()) {
 								value += assembler.allSections[i->section].start_address;
 							}
-							fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal==i->local ? "\n" :
+							if (!i->borrowed) {
+								fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal == i->local ? "\n" :
 									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
-							wasLocal = i->local;
+								wasLocal = i->local;
+							}
 						}
 						fputs(wasLocal ? "\n}\n" : "\n", f);
 						fclose(f);
