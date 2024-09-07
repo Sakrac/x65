@@ -59,6 +59,7 @@ struct ObjFileHeader {
 	int16_t late_evals;
 	int16_t map_symbols;
 	uint32_t stringdata;
+	uint32_t srcdebug;
 	int bindata;
 };
 
@@ -75,14 +76,19 @@ struct ObjFileSection {
 	struct ObjFileStr name;
 	struct ObjFileStr exp_app;
 	int start_address;
-	int end_address;
+	int end_address;		// address size
 	int output_size;		// assembled binary size
 	int align_address;
+	int srcdebug_count;		// how many addresses included in debugger listing
 	int16_t next_group;		// next section of group
-	int16_t first_group;		// first section of group
+	int16_t first_group;	// first section of group
 	int16_t relocs;
 	SectionType type;
 	int8_t flags;
+};
+
+struct ObjFileSource {
+	struct ObjFileStr file;
 };
 
 struct ObjFileReloc {
@@ -119,10 +125,26 @@ struct ObjFileLateEval {
 };
 
 struct ObjFileMapSymbol {
-	struct ObjFileStr name;	// symbol name
+	struct ObjFileStr name;		// symbol name
 	int value;
-	int16_t section;
-	bool local;				// local labels are probably needed
+	int16_t section;			// address relative to this section
+	int16_t orig_section;		// seciton label originated from
+	bool local;					// local labels are probably needed
+};
+
+// this struct is follwed by numSources x ObjFileStr
+struct ObjFileSourceList {
+	uint32_t numSources;
+	ObjFileStr sourceFile[1];
+};
+
+// after that one long array of all sections worth of source references
+struct ObjFileSrcDbg {
+	uint16_t addr;		// relative to section
+	uint16_t src_idx;
+	uint16_t size;
+	uint16_t _pad;
+	uint32_t file_offs;	// byte offset into file to row/column where op starts1
 };
 
 enum ShowFlags {
