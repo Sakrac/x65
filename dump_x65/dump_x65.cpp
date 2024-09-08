@@ -215,7 +215,11 @@ void ReadObjectFile(const char *file, uint32_t show = SHOW_DEFAULT)
 		hdr.map_symbols * sizeof(struct ObjFileMapSymbol) +
 		hdr.srcdebug * sizeof(struct ObjFileSrcDbg) +
 		hdr.stringdata + hdr.bindata;
-		if (hdr.id == 0x7836 && sum == size) {
+
+		const struct ObjFileSourceList* pSrcDbgInfo = hdr.srcdebug ? (struct ObjFileSourceList*)(data + sum) : nullptr;
+		size_t sum_sd = sum + sizeof(ObjFileSourceList) + sizeof(ObjFileStr) * (pSrcDbgInfo->numSources - 1);
+
+		if (hdr.id == 0x7836 && sum_sd == size) {
 			struct ObjFileSection *aSect = (struct ObjFileSection*)(&hdr + 1);
 			struct ObjFileReloc *aReloc = (struct ObjFileReloc*)(aSect + hdr.sections);
 			struct ObjFileLabel *aLabels = (struct ObjFileLabel*)(aReloc + hdr.relocs);
