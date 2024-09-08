@@ -3362,8 +3362,7 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 			params = macro_src.before('{');
 			macro_src += params.get_len();
 		}
-	}
-	else { params = (macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref()); }
+	} else { params = (macro_src[0]=='(' ? macro_src.scoped_block_skip() : strref()); }
 	params.trim_whitespace();
 	arg_list.trim_whitespace();
 	if (Merlin()) {
@@ -3448,11 +3447,15 @@ StatusCode Asm::BuildMacro(Macro &m, strref arg_list) {
 					while (strref param = param_list.split_token_trim(token_macro)) {
 						strref replace = arg_parse.split_token_track_parens(token);
 						if (macro_src.prefix_len_case(param) == param.get_len()) {
-							macro_src += param.get_len();
-							macexp.append(replace);
-							expanded = true;
-							paramStart = false;
-							break;
+							// check if macro is whole word
+							if (macro_src.get_len() == param.get_len() ||
+								!strref::is_valid_label(macro_src[param.get_len()])) {
+								macro_src += param.get_len();
+								macexp.append(replace);
+								expanded = true;
+								paramStart = false;
+								break;
+							}
 						}
 					}
 				}
