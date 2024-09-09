@@ -4840,6 +4840,7 @@ StatusCode Asm::IncludeSymbols(strref line) {
 					symdef.clip_trailing_whitespace();
 					strref symtype = symdef.split_token(' ');
 					strref label = symdef.split_token_trim('=');
+					label = label.get_label();
 					if (!GetLabel(label)) {
 						bool constant = symtype.same_str(".const");	// first word is either .label or .const
 						if (symlist) {
