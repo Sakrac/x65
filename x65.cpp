@@ -66,6 +66,7 @@ static const strref cmdarg_a2o("a2o");			// -a2o : Apple II GS OS executable (re
 static const strref cmdarg_mrg("mrg");			// -mrg : Force merge all sections (use with -a2o)
 static const strref cmdarg_sect("sect");		// -sect: display sections loaded and built
 static const strref cmdarg_sym("sym");			// -sym (file.sym) : generate symbol file
+static const strref cmdarg_symfull("symfull");			// -sym (file.sym) : generate symbol file
 static const strref cmdarg_obj("obj");			// -obj (file.x65) : generate object file for later linking
 static const strref cmdarg_vice("vice");		// -vice (file.vs) : export a vice symbol file
 static const strref cmdarg_xrefimp("xrefimp");	// -xrefimp : import directive means xref, not include/incbin
@@ -1852,6 +1853,7 @@ public:
 	bool src_debug;				// generate source debug info
 	bool end_macro_directive;	// whether to use { } or macro / endmacro for macro scope
 	bool import_means_xref;
+	bool full_map;
 
 	// Convert source to binary
 	void Assemble(strref source, strref filename, bool obj_target);
@@ -4841,19 +4843,19 @@ StatusCode Asm::IncludeSymbols(strref line) {
 					strref symtype = symdef.split_token(' ');
 					strref label = symdef.split_token_trim('=');
 					label = label.get_label();
-					if (!GetLabel(label)) {
-						bool constant = symtype.same_str(".const");	// first word is either .label or .const
-						if (symlist) {
-							strref symchk = symlist;
-							while (strref symwant = symchk.split_token_trim(',')) {
-								if (symwant.same_str_case(label)) {
+					bool constant = symtype.same_str(".const");	// first word is either .label or .const
+					if (symlist) {
+						strref symchk = symlist;
+						while (strref symwant = symchk.split_token_trim(',')) {
+							if (symwant.same_str_case(label)) {
+								Label* prevLabel = GetLabel(label);
+								if (!prevLabel || (full_map && prevLabel->external))
 									AssignLabel(label, symdef, constant);
-									break;
-								}
+								break;
 							}
-						} else
-							AssignLabel(label, symdef, constant);
-					}
+						}
+					} else
+						AssignLabel(label, symdef, constant);
 				}
 				if (scope_start >= 0) {
 					symfile = symstart + scope_start;
@@ -8271,6 +8273,7 @@ int main(int argc, char **argv) {
 	bool list_output = false;
 	bool tass_list_output = false;
 	bool show_refs_before_link = false;
+	bool sym_full = false;
 
 	Asm assembler;
 
@@ -8361,6 +8364,9 @@ int main(int argc, char **argv) {
 					return 1;
 				}
 				if (!arg) { return 0; }
+			} else if (arg.same_str(cmdarg_symfull)&&(a+1)<argc) {
+				sym_file = argv[++a];
+				assembler.full_map = true;
 			} else if (arg.same_str(cmdarg_sym)&&(a+1)<argc) {
 				sym_file = argv[++a];
 			} else if (arg.same_str(cmdarg_obj)&&(a+1)<argc) {
@@ -8500,7 +8506,7 @@ int main(int argc, char **argv) {
 							if (size_t(i->section) < assembler.allSections.size()) {
 								value += assembler.allSections[i->section].start_address;
 							}
-							if (!i->borrowed) {
+							if (!i->borrowed || assembler.full_map) {
 								fprintf(f, "%s.label " STRREF_FMT " = $%04x", wasLocal == i->local ? "\n" :
 									(i->local ? " {\n" : "\n}\n"), STRREF_ARG(i->name), value);
 								wasLocal = i->local;
