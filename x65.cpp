@@ -7993,8 +7993,7 @@ StatusCode Asm::ReadObjectFile(strref filename, int link_to_section)
 			// restore previous section
 			current_section = &allSections[prevSection];
 		} else { return ERROR_NOT_AN_X65_OBJECT_FILE; }
-
-	}
+	} else { return ERROR_COULD_NOT_INCLUDE_FILE; }
 	return STATUS_OK;
 }
 
