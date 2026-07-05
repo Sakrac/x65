@@ -8552,7 +8552,7 @@ int main(int argc, char **argv) {
 			}
 			// free some memory
 			assembler.Cleanup();
-		}
+		} else { printf("ERROR: Could not load source file " STRREF_FMT "\n", STRREF_ARG(srcname)); return_value = 1; }
 	}
 	return return_value;
 }
