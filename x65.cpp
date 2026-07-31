@@ -1171,24 +1171,27 @@ protected:
 public:
 	pairArray() : keys(nullptr), values(nullptr), _count(0), _capacity(0) {}
 	void reserve(uint32_t size) {
-		if (size>_capacity) {
-			H *new_keys = (H*)malloc(sizeof(H) * size); if (!new_keys) { return; }
-			V *new_values = (V*)malloc(sizeof(V) * size); if (!new_values) { free(new_keys); return; }
-			if (keys && values) {
-				memcpy(new_keys, keys, sizeof(H) * _count);
-				memcpy(new_values, values, sizeof(V) * _count);
-				free(keys); free(values);
-			}
-			keys = new_keys;
-			values = new_values;
-			_capacity = size;
+		if (size<=_capacity)
+			return;
+		H *new_keys = (H*)malloc(sizeof(H) * size); if (!new_keys) { return; }
+		V *new_values = (V*)malloc(sizeof(V) * size); if (!new_values) { free(new_keys); return; }
+		if (keys && values) {
+			memcpy(new_keys, keys, sizeof(H) * _count);
+			memcpy(new_values, values, sizeof(V) * _count);
+			free(keys); free(values);
 		}
+		keys = new_keys;
+		values = new_values;
+		_capacity = size;
 	}
 	bool insert(uint32_t pos) {
 		if (pos>_count)
 			return false;
-		if (_count==_capacity)
+		if (_count==_capacity) {
 			reserve(_capacity+64);
+			if (_count==_capacity && _capacity < _count+1)
+				return false;
+		}
 		if (pos<_count) {
 			memmove(keys+pos+1, keys+pos, sizeof(H) * (_count-pos));
 			memmove(values+pos+1, values+pos, sizeof(V) * (_count-pos));
@@ -1353,11 +1356,18 @@ template< class KeyType, class ValueType, class CountType = size_t > struct Hash
 		KeyType *prevKeys = keys;
 		ValueType *prevValues = values;
 		CountType prevSize = size, newSize = prevSize ? (prevSize << 1) : 64;
-		size = newSize;
-		keys = (KeyType*)calloc(1, newSize * sizeof(KeyType));
-		values = (ValueType*)calloc(1, newSize * sizeof(ValueType));
+		KeyType *newKeys = (KeyType*)calloc(1, newSize * sizeof(KeyType));
+		ValueType *newValues = (ValueType*)calloc(1, newSize * sizeof(ValueType));
+		if (!newKeys || !newValues) {
+			free(newKeys);
+			free(newValues);
+			return;
+		}
 		maxSteps = 0;
-		for (CountType i = 0; i < newSize; ++i) { new (values + i) ValueType; }
+		for (CountType i = 0; i < newSize; ++i) { new (newValues + i) ValueType; }
+		keys = newKeys;
+		values = newValues;
+		size = newSize;
 		if (used) {
 			used = 0;
 			for (CountType i = 0; i < prevSize; i++) {
@@ -3065,14 +3075,20 @@ StatusCode Asm::MergeAllSections(int first_section)
 // Make sure there is room to assemble in
 StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 	if (dummySection||type==ST_ZEROPAGE||type==ST_BSS) { return STATUS_OK; }
-	size_t currSize = curr - output;
+	if (!output) {
+		output = (uint8_t*)malloc(64 * 1024);
+		if (!output) { return ERROR_OUT_OF_MEMORY; }
+		curr = output;
+		output_capacity = 64 * 1024;
+	}
+	size_t currSize = curr ? size_t(curr - output) : 0;
 	if ((addSize + currSize) >= output_capacity) {
 		size_t newSize = currSize * 2;
 		if (newSize<64*1024) { newSize = 64*1024; }
 		if ((addSize+currSize)>newSize) { newSize += newSize; }
 		if (uint8_t *new_output = (uint8_t*)malloc(newSize)) {
 			memcpy(new_output, output, size());
-			curr = new_output + (curr - output);
+			curr = new_output + (curr ? (curr - output) : 0);
 			free(output);
 			output = new_output;
 			output_capacity = newSize;
@@ -3084,9 +3100,10 @@ StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 // Add one byte to a section
 void Section::AddByte(int b) {
 	if (!dummySection && type != ST_ZEROPAGE && type != ST_BSS) {
-		if (CheckOutputCapacity(1)==STATUS_OK) { *curr++ = (uint8_t)b; }
+		if (CheckOutputCapacity(1)==STATUS_OK) { *curr++ = (uint8_t)b; address++; }
+	} else {
+		address++;
 	}
-	address++;
 }
 
 // Add a 16 bit word to a section
@@ -3095,9 +3112,11 @@ void Section::AddWord(int w) {
 		if (CheckOutputCapacity(2) == STATUS_OK) {
 			*curr++ = (uint8_t)(w & 0xff);
 			*curr++ = (uint8_t)(w >> 8);
+			address += 2;
 		}
+	} else {
+		address += 2;
 	}
-	address += 2;
 }
 
 // Add a 24 bit word to a section
@@ -3107,9 +3126,11 @@ void Section::AddTriple(int l) {
 			*curr++ = (uint8_t)(l & 0xff);
 			*curr++ = (uint8_t)(l >> 8);
 			*curr++ = (uint8_t)(l >> 16);
+			address += 3;
 		}
+	} else {
+		address += 3;
 	}
-	address += 3;
 }
 // Add arbitrary length data to a section
 void Section::AddBin(const uint8_t *p, int size) {
@@ -3117,9 +3138,11 @@ void Section::AddBin(const uint8_t *p, int size) {
 		if (CheckOutputCapacity(size) == STATUS_OK) {
 			memcpy(curr, p, size);
 			curr += size;
+			address += size;
 		}
+	} else {
+		address += size;
 	}
-	address += size;
 }
 
 // Add text data to a section
@@ -3164,7 +3187,9 @@ void Section::AddIndexText(StringSymbol *strSym, strref text) {
 		const strref lookup = strSym->get();
 		while (text) {
 			char c = text.pop_first();
-			AddByte(lookup.find(c));
+			int idx = lookup.find(c);
+			if (idx >= 0)
+				AddByte(idx);
 		}
 	}
 }

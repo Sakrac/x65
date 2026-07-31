@@ -633,6 +633,8 @@ public:
 	strref within_last(char a1, char a2, char b) const { int f = find_last(a1, a2)+1;
 		int l = strref(string+f, length-f).find(b); if (l<0) l = 0; return strref(string+f, l); }
 
+	strref get_csv_cell();
+
 	strref get_quote_xml() const;
 	strref skip_quote_xml();
 	int find_quoted_xml(char d) const; // returns length up to the delimiter d with xml quotation rules, or -1 if delimiter not found
@@ -771,7 +773,7 @@ public:
 	int find_after_last(char a, char b) const { return get_strref().find_after_last(a, b); }
 	int find_after_last(char a1, char a2, char b) const { return get_strref().find_after_last(a1, a2, b); }
 	int find(const strref str) const { return get_strref().find(str); }
-	int find(const strref str, strl_t pos) const { return get_strref().find(str, pos); }
+	int find(const strref str, strl_t pos) const { get_strref().find(str, pos); }
 	int find(const char *str, strl_t pos = 0) const { return get_strref().find(str, pos); }
 	int find_case(const strref str) const { return get_strref().find_case(str); }
 	int find_case(const char *str) const { return get_strref().find_case(str); }
@@ -969,12 +971,8 @@ public:
 		set_len(_strmod_inplace_replace_int(charstr(), len(), cap(), a, b)); return get_strref(); }
 
 	// replace strings bookended by a specific string
-	bool replace_bookend(const strref a, const strref b, const strref bookend) {
-		if (len() && get() && a && bookend) {
-			int r = _strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend);
-			if (r >= 0) { set_len((strl_t)r); return true; }
-		} return false;
-	}
+	strref replace_bookend(const strref a, const strref b, const strref bookend) { if (len() && get() && a && bookend)
+		set_len(_strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend)); return get_strref(); }
 
 	// replace a string found within this string with another string
     void exchange(strl_t pos, strl_t size, const strref insert) {
@@ -1112,7 +1110,7 @@ template <strl_t S> class strcol {
 public:
 	strcol() : end_buf(0) { }
 	bool empty() const { return end_buf == 0; }
-	void clear() { end_buf = 0; }
+	void clear() const { end_buf = 0; }
 	bool end(strl_t curr) const { return curr>=end_buf; }
 	bool last(strl_t curr) const { return end(next(curr)); }
 	strl_t get_len(strl_t curr) { strl_t o = 0, s = 0; char c; do { c = _buffer[curr++]; o += strl_t(c&0x7f)<<s; s += 7; } while (c<0); return lim_len(c, o); }
@@ -1675,8 +1673,7 @@ size_t strref::ahextoui_skip()
 		scan += 2;
 		left -= 2;
 	}
-	if (left > 16) { left = 16; }
-	size_t hex = 0;
+	strl_t hex = 0;
 	while (left) {
 		char c = *scan;
 		if (c>='0' && c<='9')
@@ -4008,16 +4005,23 @@ size_t strref::get_utf8() const
 	if (!valid())
 		return 0;
 	const uint8_t *scan = get_u();
-	strl_t left = length-1;
-	if (left>5)
-		left = 5;
-	uint8_t f = *scan++;
-	size_t c = f, mask = 0x80;
-	while ((mask&c) && left) {
+	if (!scan)
+		return 0;
+	size_t c = *scan++;
+	if (c < 0x80)
+		return c;
+	if ((c & 0xE0) == 0xC0) {
 		uint8_t n = *scan++;
-		c = (c<<6)|(n&0x3f);
-		mask <<= 5;
-		left--;
+		c = ((c & 0x1f) << 6) | (n & 0x3f);
+	} else if ((c & 0xF0) == 0xE0) {
+		uint8_t n1 = *scan++;
+		uint8_t n2 = *scan++;
+		c = ((c & 0x0f) << 12) | ((n1 & 0x3f) << 6) | (n2 & 0x3f);
+	} else if ((c & 0xF8) == 0xF0) {
+		uint8_t n1 = *scan++;
+		uint8_t n2 = *scan++;
+		uint8_t n3 = *scan++;
+		c = ((c & 0x07) << 18) | ((n1 & 0x3f) << 12) | ((n2 & 0x3f) << 6) | (n3 & 0x3f);
 	}
 	return c;
 }
@@ -4029,16 +4033,26 @@ size_t strref::pop_utf8()
 	if (!valid())
 		return 0;
 	const uint8_t *scan = get_u();
-	strl_t left = length-1;
-	if (left>5)
-		left = 5;
-	uint8_t f = *scan++;
-	size_t c = f, m = 0x80;
-	while ((m&c) && left) {
+	if (!scan)
+		return 0;
+	size_t c = *scan++;
+	if (c < 0x80) {
+		length -= 1;
+		string = (const char*)scan;
+		return c;
+	}
+	if ((c & 0xE0) == 0xC0) {
 		uint8_t n = *scan++;
-		c = (c<<6)|(n&0x3f);
-		m <<= 5;
-		left--;
+		c = ((c & 0x1f) << 6) | (n & 0x3f);
+	} else if ((c & 0xF0) == 0xE0) {
+		uint8_t n1 = *scan++;
+		uint8_t n2 = *scan++;
+		c = ((c & 0x0f) << 12) | ((n1 & 0x3f) << 6) | (n2 & 0x3f);
+	} else if ((c & 0xF8) == 0xF0) {
+		uint8_t n1 = *scan++;
+		uint8_t n2 = *scan++;
+		uint8_t n3 = *scan++;
+		c = ((c & 0x07) << 18) | ((n1 & 0x3f) << 12) | ((n2 & 0x3f) << 6) | (n3 & 0x3f);
 	}
 	length -= strl_t((const char*)scan - string);
 	string = (const char*)scan;
@@ -4076,6 +4090,53 @@ int strref::find_quoted_xml(char d) const
 		--left;
 	}
 	return -1;
+}
+
+inline strref strref::get_csv_cell()
+{
+	const char* scan = string;
+	strl_t left = length;
+	if (!left) { return strref(); }
+	if (scan[0] == '"') {
+		++scan; --left;
+		while (left) {
+			if (*scan == '"' && length > 1 && scan[1] == '"') {
+				scan += 2;
+				left -= 2;
+			} else if (*scan == '"') {
+				strref ret(string + 1, (length - left - 1));
+				string = scan + 1;
+				length = left - 1;
+				return ret;
+			} else {
+				++scan;
+				--left;
+			}
+		}
+		strref ret(string + 1, length - 1);
+		length = 0;
+		string = nullptr;
+		return ret;
+	}
+
+	while (left && *scan != ',') {
+		if ((uint8_t)*scan < ' ') {	// skip control codes
+			strref ret(string, length - left);
+			++scan; --left;
+			while (left && *scan < ' ') {
+				++scan; --left;
+			}
+			string = scan; length = left;
+			return ret;
+		}
+		++scan; --left;
+	}
+	strref ret(string, length - left);
+	if (length && *scan == ',') {
+		++scan; --left;
+	}
+	string = scan; length = left;
+	return ret;
 }
 
 // if this string begins as an xml quote return that.
@@ -4204,7 +4265,7 @@ strref strref::split_token_trim_track_parens(char c)
 }
 strref strref::split_token_trim( char c ) {
 	strref r = split_token( c );
-	trim_whitespace();
+	skip_whitespace();
 	r.trim_whitespace();
 	return r;
 }
@@ -4817,29 +4878,32 @@ strl_t _strmod_inplace_replace_int(char *string, strl_t length, strl_t cap, cons
 	return left;
 }
 
-// search and replace occurences of a string within a string, return length or -1 if problem
-int _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t cap, const strref orig_str, const strref repl_str, const strref bookend)
+// search and replace occurences of a string within a string
+strl_t _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t cap, const strref a, const strref b, const strref bookend)
 {
 	char *scan = string;
 	strl_t left = length;
-	strl_t orig_len = orig_str.get_len(), repl_len = repl_str.get_len();
-	if (orig_len>left || !orig_len)
+	strl_t c = cap;
+	strl_t len_a = a.get_len(), len_b = b.get_len();
+	if (len_a>left || !len_a)
 		return left;
 
 	char *ps = scan, *pd = scan;
-	if (orig_len >= repl_len) {
-		int ss = strref(ps, left - strl_t(ps - scan)).find_bookend(orig_str, bookend);
-		if (ss >= 0) { // any occurence?
+	if (len_a >= len_b) {
+		int ss = strref(ps, left - strl_t(ps - scan)).find_bookend(a, bookend);
+		if (ss >= 0) {
 			pd += ss;
 			ps += ss;
 			while (ss >= 0 && strl_t(ss)<left) {
-				ps += orig_len;
-				int sl = strref(ps, left - ss - orig_len).find_bookend(orig_str, bookend);
-				if (sl < 0) { sl = int(left - ss - orig_len); }
-				if (repl_len && repl_str.get()) {
-					const char *po = repl_str.get();
-					strl_t r = repl_len;
-					while (r--) { *pd++ = *po++; }
+				ps += len_a;
+				int sl = strref(ps, left - ss - len_a).find_bookend(a, bookend);
+				if (sl<0)
+					sl = int(left - ss - len_a);
+				if (len_b && b.get()) {
+					const char *po = b.get();
+					strl_t r = len_b;
+					while (r--)
+						*pd++ = *po++;
 				}
 				if (sl) {
 					if (ps != pd) {
@@ -4851,27 +4915,31 @@ int _strmod_inplace_replace_bookend_int(char *string, strl_t length, strl_t cap,
 						ps += sl;
 					}
 				}
-				ss += (int)orig_len + sl;
+				ss += (int)len_a + sl;
 			}
 			return strl_t(pd - scan);
 		}
-	} else if (int cnt = strref(scan, left).substr_count_bookend(orig_str, bookend)) {
-		strl_t nl = cnt * (repl_len - orig_len) + left;	// new length
-		if (nl > cap) { return left; }	// didn't fit in space
-		int ss = strref(scan, left).find_last_bookend(orig_str, bookend);
+	} else if (int cnt = strref(scan, left).substr_count_bookend(a, bookend)) {
+		strl_t nl = cnt * (len_b - len_a) + left;	// new length
+		if (nl>c)
+			return left;	// didn't fit in space
+		int ss = strref(scan, left).find_last_bookend(a, bookend);
 		int se = (int)left;
 		pd += nl;
 		ps += left;
 		while (ss >= 0) {
-			strl_t cp = se - ss - orig_len;
-			while (cp--) { *--pd = *--ps; }
-			ps -= orig_len;
-			if (repl_str.get()) {
-				const char *be = repl_str.get() + repl_len;
-				for(cp = repl_len; cp; cp--) { *--pd = *--be; }
+			strl_t cp = se - ss - len_a;
+			while (cp--)
+				*--pd = *--ps;
+			ps -= len_a;
+			if (b.get()) {
+				const char *be = b.get() + len_b;
+				cp = len_b;
+				while (cp--)
+					*--pd = *--be;
 			}
 			se = ss;
-			ss = strref(scan, se).find_last_bookend(orig_str, bookend);
+			ss = strref(scan, se).find_last_bookend(a, bookend);
 		}
 		return nl;
 	}
