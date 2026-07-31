@@ -64,6 +64,10 @@ x65.cpp requires struse.h which is a single file text parsing library that can b
 
 Please note that releases have moved the Github [releases](https://github.com/Sakrac/x65/releases)
 
+### CMake build
+
+A portable CMake build is available for building with Clang on macOS, Linux, and Windows. See [README-CMAKE.md](README-CMAKE.md) for the build instructions.
+
 ### x65
 
 x65 is the assembler

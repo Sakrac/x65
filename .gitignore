@@ -21,6 +21,7 @@
 *.user
 *.db*
 *.recipe
+build
 test/results/*
 sln/.vs
 obj

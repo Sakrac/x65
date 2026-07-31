@@ -29,7 +29,9 @@
 // "struse.h" can be found at https://github.com/Sakrac/struse, only the header file is required.
 //
 
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS		// Windows shenanigans
+#endif
 #define STRUSE_IMPLEMENTATION		// include implementation of struse in this file
 
 #include <stdlib.h>

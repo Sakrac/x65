@@ -32,7 +32,9 @@
 // "struse.h" can be found at https://github.com/Sakrac/struse, only the header file is required.
 //
 
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS		// Windows shenanigans
+#endif
 #define STRUSE_IMPLEMENTATION		// include implementation of struse in this file
 #include "struse.h"					// https://github.com/Sakrac/struse/blob/master/struse.h
 #include <vector>
@@ -1591,10 +1593,10 @@ typedef struct Section {
 	void AddBin(const uint8_t *p, int size);
 	void AddText(strref line, strref text_prefix);
 	void AddIndexText(StringSymbol * strSym, strref text);
-	void SetByte(size_t offs, int b) { output[offs] = (uint8_t)b; }
-	void SetWord(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); }
-	void SetTriple(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); }
-	void SetQuad(size_t offs, int w) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); output[offs+3] = uint8_t(w>>24); }
+	void SetByte(size_t offs, int b) { if (output && offs < size()) { output[offs] = (uint8_t)b; } }
+	void SetWord(size_t offs, int w) { if (output && (offs + 1) < size()) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); } }
+	void SetTriple(size_t offs, int w) { if (output && (offs + 2) < size()) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); } }
+	void SetQuad(size_t offs, int w) { if (output && (offs + 3) < size()) { output[offs] = (uint8_t)w; output[offs+1] = uint8_t(w>>8); output[offs+2] = uint8_t(w>>16); output[offs+3] = uint8_t(w>>24); } }
 } Section;
 
 // Symbol list entry (in order of parsing)
@@ -3075,6 +3077,7 @@ StatusCode Asm::MergeAllSections(int first_section)
 // Make sure there is room to assemble in
 StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 	if (dummySection||type==ST_ZEROPAGE||type==ST_BSS) { return STATUS_OK; }
+	if (addSize == 0) { return STATUS_OK; }
 	if (!output) {
 		output = (uint8_t*)malloc(64 * 1024);
 		if (!output) { return ERROR_OUT_OF_MEMORY; }
@@ -3082,10 +3085,12 @@ StatusCode Section::CheckOutputCapacity(uint32_t addSize) {
 		output_capacity = 64 * 1024;
 	}
 	size_t currSize = curr ? size_t(curr - output) : 0;
-	if ((addSize + currSize) >= output_capacity) {
-		size_t newSize = currSize * 2;
-		if (newSize<64*1024) { newSize = 64*1024; }
-		if ((addSize+currSize)>newSize) { newSize += newSize; }
+	size_t needed = currSize + addSize;
+	if (needed < currSize) { return ERROR_OUT_OF_MEMORY; }
+	if (needed >= output_capacity) {
+		size_t newSize = output_capacity ? output_capacity * 2 : 64 * 1024;
+		if (newSize < 64 * 1024) { newSize = 64 * 1024; }
+		if (newSize < needed) { newSize = needed; }
 		if (uint8_t *new_output = (uint8_t*)malloc(newSize)) {
 			memcpy(new_output, output, size());
 			curr = new_output + (curr ? (curr - output) : 0);
@@ -4364,85 +4369,87 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 					// Check if target section merged with another section
 					int trg = i->target;
 					int sec = i->section;
-					if (i->type != LateEval::LET_LABEL) {
-					}
 					bool resolved = true;
+					Section *target_section = nullptr;
+					if (sec >= 0 && sec < (int)allSections.size()) {
+						target_section = &allSections[sec];
+					}
 					switch (i->type) {
 						case LateEval::LET_BYTE:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
 									resolved = false;
-								} else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift);
+								} else if (target_section) {
+									target_section->AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift);
 									value = 0;
 								}
 							}
-							if (trg>=allSections[sec].size()) {
+							if (!target_section || trg<0 || trg>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetByte(trg, value);
+							target_section->SetByte(trg, value);
 							break;
 
 						case LateEval::LET_DBL_BYTE:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
 									resolved = false;
-								} else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift-8);
-									allSections[sec].AddReloc(lastEvalValue, trg+1, lastEvalSection, 1, lastEvalShift);
+								} else if (target_section) {
+									target_section->AddReloc(lastEvalValue, trg, lastEvalSection, 1, lastEvalShift-8);
+									target_section->AddReloc(lastEvalValue, trg+1, lastEvalSection, 1, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+1)>=allSections[sec].size()) {
+							if (!target_section || trg<0 || (trg+1)>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetByte(trg, value>>8);
-							allSections[sec].SetByte(trg+1, value);
+							target_section->SetByte(trg, value>>8);
+							target_section->SetByte(trg+1, value);
 							break;
 
 						case LateEval::LET_ABS_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
 									resolved = false;
-								} else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 2, lastEvalShift);
+								} else if (target_section) {
+									target_section->AddReloc(lastEvalValue, trg, lastEvalSection, 2, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+1)>=allSections[sec].size()) {
+							if (!target_section || trg<0 || (trg+1)>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetWord(trg, value);
+							target_section->SetWord(trg, value);
 							break;
 
 						case LateEval::LET_ABS_L_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
 									resolved = false;
-								} else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 3, lastEvalShift);
+								} else if (target_section) {
+									target_section->AddReloc(lastEvalValue, trg, lastEvalSection, 3, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+2)>=allSections[sec].size()) {
+							if (!target_section || trg<0 || (trg+2)>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetTriple(trg, value);
+							target_section->SetTriple(trg, value);
 							break;
 
 						case LateEval::LET_ABS_4_REF:
 							if (ret==STATUS_RELATIVE_SECTION) {
 								if (i->section<0) {
 									resolved = false;
-								} else {
-									allSections[sec].AddReloc(lastEvalValue, trg, lastEvalSection, 4, lastEvalShift);
+								} else if (target_section) {
+									target_section->AddReloc(lastEvalValue, trg, lastEvalSection, 4, lastEvalShift);
 									value = 0;
 								}
 							}
-							if ((trg+3)>=allSections[sec].size()) {
+							if (!target_section || trg<0 || (trg+3)>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetQuad(trg, value);
+							target_section->SetQuad(trg, value);
 							break;
 
 						case LateEval::LET_BRANCH:
@@ -4450,18 +4457,19 @@ StatusCode Asm::CheckLateEval(strref added_label, int scope_end, bool print_miss
 							if (value<-128 || value>127) {
 								i = lateEval.erase(i);
 								return ERROR_BRANCH_OUT_OF_RANGE;
-							} if (trg>=allSections[sec].size()) {
+							}
+							if (!target_section || trg<0 || trg>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetByte(trg, value);
+							target_section->SetByte(trg, value);
 							break;
 
 						case LateEval::LET_BRANCH_16:
 							value -= i->address+2;
-							if (trg>=allSections[sec].size()) {
+							if (!target_section || trg<0 || trg>=target_section->size()) {
 								return ERROR_SECTION_TARGET_OFFSET_OUT_OF_RANGE;
 							}
-							allSections[sec].SetWord(trg, value);
+							target_section->SetWord(trg, value);
 							break;
 
 						case LateEval::LET_LABEL: {
