@@ -4,7 +4,7 @@
 
 ![x65](bin/x65.png)
 
-In order to minimize the documentation and make this page shorter, the older material has been moved into the project wiki. The current documentation set lives in [x65.txt](x65.txt) and the files in [docs](docs).
+In order to minimize the documentation and make this page shorter, the older material has been moved into the project wiki. The current documentation set lives in [x65.txt](x65.txt) and the files in [docs](https://sakrac.github.io/x65).
 
 x65 can assemble 6502-family source and build executables for C64, Apple II, or raw binary. The parser also supports multiple syntax styles, including Kick Assembler, Merlin, and ca65-style scoping, and it can emit source-level debug files, symbol maps, opcode dumps, VICE monitor exports, and dependency reports through command-line options such as `-srcdbg`, `-symfull`, `-refs`, `-xrefimp`, `-opcodes`, and `-vice`.
 
