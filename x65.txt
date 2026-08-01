@@ -150,24 +150,31 @@ Options include:
 * -i(path) : Add include path
 * -D(label)[=value] : Define a label with an optional value
    (otherwise defined as 1)
-* -cpu=6502/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
+* -cpu=6502/6502ill/65c02/65c02wdc/65816: assemble with opcodes for a different cpu
 * -acc=8/16: set the accumulator mode for 65816 at start, default is 8 bits
 * -xy=8/16: set the index register mode for 65816 at start, default is 8 bits
-* -org = $2000 or - org = 4096: force fixed address code at address
+* -org=$2000 or -org=4096: force fixed address code at address
 * -obj (file.x65) : generate object file for later linking
-* -bin : Raw binary
-* -c64 : Include load address (default)
-* -a2b : Apple II Dos 3.3 Binary
-* -a2p : Apple II ProDos Binary
-* -a2o : Apple II GS OS executable (relocatable)
-* -mrg : Force merge all sections (use with -a2o)
-* -sym (file.sym) : symbol file
-* -lst / -lst = (file.lst) : generate disassembly text from
-   result (file or stdout)
-* -opcodes / -opcodes = (file.s) : dump all available opcodes(file or stdout)
+* -bin : produce raw binary
+* -c64 : include load address (default)
+* -a2b : Apple II DOS 3.3 binary
+* -a2p : Apple II ProDOS binary
+* -a2o : Apple II GS/OS executable (relocatable)
+* -mrg : force merge all sections (use with -a2o)
+* -sym (file.sym) : generate a symbol file
+* -symfull (file.sym) : generate a full symbol map
+* -lst / -lst=(file.lst) : generate disassembly text from
+   the result (file or stdout)
+* -tsl=(file) : generate a TASS-style listing file
+* -tl=(file) : generate a TASS-style label file
+* -opcodes / -opcodes=(file.s) : dump all available opcodes (file or stdout)
+* -srcdbg / -srcdbg=(file.dbg) : generate source-level debugging data for object files or linked output
 * -sect: display sections loaded and built
-* -vice (file.vs) : export a vice symbol file
+* -vice (file.vs) : export a VICE symbol file
+* -refs: show label dependencies before linking
+* -xrefimp: make IMPORT behave like XREF and EXPORT behave like XDEF
 * -merlin: use Merlin syntax
+* -kickasm: use Kick Assembler syntax
 * -endm : macros end with endm or endmacro instead of scoped('{' - '}')
 
 
@@ -184,7 +191,7 @@ assembler directive with the CPU directive. The supported CPU names are:
 * 6502 - basic 6502 instruction set
 * 6502ill - 6502 instruction set with illegal opcodes
 * 65C02 - basic 65C02 instruction set
-* 65c02WDC - 65C02 instruction set with added WDC instructions
+* 65C02WDC - 65C02 instruction set with added WDC instructions
 * 65816 - basic 65816 instruction set
 
 The CPU can be changed within a source file, the highest instruction count
