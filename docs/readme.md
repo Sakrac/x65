@@ -13,7 +13,7 @@ interface.
 For debugging, dump_x65 can inspect the contents of x65 object files, and
 x65dsasm is a separate disassembler intended to review the assembled result.
 
-x65 is built in sync with [IceBro Lite](https://github.com/sakrac/IceBroLite), but any debugger will work if needed.
+x65 is built in sync with [IceBro Lite](https://sakrac.github.io/IceBroLite/), but any debugger will work if needed.
 
 ## Noteworthy features:
 
