@@ -2,7 +2,7 @@
 
 6502 Macro Assembler in a single C++ file using the struse single-file text parsing library. The current implementation supports 6502, 65C02, 65C02WDC, and 65816 sources and can emit C64, Apple II, and raw binary outputs.
 
-![x65](bin/x65.png)
+![x65](docs/x65.png)
 
 In order to minimize the documentation and make this page shorter, the older material has been moved into the project wiki. The current documentation set lives in [x65.txt](x65.txt) and the files in [docs](https://sakrac.github.io/x65).
 
