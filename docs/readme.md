@@ -8,7 +8,7 @@ also supports listing generation, source-level debug output, opcode dumps,
 VICE monitor exports, and dependency reporting through the command-line
 interface.
 
-![x65](../bin/x65.png)
+![x65](x65.png)
 
 For debugging, dump_x65 can inspect the contents of x65 object files, and
 x65dsasm is a separate disassembler intended to review the assembled result.
