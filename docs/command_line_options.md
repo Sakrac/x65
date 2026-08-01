@@ -1,6 +1,14 @@
 # Command Line Options for x65
 
-These are the current options for controlling x65 from the command line. The parser accepts option names case-insensitively.
+These options control how x65 assembles, links, and emits output from the command line. The parser accepts option names case-insensitively, so you can mix uppercase and lowercase as you like.
+
+A few common examples:
+
+```bat
+x65 demo.s demo.prg
+x65 demo.s demo.prg -lst=lst\demo.lst -symfull demo.sym
+x65 src\link.s build\demo.prg -srcdbg=build\demo.dbg -vice build\demo.vs
+```
 
 ## Include paths and defines
 

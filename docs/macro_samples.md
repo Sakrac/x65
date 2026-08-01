@@ -1,6 +1,15 @@
 # x65macro.i
 
-This is a file under macros and is intended as an example to look at for understanding macro features, it is not super tested for correctness. This information is included in the header file itself but to ease reading copied here. The macros folder also has [more detailed documentation](Macros.md).
+This file collects a practical set of macros that are useful for common 6502-style tasks such as moving data, doing arithmetic, and building loops. It is primarily meant as a reference and an example of what x65 macros can do, and the macros folder also has [more detailed documentation](Macros.md).
+
+A simple example:
+
+```asm
+set.w CopyCode, $fc
+for.wsp $2000, $4000, $fe, CodeSegLen
+    copy.ry128 $fc, $fe, CodeSegLen
+forend
+```
 
 ## Suffix definition
 

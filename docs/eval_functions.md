@@ -1,6 +1,14 @@
 # Eval Functions
 
-Eval functions are used like symbols in expressions, but they are always followed by parentheses with optional arguments. They are case-insensitive and can be called with or without a leading dot in many contexts.
+Eval functions are used like symbols in expressions, but they are always followed by parentheses with optional arguments. They are case-insensitive and can be called with or without a leading dot in many contexts, which makes them handy in macros and conditional assembly.
+
+A simple conditional example:
+
+```asm
+if .defined(start)
+    EVAL start is available
+endif
+```
 
 ### DEFINED, DEF
 

@@ -1,6 +1,18 @@
 # X65 Directives
 
-Directives control the assembler on a line-by-line basis and cover conditional assembly, exports, imports, object-file generation, linking, scoping, and more. Directives are case-insensitive and may be prefixed with a dot.
+Directives control the assembler on a line-by-line basis and cover conditional assembly, exports, imports, object-file generation, linking, scoping, and more. Directives are case-insensitive and may be prefixed with a dot, which makes them convenient to use in both compact and more readable source files.
+
+A small example:
+
+```asm
+SECTION Code, code
+org $0800
+
+LABEL start
+lda #$01
+sta $d020
+rts
+```
 
 	.rept 8 { dc.b 1<<rept }
 

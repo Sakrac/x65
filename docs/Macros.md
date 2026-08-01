@@ -1,8 +1,8 @@
 # x65 macro library
 
-Macros are useful for a variety of custom purposes, x65macro.i aims to provide useful common functions that function like a template library.
+Macros are useful for a variety of custom purposes, and x65macro.i aims to provide common building blocks that behave a little like a template library for 6502 assembly.
 
-These macros deal with simple math, assignments, memory copy and loops.
+These macros cover simple math, assignments, memory copying, and loops, which makes them handy for both small programs and larger projects.
 
 ### Operations
 
