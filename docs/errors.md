@@ -1,175 +1,66 @@
 # List of x65 error messages
-	
-## Undefined code
 
-Could not recognize code at this point in the file
-
-## Unexpected character in expression
-
-A character in an expression has confused the assembler evaluator
-
-## Too many values in expression
-
-There is a limit to the number of values encountered in a single expression, feel free to change that number if you must.
-
-## Too many operators in expression
-
-There is a limit to the number of operators encountered in a single expression, this can also be modified as needed.
-
-## Unbalanced right parenthesis in expression
-
-A right parenthesis without a corresponding left parenthesis was encountered in the expression
-
-## Expression operation
-
-The expression evaluator has confused itself with an unrecognized operator.
-
-## Expression missing values
-
-Not enough values to complete an expression operator
-
-## Instruction can not be zero page
-
-An attempt to force a zero page command that does not support it was foiled by the assembler.
-
-## Invalid addressing mode for instruction
-
-Indeed!
-
-## Internal label organization mishap
-
-Internal error
-
-## Bad addressing mode
-
-Don't be bad
-
-## Unexpected character in addressing mode
-
-What gives?
-
-## Unexpected label assignment format
-
-Equal sign or EQU is desired for assigning const or mutable (LABEL) labels.
-
-## Changing value of label that is constant
-
-You declared that you would not change your mind but you did. I can't deal with it.
-
-## Out of labels in pool
-
-A label pool was declared at a certain size that has now been exceeded.
-
-## Internal label pool release confusion
-
-Internal error
-
-## Label pool range evaluation failed
-
-Could not determine the range for the label pool at the current line of assembly
-
-## Label pool was redeclared within its scope
-
-No recursive pool dipping please.
-
-## Pool label already defined
-
-Once is enough
-
-## Struct already defined
-
-Don't repeat yourself
-
-## Referenced struct not found
-
-But specify it at least once.
-
-## Declare constant type not recognized (dc.?)
-
-Specify word size using something that can be understood
-
-## rept count expression could not be evaluated
-
-The count needs to be evaluated at the current line of assembly
-
-## hex must be followed by an even number of hex numbers
-
-## DS directive failed to evaluate immediately
-
-The count needs to be evaluated at the current line of assembly
-
-## File is not a valid x65 object file
-
-A file that was referenced with an INCOBJ directive was not recognized as a valid x65 object file
-
-## Failed to read include file
-## Using symbol PULL without first using a PUSH
-
-Withdrawing beyond your deposits amounts to robbery.
-
-## User invoked error
-
-An ABORT or ERR directive was assembled
-
-## Errors after this point will stop execution
-
-This is a placeholder error message
-
-## Branch is out of range
-
-Max branch distance was exceeded at this point in assembly
-
-## Function declaration is missing name or expression
-
-A FUNCTION directive requires a name, open/close parenthesis and an expression. Parameters within the parenthesis is optional.
-
-## Function could not resolve the expression
-
-The expression could not be evaluated at this point in assembly
-
-## Expression evaluateion recursion too deep
-## Target address must evaluate immediately for this operation
-## Scoping is too deep
-## Unbalanced scope closure
-## Unexpected macro formatting
-## Align must evaluate immediately
-## Out of memory for macro expansion
-
-Your memory is not enough
-
-## Problem with macro argument
-## Conditional could not be resolved
-## #endif encountered outside conditional block
-
-ENDIF directive without an IF or equivalent
-
-## #else or #elif outside conditional block
-
-ELSE or ELIF directive without an IF or equivalent
-
-## Struct can not be assembled as is
-## Enum can not be assembled as is
-## Conditional assembly (#if/#ifdef) was not terminated in file or macro
-
-an IF or equivalent does not have a matching ENDIF directive
-
-## rept is missing a scope ('{ ... }')
-
-You want me to repeat what exactly?
-
-## Link can only be used in a fixed address section
-## Link can not be used in dummy sections
-## Can not process this line
-## Unexpected target offset for reloc or late evaluation
-## CPU is not supported
-## Can't append sections
-## Zero page / Direct page section out of range
-## Attempting to assign an address to a non-existent section
-## Attempting to assign an address to a fixed address section
-## Can not link a zero page section with a non-zp section
-## Out of memory while building
-## Can not write to file
-## Assembly aborted
-## Condition too deeply nested
-
-There is a limit to the number of IFs within IFs.
+The assembler reports these messages through the status and error table in x65.cpp. The list below reflects the current implementation closely.
+
+- Undefined code — could not recognize code at this point in the file.
+- Unexpected character in expression — a character in an expression confused the assembler evaluator.
+- Too many values in expression — the expression parser exceeded the maximum number of values allowed.
+- Too many operators in expression — the expression parser exceeded the maximum number of operators allowed.
+- Unbalanced right parenthesis in expression — a closing parenthesis was found without a matching opening parenthesis.
+- Expression operation — the expression evaluator encountered an unrecognized operator.
+- Expression missing values — not enough values were present to complete an expression operation.
+- Instruction can not be zero page — an attempt was made to use a zero-page addressing mode that is not supported by the instruction.
+- Invalid addressing mode for instruction — the addressing mode was not valid for the instruction.
+- Internal label organization mishap — internal label bookkeeping failed.
+- Bad addressing mode — the addressing mode supplied to the assembler was invalid.
+- Unexpected character in addressing mode — the parser encountered an unexpected character when parsing an addressing mode.
+- Unexpected label assignment format — an equals sign or `EQU`-style assignment was expected for a label.
+- Changing value of label that is constant — a constant label was assigned a new value.
+- Out of labels in pool — a label pool was declared at a size that has now been exceeded.
+- Internal label pool release confusion — internal label-pool bookkeeping failed.
+- Label pool range evaluation failed — the label-pool range could not be resolved at the current assembly point.
+- Label pool was redeclared within its scope — a pool was declared recursively within its own scope.
+- Pool label already defined — the requested pool label had already been defined.
+- Struct already defined — the struct was declared more than once.
+- Referenced struct not found — a struct reference could not be resolved.
+- Declare constant type not recognized (dc.?) — the size suffix for `DC` was not recognized.
+- rept count expression could not be evaluated — the repeat count could not be resolved at the current line.
+- hex must be followed by an even number of hex numbers — the `HEX` directive was given an odd number of hexadecimal digits.
+- DS directive failed to evaluate immediately — the size requested by `DS` needed to be known at the current line.
+- File is not a valid x65 object file — the file referenced by `INCOBJ` was not a valid x65 object file.
+- Failed to read include file — the assembler could not read the included source file.
+- Using symbol PULL without first using a PUSH — `PULL` was used without a matching earlier `PUSH`.
+- User invoked error — an `ABORT` or `ERR` directive was assembled.
+- Errors after this point will stop execution — execution stops after the error threshold is reached.
+- Branch is out of range — a branch instruction exceeded the supported target range.
+- Function declaration is missing name or expression — a `FUNCTION` directive did not include a valid name and expression.
+- Function could not resolve the expression — a function body could not be evaluated at the point of use.
+- Expression evaluation recursion too deep — the expression evaluator exceeded the recursion limit.
+- Target address must evaluate immediately for this operation — a target address was required to resolve immediately.
+- Scoping is too deep — the nesting depth exceeded the supported scope depth.
+- Unbalanced scope closure — the assembler found an unbalanced scope block.
+- Unexpected macro formatting — the macro syntax did not match the expected format.
+- Align must evaluate immediately — the alignment value had to be known at the current line.
+- Out of memory for macro expansion — the assembler could not allocate enough memory for the macro expansion.
+- Problem with macro argument — a macro argument was malformed or could not be resolved.
+- Conditional could not be resolved — a conditional assembly expression could not be evaluated.
+- `#endif` encountered outside conditional block — an `ENDIF` directive was found without a corresponding `IF` block.
+- `#else` or `#elif` outside conditional block — an `ELSE` or `ELIF` directive was found without a corresponding `IF` block.
+- Struct can not be assembled as is — the struct could not be assembled in the current form.
+- Enum can not be assembled as is — the enum could not be assembled in the current form.
+- Conditional assembly was not terminated in file or macro — an `IF`-style block was left unterminated.
+- `rept` is missing a scope (`{ ... }`) — a repeat block was missing its required scope delimiters.
+- Link can only be used in a fixed address section — `LINK` was used in a relocatable section.
+- Link can not be used in dummy sections — `LINK` was used in a dummy section.
+- Can not process this line — the line could not be processed by the assembler.
+- Unexpected target offset for reloc or late evaluation — the relocation target address was out of range.
+- CPU is not supported — the selected CPU is not supported by the current implementation.
+- Can't append sections — the assembler could not append sections as requested.
+- Zero page / direct page section out of range — a zero-page section address was outside the allowable range.
+- Attempting to assign an address to a non-existent section — an address was assigned to a section that does not exist.
+- Attempting to assign an address to a fixed address section — a fixed-address section was reassigned.
+- Can not link a zero page section with a non-zp section — a zero-page section was linked with a non-zero-page section.
+- Out of memory while building — the assembler ran out of memory during assembly or linking.
+- Can not write to file — the assembler could not write the requested output file.
+- Assembly aborted — assembly was stopped by the assembler.
+- Condition too deeply nested — the conditional nesting depth exceeded the supported limit.

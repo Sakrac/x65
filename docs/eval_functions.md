@@ -1,34 +1,34 @@
 # Eval Functions
 
-Eval Functions are used like symbols in expressions but are always followed by parenthesis with optional arguments.
+Eval functions are used like symbols in expressions, but they are always followed by parentheses with optional arguments. They are case-insensitive and can be called with or without a leading dot in many contexts.
 
 ### DEFINED, DEF
 
 	.if .def(symbol)
 	.endif
 
-Evaluates to 1 if the symbol has been defined or 0 if it has not been encountered to this point in the current assembly.
+Evaluates to `1` if the symbol has been defined so far during the current assembly, and `0` otherwise.
 
 ### REFERENCED
 
 	.if .referenced(symbol)
 	.endif
 
-Evaluates to 1 if the symbol has been referenced in the current assembly, the symbol should be defined at this point.
+Evaluates to `1` if the symbol has been referenced in the current assembly. The symbol should be defined at this point.
 
 ### BLANK
 
 	.if .blank()
 	.endif
 
-Evaluates to 1 if the contents within the parenthesis is empty, primarily for use within macros.
+Evaluates to `1` if the contents inside the parentheses are empty, which is primarily useful within macros.
 
 ### CONST
 
 	if .const(symbol)
 	.endif
 
-Evaluates to 1 if the symbol has been declared CONST, the symbol should be defined at this point.
+Evaluates to `1` if the symbol has been declared `CONST`. The symbol should be defined at this point.
 
 ### SIZEOF
 
@@ -38,11 +38,11 @@ Evaluates to 1 if the symbol has been declared CONST, the symbol should be defin
 		word Shutdown
 	}
 
-	ds SIZEOF( Module )
+	ds SIZEOF(Module)
 
 Returns the byte size of a given struct.
 
 ### TRIGSIN
 
-Not implemented, experimental math feature, currently returns 0.
+The parser recognizes `TRIGSIN` as an eval-function name. The current implementation does not provide a working trigonometric implementation yet and returns `0` for now.
 

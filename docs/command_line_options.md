@@ -1,116 +1,43 @@
 # Command Line Options for x65
 
-These are the current options for controlling x65 from the command line.
+These are the current options for controlling x65 from the command line. The parser accepts option names case-insensitively.
 
-## lst
-	-lst / -lst=(file.lst)
+## Include paths and defines
 
-Generate disassembly text from result(file or stdout)
+- `-i(path)` adds a folder to the include search path.
+- `-D(label)[=value]` defines a label with an optional value; if no value is supplied it is defined as `1`.
 
-## tsl
-	-tsl=(file)
-	
-generate listing file in TASS style
+## Listing and debug output
 
-## tl
-	
-	-tl=(file)
-	
-Generate labels in TASS style
+- `-lst` / `-lst=(file.lst)` generates listing text on stdout or in a file.
+- `-tsl=(file)` generates a TASS-style listing file.
+- `-tl=(file)` generates labels in TASS style.
+- `-srcdbg` / `-srcdbg=(file.dbg)` emits source-level debugging data for object files or linked output.
+- `-sect` displays the sections that were loaded and built.
 
-## opcodes
-	-opcodes / -opcodes=(file.s)
-	
-Use with -cpu=... to dump all available opcodes for that CPU (file or stdout)
+## CPU and syntax
 
-## endm
-	-endm
-	
-macros end with endm or endmacro instead of scoped('{' - '}') and rept/repeat emds with endr instead of being scoped.
+- `-cpu=6502/6502ill/65c02/65c02wdc/65816` selects the target CPU.
+- `-acc=8/16` sets the 65816 accumulator mode at startup.
+- `-xy=8/16` sets the 65816 index-register mode at startup.
+- `-endm` makes macros end with `ENDM` or `ENDMACRO` instead of using `{ ... }` blocks.
+- `-merlin` enables Merlin syntax mode.
+- `-kickasm` enables Kick Assembler syntax mode (in progress).
 
-## cpu
-	-cpu=[6502/6502ill/65c02/65c02wdc/65816]
+## Output format
 
-declare CPU type, use with argument
-
-## acc [65816]
-	-acc=[8/16]
-	
-set the accumulator mode for 65816 at start, default is 8 bits
-
-## xy [65816]
-	-xy=8/16
-	
-set the index register mode for 65816 at start, default is 8 bits
-
-
-## org
-	-org=$2000 or -org=4096
-	
-force assembly for first encountered non-specific address section at given address
-
-## kickasm
-	-kickasm
-
-use Kick Assembler syntax (in progress)
-
-## merlin
-	-merlin
-
-use Merlin syntax
-
-## c64
-	-c64
-
-(default) Include 2 byte load address in binary output
-
-## a2b
-	-a2b
-	
-Produce an Apple II Dos 3.3 Binary
-
-## bin
-	-bin
-
-Produce raw binary
-
-## a2p
-	-a2p
-	
-Produce an Apple II ProDos Binary
-
-## a2o
-	-a2o
-
-Produce an Apple II GS OS executable (relocatable)
-
-## mrg
-	-mrg
-	
-Force merge all sections (use with -a2o)
-
-## sect
-	-sect
-
-display sections loaded and built
-
-## sym
-	-sym (file.sym)
-	
-generate symbol file
-
-## obj
-	-obj (file.x65)
-	
-Produce an object file instead of a binary for later linking
-
-## vice
-	-vice (file.vs)
-
-export a vice monitor command file (including vice symbols)
-
-## xrefimp
-	-xrefimp
-	
-import directive means xref, not include/incbin and export directive means xdef, not export section.
+- `-org=$2000` or `-org=4096` forces the first non-specific section to start at the given address.
+- `-bin` produces a raw binary.
+- `-c64` produces a C64 binary with the standard two-byte load address.
+- `-a2b` produces an Apple II DOS 3.3 binary.
+- `-a2p` produces an Apple II ProDOS binary.
+- `-a2o` produces an Apple II GS/OS relocatable executable.
+- `-mrg` forces section merging when used with `-a2o`.
+- `-obj (file.x65)` writes an x65 object file for later linking.
+- `-sym (file.sym)` writes a symbol file.
+- `-symfull (file.sym)` writes a fuller symbol map.
+- `-vice (file.vs)` exports a VICE monitor command file including symbols.
+- `-refs` shows label dependencies before linking.
+- `-opcodes` / `-opcodes=(file.s)` dumps the supported opcodes for the selected CPU.
+- `-xrefimp` makes `IMPORT` behave like `XREF` and `EXPORT` behave like `XDEF`.
 

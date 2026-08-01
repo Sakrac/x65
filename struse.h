@@ -64,7 +64,7 @@ typedef unsigned int strl_t;
 #define STRREF_ARG(s) (int)(s).get_len(), (s).get()
 
 // internal helper functions for strref
-int _find_rh(const char *text, strl_t len, const char *comp, strl_t comp_len);
+int _find_rh(const uint8_t *text, strl_t len, const uint8_t *comp, strl_t comp_len);
 int _find_rh_case(const char *text, strl_t len, const char *comp, strl_t comp_len);
 
 // strref holds a reference to a constant substring (const char*)
@@ -391,7 +391,7 @@ public:
 	strl_t end_line_pos( strl_t pos );
 
 	// rolling hash find
-	int find_rh(strref str) const { return _find_rh(get(), get_len(), str.get(), str.get_len()); }
+	int find_rh(strref str) const { return _find_rh(get_u(), get_len(), (const uint8_t*)str.get(), str.get_len()); }
 	int find_rh_case(strref str) const {
 		return _find_rh_case(get(), get_len(), str.get(), str.get_len()); }
 
@@ -4185,12 +4185,16 @@ int strref::find_quoted(char d) const
 	strl_t left = length;
 	const char *scan = string;
 	char quote_char = 0;
-	char previous_char = 0;
+	int backslashes = 0;
 	while (left) {
 		char c = *scan++;
 		if (quote_char) {
-			if (c==quote_char && previous_char!='\\')
+			if (c == quote_char && (backslashes & 1) == 0)
 				quote_char = 0;
+			if (c == '\\')
+				++backslashes;
+			else
+				backslashes = 0;
 		} else if (c=='"' || c=='\'')
 			quote_char = c;
 		else if (c==d)
