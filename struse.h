@@ -499,8 +499,12 @@ public:
 	strref get_substr(int pos, int len) const { return get_substr((strl_t)pos, (strl_t)len); }
 	strref get_substr(int pos, strl_t len) const { return get_substr((strl_t)pos, len); }
 
-	strref get_skipped(strl_t len) const { if (len<length)
-		return strref(string+len, length-len); return strref(); }
+	strref get_skipped(strl_t len) const {
+		if (len<length) {
+			return strref(string+len, length-len);
+		}
+		return strref();
+	}
 
 	// get this strref without leading whitespace
 	strref get_skip_ws() const { return get_skipped(len_whitespace()); }
@@ -518,9 +522,17 @@ public:
 		strl_t w = len_whitespace(), g = len_grayspace(w); return get_substr(w, g - w); }
 
 	strref get_valid_json_string() const {
-		const uint8_t *s = get_u(); strl_t l = length; while (l) {
-		uint8_t c = *s++; if (!(c=='+' || c=='.' || c=='-' || is_number(c) || c>='A'))
-		break; l--;	} return strref(string, length-l); }
+		const uint8_t *s = get_u();
+		strl_t l = length;
+		while (l) {
+			uint8_t c = *s++;
+			if (!(c=='+' || c=='.' || c=='-' || is_number(c) || c>='A')) {
+				break;
+			}
+			l--;
+		}
+		return strref(string, length-l);
+	}
 
 	strref before(char c) const {
 		int o = find(c); if (o>=0) return strref(string, o); return strref(); }
@@ -547,40 +559,99 @@ public:
 	strref after_or_full(const strref str) const {
 		int o = find(str); if (o<0) return *this; return strref(string+o, length-o); }
 
-	strref after_or_full(char c) const { int o = find(c);
-		if (o>=0) return strref(string+o+1, length-o-1); return *this; }
+	strref after_or_full(char c) const {
+		int o = find(c);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return *this;
+	}
 
-	strref after_or_full(char c, char d) const { int o = find(c, d);
-		if (o>=0) return strref(string+o+1, length-o-1); return *this; }
+	strref after_or_full(char c, char d) const {
+		int o = find(c, d);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return *this;
+	}
 
-	strref after(char c) const { int o = find(c);
-		if (o>=0) return strref(string+o+1, length-o-1); return strref(); }
+	strref after(char c) const {
+		int o = find(c);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return strref();
+	}
 
-	strref after_last_or_full(char c) const { int o = find_last(c);
-		if (o>=0) return strref(string+o+1, length-o-1); return *this; }
+	strref after_last_or_full(char c) const {
+		int o = find_last(c);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return *this;
+	}
 
 	strref after_last_or_full(char c, char d) const {
-		int o = find_last(c, d); if (o>=0) return strref(string+o+1, length-o-1); return *this; }
+		int o = find_last(c, d);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return *this;
+	}
 
-	strref after_last(char c) const { int o = find_last(c); if (o>=0)
-			return strref(string+o+1, length-o-1); return strref(); }
+	strref after_last(char c) const {
+		int o = find_last(c);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return strref();
+	}
 
-	strref after_last(char c, char d) const { int o = find_last(c, d); if (o>=0)
-		return strref(string+o+1, length-o-1); return strref(); }
+	strref after_last(char c, char d) const {
+		int o = find_last(c, d);
+		if (o>=0) {
+			return strref(string+o+1, length-o-1);
+		}
+		return strref();
+	}
 
-	strref get_alphanumeric() const { strref r(*this); r.skip_whitespace();
-		if (strl_t l = r.len_alphanumeric()) return strref(string, l); return strref(); }
+	strref get_alphanumeric() const {
+		strref r(*this);
+		r.skip_whitespace();
+		if (strl_t l = r.len_alphanumeric()) {
+			return strref(string, l);
+		}
+		return strref();
+	}
 	
 	strref get_label() const { return strref(string, len_label()); }
 	
-	strref before_or_full_case(const strref str) const { int o = find_case(str);
-		if (o<0) return *this; return strref(string, o); }
+	strref before_or_full_case(const strref str) const {
+		int o = find_case(str);
+		if (o<0) {
+			return *this;
+		}
+		return strref(string, o);
+	}
 
-	strref after_or_full_case(const strref str) const { int o = find_case(str);
-		if (o<0) return *this; return strref(string+o, length-o); }
+	strref after_or_full_case(const strref str) const {
+		int o = find_case(str);
+		if (o<0) {
+			return *this;
+		}
+		return strref(string+o, length-o);
+	}
 
-    strref between(char c, char d) { int s = find(c); if (s>=0) { int e = find_after(d, (strl_t)s);
-        if (e>=0) return get_substr(strl_t(s+1), strl_t(e-s-1)); } return strref(); }
+    strref between(char c, char d) {
+		int s = find(c);
+		if (s>=0) {
+			int e = find_after(d, (strl_t)s);
+			if (e>=0) {
+				return get_substr(strl_t(s+1), strl_t(e-s-1));
+			}
+		}
+		return strref();
+	}
 
 	// tokenization
 	strref split(strl_t pos);
@@ -708,10 +779,18 @@ public:
 	void add_len(strl_t l) { add_len_int(fit_add(l)); }
 
 	// offset operators will always return a strref
-	strref operator+(const strl_t skip) { if (skip<len())
-		return strref(charstr()+skip, len()-skip); return strref(); }
-	strref operator+(const int skip) { if (skip>=0 && strl_t(skip)<len())
-		return strref(charstr()+skip, len()-skip); return strref(); }
+	strref operator+(const strl_t skip) {
+		if (skip<len()) {
+			return strref(charstr()+skip, len()-skip);
+		}
+		return strref();
+	}
+	strref operator+(const int skip) {
+		if (skip>=0 && strl_t(skip)<len()) {
+			return strref(charstr()+skip, len()-skip);
+		}
+		return strref();
+	}
 
 	// get character at position
 	char operator[](size_t pos) { return pos<len() ? charstr()[pos] : 0; }
@@ -971,8 +1050,12 @@ public:
 		set_len(_strmod_inplace_replace_int(charstr(), len(), cap(), a, b)); return get_strref(); }
 
 	// replace strings bookended by a specific string
-	strref replace_bookend(const strref a, const strref b, const strref bookend) { if (len() && get() && a && bookend)
-		set_len(_strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend)); return get_strref(); }
+	strref replace_bookend(const strref a, const strref b, const strref bookend) {
+		if (len() && get() && a && bookend) {
+			set_len(_strmod_inplace_replace_bookend_int(charstr(), len(), cap(), a, b, bookend));
+		}
+		return get_strref();
+	}
 
 	// replace a string found within this string with another string
     void exchange(strl_t pos, strl_t size, const strref insert) {
@@ -995,9 +1078,19 @@ public:
 	char* charend() { return charstr()+len(); }
 
 	// remove a portion of this string
-	void erase(strl_t pos, strl_t length) { if (pos<len()) { if ((pos+length)>len())
-		length = len()-pos; if (length) { for (strl_t i = 0; i<length; i++)
-		charstr()[pos+i] = charstr()[pos+i+length];	} sub_len_int(length); } }
+	void erase(strl_t pos, strl_t length) {
+		if (pos<len()) {
+			if ((pos+length)>len()) {
+				length = len()-pos;
+			}
+			if (length) {
+				for (strl_t i = 0; i<length; i++) {
+					charstr()[pos+i] = charstr()[pos+i+length];
+				}
+			}
+			sub_len_int(length);
+		}
+	}
 
 	strmod& cleanup_path() { 
 		set_len(_strmod_cleanup_path(charstr(), get_len()));
@@ -1110,7 +1203,7 @@ template <strl_t S> class strcol {
 public:
 	strcol() : end_buf(0) { }
 	bool empty() const { return end_buf == 0; }
-	void clear() const { end_buf = 0; }
+	void clear() { end_buf = 0; }
 	bool end(strl_t curr) const { return curr>=end_buf; }
 	bool last(strl_t curr) const { return end(next(curr)); }
 	strl_t get_len(strl_t curr) { strl_t o = 0, s = 0; char c; do { c = _buffer[curr++]; o += strl_t(c&0x7f)<<s; s += 7; } while (c<0); return lim_len(c, o); }
@@ -2544,6 +2637,7 @@ int strref::find_esc(const strref str, strl_t pos) const
 			const uint8_t *chk_scan = scan;
 			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
+			
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
 				uint8_t d = *chk_compare++;
@@ -2660,6 +2754,7 @@ int strref::find_case_esc(const strref str, strl_t pos) const
 			const uint8_t *chk_scan = scan;
 			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
+			
 			strl_t chk_compare_left = compare_left;
 			while (chk_compare_left) {
 				uint8_t d = *chk_compare++;
@@ -2809,8 +2904,9 @@ int strref::find_case_esc_range(const strref str, const strref range, strl_t pos
 			const uint8_t *chk_scan = scan;
 			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
+			
 			strl_t chk_compare_left = compare_left;
-			while (chk_compare_left) {
+			while (chk_compare_left && chk_scan_left) {
 				uint8_t d = *chk_compare++;
 				chk_compare_left--;
 				uint8_t e = *chk_scan++;
@@ -2875,8 +2971,9 @@ int strref::find_esc_range(const strref str, const strref range, strl_t pos) con
 			const uint8_t *chk_scan = scan;
 			const uint8_t *chk_compare = compare;
 			strl_t chk_scan_left = scan_left;
+			
 			strl_t chk_compare_left = compare_left;
-			while (chk_compare_left) {
+			while (chk_compare_left && chk_scan_left) {
 				uint8_t d = int_tolower_ascii7(*chk_compare++);
 				chk_compare_left--;
 				uint8_t e = int_tolower_ascii7(*chk_scan++);
@@ -4428,7 +4525,7 @@ strl_t strref::scoped_block_utf8_comment_len()
 {
 	strref str = *this;
 	size_t scope = str.pop_utf8();
-	if( length && ( scope == '(' || scope == '[' || scope == '{' || scope == '<' ) )
+	if (length && (scope == '(' || scope == '[' || scope == '{' || scope == '<'))
 	{
 		char close = scope == '<' ? '>' : ( scope == '(' ? ')' : ( scope == '[' ? ']' : '}' ) );
 		strl_t depth = 1;
@@ -4441,10 +4538,10 @@ strl_t strref::scoped_block_utf8_comment_len()
 			}
 			else if( c == scope )
 				depth++;
-			else if( c == close )
+			else if (c == static_cast<size_t>(close))
 				depth--;
 		} while( depth && str.valid() );
-		if( !depth )
+		if (!depth)
 			return strl_t( str.string - string );
 	}
 	return 0;
